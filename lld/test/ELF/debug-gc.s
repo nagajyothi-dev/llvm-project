@@ -4,7 +4,9 @@
 # RUN: llvm-objdump -s %t1 | FileCheck %s
 
 # CHECK:      Contents of section .debug_str:
-# CHECK-NEXT:  0000 41414100 42424200   AAA.BBB.
+# CHECK-NEXT:  0000 41414100 42424200 43434300           AAA.BBB.CCC.
+# CHECK:      Contents of section .foo:
+# CHECK-NEXT:  0000 2a000000
 # CHECK:      Contents of section .debug_info:
 # CHECK-NEXT:  0000 00000000 04000000
 
@@ -18,7 +20,11 @@ _start:
   .asciz "BBB"
 .Linfo_string2:
   .asciz "CCC"
-  
+
+.section .foo,"M",@progbits,4
+.p2align 2
+  .long 42
+
 .section  .debug_info,"",@progbits
   .long .Linfo_string0
   .long .Linfo_string1

@@ -229,9 +229,9 @@ Loop *BlockGenerator::getLoopForStmt(const ScopStmt &Stmt) const {
   return LI.getLoopFor(StmtBB);
 }
 
-Value *BlockGenerator::generateScalarLoad(ScopStmt &Stmt, LoadInst *Load,
-                                          ValueMapT &BBMap, LoopToScevMapT &LTS,
-                                          isl_id_to_ast_expr *NewAccesses) {
+Value *BlockGenerator::generateArrayLoad(ScopStmt &Stmt, LoadInst *Load,
+                                         ValueMapT &BBMap, LoopToScevMapT &LTS,
+                                         isl_id_to_ast_expr *NewAccesses) {
   if (Value *PreloadLoad = GlobalMap.lookup(Load))
     return PreloadLoad;
 
@@ -247,9 +247,9 @@ Value *BlockGenerator::generateScalarLoad(ScopStmt &Stmt, LoadInst *Load,
   return ScalarLoad;
 }
 
-void BlockGenerator::generateScalarStore(ScopStmt &Stmt, StoreInst *Store,
-                                         ValueMapT &BBMap, LoopToScevMapT &LTS,
-                                         isl_id_to_ast_expr *NewAccesses) {
+void BlockGenerator::generateArrayStore(ScopStmt &Stmt, StoreInst *Store,
+                                        ValueMapT &BBMap, LoopToScevMapT &LTS,
+                                        isl_id_to_ast_expr *NewAccesses) {
   Value *NewPointer =
       generateLocationAccessed(Stmt, Store, BBMap, LTS, NewAccesses);
   Value *ValueOperand = getNewValue(Stmt, Store->getValueOperand(), BBMap, LTS,
@@ -281,7 +281,7 @@ void BlockGenerator::copyInstruction(ScopStmt &Stmt, Instruction *Inst,
     return;
 
   if (auto *Load = dyn_cast<LoadInst>(Inst)) {
-    Value *NewLoad = generateScalarLoad(Stmt, Load, BBMap, LTS, NewAccesses);
+    Value *NewLoad = generateArrayLoad(Stmt, Load, BBMap, LTS, NewAccesses);
     // Compute NewLoad before its insertion in BBMap to make the insertion
     // deterministic.
     BBMap[Load] = NewLoad;
@@ -289,7 +289,7 @@ void BlockGenerator::copyInstruction(ScopStmt &Stmt, Instruction *Inst,
   }
 
   if (auto *Store = dyn_cast<StoreInst>(Inst)) {
-    generateScalarStore(Stmt, Store, BBMap, LTS, NewAccesses);
+    generateArrayStore(Stmt, Store, BBMap, LTS, NewAccesses);
     return;
   }
 
@@ -452,6 +452,15 @@ void BlockGenerator::generateScalarLoads(
     if (MA->isOriginalArrayKind() || MA->isWrite())
       continue;
 
+#ifndef NDEBUG
+    auto *StmtDom = Stmt.getDomain();
+    auto *AccDom = isl_map_domain(MA->getAccessRelation());
+    assert(isl_set_is_subset(StmtDom, AccDom) &&
+           "Scalar must be loaded in all statement instances");
+    isl_set_free(StmtDom);
+    isl_set_free(AccDom);
+#endif
+
     auto *Address =
         getImplicitAddress(*MA, getLoopForStmt(Stmt), LTS, BBMap, NewAccesses);
     assert((!isa<Instruction>(Address) ||
@@ -475,6 +484,15 @@ void BlockGenerator::generateScalarStores(
   for (MemoryAccess *MA : Stmt) {
     if (MA->isOriginalArrayKind() || MA->isRead())
       continue;
+
+#ifndef NDEBUG
+    auto *StmtDom = Stmt.getDomain();
+    auto *AccDom = isl_map_domain(MA->getAccessRelation());
+    assert(isl_set_is_subset(StmtDom, AccDom) &&
+           "Scalar must be stored in all statement instances");
+    isl_set_free(StmtDom);
+    isl_set_free(AccDom);
+#endif
 
     Value *Val = MA->getAccessValue();
     if (MA->isAnyPHIKind()) {
@@ -652,7 +670,7 @@ void BlockGenerator::createExitPHINodeMerges(Scop &S) {
     // the original PHI's value or the reloaded incoming values from the
     // generated code. An llvm::Value is merged between the original code's
     // value or the generated one.
-    if (!SAI->isValueKind() && !SAI->isExitPHIKind())
+    if (!SAI->isExitPHIKind())
       continue;
 
     PHINode *PHI = dyn_cast<PHINode>(Val);
@@ -827,7 +845,7 @@ void VectorBlockGenerator::generateLoad(
   if (!VectorType::isValidElementType(Load->getType())) {
     for (int i = 0; i < getVectorWidth(); i++)
       ScalarMaps[i][Load] =
-          generateScalarLoad(Stmt, Load, ScalarMaps[i], VLTS[i], NewAccesses);
+          generateArrayLoad(Stmt, Load, ScalarMaps[i], VLTS[i], NewAccesses);
     return;
   }
 
@@ -1175,7 +1193,7 @@ void RegionGenerator::copyStmt(ScopStmt &Stmt, LoopToScevMapT &LTS,
 
   // Iterate over all blocks in the region in a breadth-first search.
   std::deque<BasicBlock *> Blocks;
-  SmallPtrSet<BasicBlock *, 8> SeenBlocks;
+  SmallSetVector<BasicBlock *, 8> SeenBlocks;
   Blocks.push_back(EntryBB);
   SeenBlocks.insert(EntryBB);
 
@@ -1214,7 +1232,7 @@ void RegionGenerator::copyStmt(ScopStmt &Stmt, LoopToScevMapT &LTS,
 
     // And continue with new successors inside the region.
     for (auto SI = succ_begin(BB), SE = succ_end(BB); SI != SE; SI++)
-      if (R->contains(*SI) && SeenBlocks.insert(*SI).second)
+      if (R->contains(*SI) && SeenBlocks.insert(*SI))
         Blocks.push_back(*SI);
 
     // Remember value in case it is visible after this subregion.

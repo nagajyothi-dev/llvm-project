@@ -1600,8 +1600,7 @@ bool HeaderFileInfoTrait::EqualKey(internal_key_ref a, internal_key_ref b) {
   if (a.Size != b.Size || (a.ModTime && b.ModTime && a.ModTime != b.ModTime))
     return false;
 
-  if (llvm::sys::path::is_absolute(a.Filename) &&
-      strcmp(a.Filename, b.Filename) == 0)
+  if (llvm::sys::path::is_absolute(a.Filename) && a.Filename == b.Filename)
     return true;
   
   // Determine whether the actual files are equivalent.
@@ -3045,7 +3044,7 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       break;
 
     case SEMA_DECL_REFS:
-      if (Record.size() != 2) {
+      if (Record.size() != 3) {
         Error("Invalid SEMA_DECL_REFS block");
         return Failure;
       }
@@ -3274,6 +3273,14 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       for (unsigned I = 0, N = Record.size(); I != N; ++I)
         UnusedLocalTypedefNameCandidates.push_back(
             getGlobalDeclID(F, Record[I]));
+      break;
+
+    case CUDA_PRAGMA_FORCE_HOST_DEVICE_DEPTH:
+      if (Record.size() != 1) {
+        Error("invalid cuda pragma options record");
+        return Failure;
+      }
+      ForceCUDAHostDeviceDepth = Record[0];
       break;
     }
   }
@@ -7104,12 +7111,14 @@ void ASTReader::UpdateSema() {
   // Load the offsets of the declarations that Sema references.
   // They will be lazily deserialized when needed.
   if (!SemaDeclRefs.empty()) {
-    assert(SemaDeclRefs.size() % 2 == 0);
-    for (unsigned I = 0; I != SemaDeclRefs.size(); I += 2) {
+    assert(SemaDeclRefs.size() % 3 == 0);
+    for (unsigned I = 0; I != SemaDeclRefs.size(); I += 3) {
       if (!SemaObj->StdNamespace)
         SemaObj->StdNamespace = SemaDeclRefs[I];
       if (!SemaObj->StdBadAlloc)
         SemaObj->StdBadAlloc = SemaDeclRefs[I+1];
+      if (!SemaObj->StdAlignValT)
+        SemaObj->StdAlignValT = SemaDeclRefs[I+2];
     }
     SemaDeclRefs.clear();
   }
@@ -7126,6 +7135,7 @@ void ASTReader::UpdateSema() {
             PragmaMSPointersToMembersState,
         PointersToMembersPragmaLocation);
   }
+  SemaObj->ForceCUDAHostDeviceDepth = ForceCUDAHostDeviceDepth;
 }
 
 IdentifierInfo *ASTReader::get(StringRef Name) {
@@ -7545,12 +7555,13 @@ void ASTReader::ReadPendingInstantiations(
 }
 
 void ASTReader::ReadLateParsedTemplates(
-    llvm::MapVector<const FunctionDecl *, LateParsedTemplate *> &LPTMap) {
+    llvm::MapVector<const FunctionDecl *, std::unique_ptr<LateParsedTemplate>>
+        &LPTMap) {
   for (unsigned Idx = 0, N = LateParsedTemplates.size(); Idx < N;
        /* In loop */) {
     FunctionDecl *FD = cast<FunctionDecl>(GetDecl(LateParsedTemplates[Idx++]));
 
-    LateParsedTemplate *LT = new LateParsedTemplate;
+    auto LT = llvm::make_unique<LateParsedTemplate>();
     LT->D = GetDecl(LateParsedTemplates[Idx++]);
 
     ModuleFile *F = getOwningModuleFile(LT->D);
@@ -7561,7 +7572,7 @@ void ASTReader::ReadLateParsedTemplates(
     for (unsigned T = 0; T < TokN; ++T)
       LT->Toks.push_back(ReadToken(*F, LateParsedTemplates, Idx));
 
-    LPTMap.insert(std::make_pair(FD, LT));
+    LPTMap.insert(std::make_pair(FD, std::move(LT)));
   }
 
   LateParsedTemplates.clear();

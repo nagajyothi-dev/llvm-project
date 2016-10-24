@@ -122,69 +122,84 @@ template <> struct DenseMapInfo<GVN::Expression> {
 /// location of the instruction from which it was formed.
 struct llvm::gvn::AvailableValue {
   enum ValType {
-    SimpleVal, // A simple offsetted value that is accessed.
-    LoadVal,   // A value produced by a load.
-    MemIntrin, // A memory intrinsic which is loaded from.
-    UndefVal   // A UndefValue representing a value from dead block (which
-               // is not yet physically removed from the CFG).
+    SimpleVal,    // A simple offsetted value that is accessed.
+    LoadVal,      // A value produced by a load.
+    MemIntrinVal, // A memory intrinsic which is loaded from.
+    UndefVal,     // A UndefValue representing a value from dead block (which
+                  // is not yet physically removed from the CFG).
+    CreateLoadVal // A duplicate load can be created higher up in the CFG that
+                  // will eliminate this one.
   };
 
   /// V - The value that is live out of the block.
-  PointerIntPair<Value *, 2, ValType> Val;
+  std::pair<Value *, ValType> Val;
 
   /// Offset - The byte offset in Val that is interesting for the load query.
   unsigned Offset;
 
   static AvailableValue get(Value *V, unsigned Offset = 0) {
     AvailableValue Res;
-    Res.Val.setPointer(V);
-    Res.Val.setInt(SimpleVal);
+    Res.Val.first = V;
+    Res.Val.second = SimpleVal;
     Res.Offset = Offset;
     return Res;
   }
 
   static AvailableValue getMI(MemIntrinsic *MI, unsigned Offset = 0) {
     AvailableValue Res;
-    Res.Val.setPointer(MI);
-    Res.Val.setInt(MemIntrin);
+    Res.Val.first = MI;
+    Res.Val.second = MemIntrinVal;
     Res.Offset = Offset;
+    return Res;
+  }
+
+  static AvailableValue getCreateLoad(LoadInst *LI) {
+    AvailableValue Res;
+    Res.Val.first = LI;
+    Res.Val.second = CreateLoadVal;
     return Res;
   }
 
   static AvailableValue getLoad(LoadInst *LI, unsigned Offset = 0) {
     AvailableValue Res;
-    Res.Val.setPointer(LI);
-    Res.Val.setInt(LoadVal);
+    Res.Val.first = LI;
+    Res.Val.second = LoadVal;
     Res.Offset = Offset;
     return Res;
   }
 
   static AvailableValue getUndef() {
     AvailableValue Res;
-    Res.Val.setPointer(nullptr);
-    Res.Val.setInt(UndefVal);
+    Res.Val.first = nullptr;
+    Res.Val.second = UndefVal;
     Res.Offset = 0;
     return Res;
   }
 
-  bool isSimpleValue() const { return Val.getInt() == SimpleVal; }
-  bool isCoercedLoadValue() const { return Val.getInt() == LoadVal; }
-  bool isMemIntrinValue() const { return Val.getInt() == MemIntrin; }
-  bool isUndefValue() const { return Val.getInt() == UndefVal; }
+  bool isSimpleValue() const { return Val.second == SimpleVal; }
+  bool isCoercedLoadValue() const { return Val.second == LoadVal; }
+  bool isMemIntrinValue() const { return Val.second == MemIntrinVal; }
+  bool isUndefValue() const { return Val.second == UndefVal; }
+  bool isCreateLoadValue() const { return Val.second == CreateLoadVal; }
+
+  LoadInst *getCreateLoadValue() const {
+    assert(isCreateLoadValue() && "Wrong accessor");
+    return cast<LoadInst>(Val.first);
+  }
 
   Value *getSimpleValue() const {
     assert(isSimpleValue() && "Wrong accessor");
-    return Val.getPointer();
+    return Val.first;
   }
 
   LoadInst *getCoercedLoadValue() const {
     assert(isCoercedLoadValue() && "Wrong accessor");
-    return cast<LoadInst>(Val.getPointer());
+    return cast<LoadInst>(Val.first);
   }
 
   MemIntrinsic *getMemIntrinValue() const {
     assert(isMemIntrinValue() && "Wrong accessor");
-    return cast<MemIntrinsic>(Val.getPointer());
+    return cast<MemIntrinsic>(Val.first);
   }
 
   /// Emit code at the specified insertion point to adjust the value defined
@@ -338,16 +353,9 @@ GVN::Expression GVN::ValueTable::createExtractvalueExpr(ExtractValueInst *EI) {
 //===----------------------------------------------------------------------===//
 
 GVN::ValueTable::ValueTable() : nextValueNumber(1) {}
-GVN::ValueTable::ValueTable(const ValueTable &Arg)
-    : valueNumbering(Arg.valueNumbering),
-      expressionNumbering(Arg.expressionNumbering), AA(Arg.AA), MD(Arg.MD),
-      DT(Arg.DT), nextValueNumber(Arg.nextValueNumber) {}
-GVN::ValueTable::ValueTable(ValueTable &&Arg)
-    : valueNumbering(std::move(Arg.valueNumbering)),
-      expressionNumbering(std::move(Arg.expressionNumbering)),
-      AA(std::move(Arg.AA)), MD(std::move(Arg.MD)), DT(std::move(Arg.DT)),
-      nextValueNumber(std::move(Arg.nextValueNumber)) {}
-GVN::ValueTable::~ValueTable() {}
+GVN::ValueTable::ValueTable(const ValueTable &) = default;
+GVN::ValueTable::ValueTable(ValueTable &&) = default;
+GVN::ValueTable::~ValueTable() = default;
 
 /// add - Insert a value into the table with a specified value number.
 void GVN::ValueTable::add(Value *V, uint32_t num) {
@@ -841,16 +849,6 @@ static int AnalyzeLoadFromClobberingWrite(Type *LoadTy, Value *LoadPtr,
   // a must alias.  AA must have gotten confused.
   // FIXME: Study to see if/when this happens.  One case is forwarding a memset
   // to a load from the base of the memset.
-#if 0
-  if (LoadOffset == StoreOffset) {
-    dbgs() << "STORE/LOAD DEP WITH COMMON POINTER MISSED:\n"
-    << "Base       = " << *StoreBase << "\n"
-    << "Store Ptr  = " << *WritePtr << "\n"
-    << "Store Offs = " << StoreOffset << "\n"
-    << "Load Ptr   = " << *LoadPtr << "\n";
-    abort();
-  }
-#endif
 
   // If the load and store don't overlap at all, the store doesn't provide
   // anything to the load.  In this case, they really don't alias at all, AA
@@ -859,8 +857,8 @@ static int AnalyzeLoadFromClobberingWrite(Type *LoadTy, Value *LoadPtr,
 
   if ((WriteSizeInBits & 7) | (LoadSize & 7))
     return -1;
-  uint64_t StoreSize = WriteSizeInBits >> 3;  // Convert to bytes.
-  LoadSize >>= 3;
+  uint64_t StoreSize = WriteSizeInBits / 8;  // Convert to bytes.
+  LoadSize /= 8;
 
 
   bool isAAFailure = false;
@@ -869,17 +867,8 @@ static int AnalyzeLoadFromClobberingWrite(Type *LoadTy, Value *LoadPtr,
   else
     isAAFailure = LoadOffset+int64_t(LoadSize) <= StoreOffset;
 
-  if (isAAFailure) {
-#if 0
-    dbgs() << "STORE LOAD DEP WITH COMMON BASE:\n"
-    << "Base       = " << *StoreBase << "\n"
-    << "Store Ptr  = " << *WritePtr << "\n"
-    << "Store Offs = " << StoreOffset << "\n"
-    << "Load Ptr   = " << *LoadPtr << "\n";
-    abort();
-#endif
+  if (isAAFailure)
     return -1;
-  }
 
   // If the Load isn't completely contained within the stored bits, we don't
   // have all the bits to feed it.  We could do something crazy in the future
@@ -1191,7 +1180,11 @@ Value *AvailableValue::MaterializeAdjustedValue(LoadInst *LI,
   Value *Res;
   Type *LoadTy = LI->getType();
   const DataLayout &DL = LI->getModule()->getDataLayout();
-  if (isSimpleValue()) {
+  if (isCreateLoadValue()) {
+    Instruction *I = getCreateLoadValue()->clone();
+    I->insertBefore(InsertPt);
+    Res = I;
+  } else if (isSimpleValue()) {
     Res = getSimpleValue();
     if (Res->getType() != LoadTy) {
       Res = GetStoreValueForLoad(Res, Offset, LoadTy, InsertPt, DL);
@@ -1379,7 +1372,7 @@ void GVN::AnalyzeLoadAvailability(LoadInst *LI, LoadDepVect &Deps,
       continue;
     }
 
-    if (!DepInfo.isDef() && !DepInfo.isClobber()) {
+    if (!DepInfo.isDef() && !DepInfo.isClobber() && !DepInfo.isNonFuncLocal()) {
       UnavailableBlocks.push_back(DepBB);
       continue;
     }
@@ -1390,12 +1383,25 @@ void GVN::AnalyzeLoadAvailability(LoadInst *LI, LoadDepVect &Deps,
     Value *Address = Deps[i].getAddress();
 
     AvailableValue AV;
-    if (AnalyzeLoadAvailability(LI, DepInfo, Address, AV)) {
+    // TODO: We can use anything where the operands are available, and we should
+    // learn to recreate operands in other blocks if they are available.
+    // Because we don't have the infrastructure in our PRE, we restrict this to
+    // global values, because we know the operands are always available.
+    if (DepInfo.isNonFuncLocal()) {
+      if (isSafeToSpeculativelyExecute(LI) &&
+          isa<GlobalValue>(LI->getPointerOperand())) {
+        AV = AvailableValue::getCreateLoad(LI);
+        ValuesPerBlock.push_back(AvailableValueInBlock::get(
+            &LI->getParent()->getParent()->getEntryBlock(), std::move(AV)));
+      } else
+        UnavailableBlocks.push_back(DepBB);
+
+    } else if (AnalyzeLoadAvailability(LI, DepInfo, Address, AV)) {
       // subtlety: because we know this was a non-local dependency, we know
       // it's safe to materialize anywhere between the instruction within
       // DepInfo and the end of it's block.
-      ValuesPerBlock.push_back(AvailableValueInBlock::get(DepBB,
-                                                          std::move(AV)));
+      ValuesPerBlock.push_back(
+          AvailableValueInBlock::get(DepBB, std::move(AV)));
     } else {
       UnavailableBlocks.push_back(DepBB);
     }

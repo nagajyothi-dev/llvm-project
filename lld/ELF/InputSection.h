@@ -23,6 +23,7 @@ namespace elf {
 
 class DefinedCommon;
 class SymbolBody;
+struct SectionPiece;
 
 template <class ELFT> class ICF;
 template <class ELFT> class DefinedRegular;
@@ -53,19 +54,14 @@ private:
 public:
   Kind kind() const { return (Kind)SectionKind; }
 
-  // Used for garbage collection.
-  unsigned Live : 1;
-
+  unsigned Live : 1; // for garbage collection
   unsigned Compressed : 1;
-
   uint32_t Alignment;
-
   StringRef Name;
-
   ArrayRef<uint8_t> Data;
 
   // If a section is compressed, this has the uncompressed section data.
-  std::unique_ptr<char[]> UncompressedData;
+  std::unique_ptr<uint8_t[]> UncompressedData;
 
   std::vector<Relocation> Relocations;
 };
@@ -108,7 +104,7 @@ public:
   const Elf_Shdr *getSectionHdr() const { return Header; }
   ObjectFile<ELFT> *getFile() const { return File; }
   uintX_t getOffset(const DefinedRegular<ELFT> &Sym) const;
-
+  InputSectionBase *getLinkOrderDep() const;
   // Translate an offset in the input section to an offset in the output
   // section.
   uintX_t getOffset(uintX_t Offset) const;
@@ -116,32 +112,31 @@ public:
   void uncompress();
 
   void relocate(uint8_t *Buf, uint8_t *BufEnd);
+
+private:
+  std::pair<ArrayRef<uint8_t>, uint64_t>
+  getElfCompressedData(ArrayRef<uint8_t> Data);
+
+  std::pair<ArrayRef<uint8_t>, uint64_t>
+  getRawCompressedData(ArrayRef<uint8_t> Data);
 };
 
 template <class ELFT> InputSectionBase<ELFT> InputSectionBase<ELFT>::Discarded;
 
 // SectionPiece represents a piece of splittable section contents.
+// We allocate a lot of these and binary search on them. This means that they
+// have to be as compact as possible, which is why we don't store the size (can
+// be found by looking at the next one) and put the hash in a side table.
 struct SectionPiece {
-  SectionPiece(size_t Off, ArrayRef<uint8_t> Data)
-      : InputOff(Off), Data((const uint8_t *)Data.data()), Size(Data.size()),
-        Live(!Config->GcSections) {}
-
-  ArrayRef<uint8_t> data() { return {Data, Size}; }
-  size_t size() const { return Size; }
+  SectionPiece(size_t Off, bool Live = false)
+      : InputOff(Off), OutputOff(-1), Live(Live || !Config->GcSections) {}
 
   size_t InputOff;
-  size_t OutputOff = -1;
-
-private:
-  // We use bitfields because SplitInputSection is accessed by
-  // std::upper_bound very often.
-  // We want to save bits to make it cache friendly.
-  const uint8_t *Data;
-  uint32_t Size : 31;
-
-public:
-  uint32_t Live : 1;
+  ssize_t OutputOff : 8 * sizeof(ssize_t) - 1;
+  size_t Live : 1;
 };
+static_assert(sizeof(SectionPiece) == 2 * sizeof(size_t),
+              "SectionPiece is too big");
 
 // This corresponds to a SHF_MERGE section of an input file.
 template <class ELFT> class MergeInputSection : public InputSectionBase<ELFT> {
@@ -156,7 +151,10 @@ public:
   void splitIntoPieces();
 
   // Mark the piece at a given offset live. Used by GC.
-  void markLiveAt(uintX_t Offset) { LiveOffsets.insert(Offset); }
+  void markLiveAt(uintX_t Offset) {
+    assert(this->getSectionHdr()->sh_flags & llvm::ELF::SHF_ALLOC);
+    LiveOffsets.insert(Offset);
+  }
 
   // Translate an offset in the input section to an offset
   // in the output section.
@@ -167,6 +165,8 @@ public:
   // Splittable sections are handled as a sequence of data
   // rather than a single large blob of data.
   std::vector<SectionPiece> Pieces;
+  ArrayRef<uint8_t> getData(std::vector<SectionPiece>::const_iterator I) const;
+  std::vector<uint32_t> Hashes;
 
   // Returns the SectionPiece at a given input section offset.
   SectionPiece *getSectionPiece(uintX_t Offset);
@@ -182,7 +182,13 @@ private:
 
 struct EhSectionPiece : public SectionPiece {
   EhSectionPiece(size_t Off, ArrayRef<uint8_t> Data, unsigned FirstRelocation)
-      : SectionPiece(Off, Data), FirstRelocation(FirstRelocation) {}
+      : SectionPiece(Off, false), Data(Data.data()), Size(Data.size()),
+        FirstRelocation(FirstRelocation) {}
+  const uint8_t *Data;
+  uint32_t Size;
+  uint32_t size() const { return Size; }
+
+  ArrayRef<uint8_t> data() { return {Data, Size}; }
   unsigned FirstRelocation;
 };
 
@@ -227,6 +233,9 @@ public:
   // The offset from beginning of the output sections this section was assigned
   // to. The writer sets a value.
   uint64_t OutSecOff = 0;
+
+  // InputSection that is dependent on us (reverse dependency for GC)
+  InputSectionBase<ELFT> *DependentSection = nullptr;
 
   static bool classof(const InputSectionBase<ELFT> *S);
 

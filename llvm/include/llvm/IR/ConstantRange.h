@@ -166,6 +166,14 @@ public:
     return nullptr;
   }
 
+  /// If this set contains all but a single element, return it, otherwise return
+  /// null.
+  const APInt *getSingleMissingElement() const {
+    if (Lower == Upper + 1)
+      return &Upper;
+    return nullptr;
+  }
+
   /// Return true if this set contains exactly one member.
   ///
   bool isSingleElement() const { return getSingleElement() != nullptr; }
@@ -252,6 +260,10 @@ public:
   /// Return a new range representing the possible values resulting
   /// from an addition of a value in this range and a value in \p Other.
   ConstantRange add(const ConstantRange &Other) const;
+
+  /// Return a new range representing the possible values resulting from a
+  /// known NSW addition of a value in this range and \p Other constant.
+  ConstantRange addWithNoSignedWrap(const APInt &Other) const;
 
   /// Return a new range representing the possible values resulting
   /// from a subtraction of a value in this range and a value in \p Other.

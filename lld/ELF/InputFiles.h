@@ -27,6 +27,12 @@
 
 #include <map>
 
+namespace llvm {
+namespace lto {
+class InputFile;
+}
+}
+
 namespace lld {
 namespace elf {
 
@@ -59,6 +65,12 @@ public:
   // not in an archive file, it is the empty string. We use this
   // string for creating error messages.
   StringRef ArchiveName;
+
+  // If this file is in an archive, the member contains the offset of
+  // the file in the archive. Otherwise, it's just zero. We store this
+  // field so that we can pass it to lib/LTO in order to disambiguate
+  // between objects.
+  uint64_t OffsetInArchive;
 
   // If this is an architecture-specific file, the following members
   // have ELF type (i.e. ELF{32,64}{LE,BE}) and target machine type.
@@ -145,10 +157,13 @@ public:
   InputSectionBase<ELFT> *getSection(const Elf_Sym &Sym) const;
 
   SymbolBody &getSymbolBody(uint32_t SymbolIndex) const {
+    if (SymbolIndex >= SymbolBodies.size())
+      fatal(getFilename(this) + ": invalid symbol index");
     return *SymbolBodies[SymbolIndex];
   }
 
-  template <typename RelT> SymbolBody &getRelocTargetSym(const RelT &Rel) const {
+  template <typename RelT>
+  SymbolBody &getRelocTargetSym(const RelT &Rel) const {
     uint32_t SymIndex = Rel.getSymbol(Config->Mips64EL);
     return getSymbolBody(SymIndex);
   }
@@ -171,6 +186,7 @@ public:
 private:
   void initializeSections(llvm::DenseSet<StringRef> &ComdatGroups);
   void initializeSymbols();
+  void initializeReverseDependencies();
   InputSectionBase<ELFT> *getRelocTarget(const Elf_Shdr &Sec);
   InputSectionBase<ELFT> *createInputSection(const Elf_Shdr &Sec);
 
@@ -230,10 +246,11 @@ public:
   static bool classof(const InputFile *F) { return F->kind() == ArchiveKind; }
   template <class ELFT> void parse();
 
-  // Returns a memory buffer for a given symbol. An empty memory buffer
+  // Returns a memory buffer for a given symbol and the offset in the archive
+  // for the member. An empty memory buffer and an offset of zero
   // is returned if we have already returned the same memory buffer.
   // (So that we don't instantiate same members more than once.)
-  MemoryBufferRef getMember(const Archive::Symbol *Sym);
+  std::pair<MemoryBufferRef, uint64_t> getMember(const Archive::Symbol *Sym);
 
 private:
   std::unique_ptr<Archive> File;
@@ -244,20 +261,14 @@ class BitcodeFile : public InputFile {
 public:
   explicit BitcodeFile(MemoryBufferRef M);
   static bool classof(const InputFile *F) { return F->kind() == BitcodeKind; }
-  template <class ELFT>
-  void parse(llvm::DenseSet<StringRef> &ComdatGroups);
+  template <class ELFT> void parse(llvm::DenseSet<StringRef> &ComdatGroups);
   ArrayRef<Symbol *> getSymbols() { return Symbols; }
-  static bool shouldSkip(uint32_t Flags);
-  std::unique_ptr<llvm::object::IRObjectFile> Obj;
+  std::unique_ptr<llvm::lto::InputFile> Obj;
 
 private:
   std::vector<Symbol *> Symbols;
   llvm::BumpPtrAllocator Alloc;
   llvm::StringSaver Saver{Alloc};
-  template <class ELFT>
-  Symbol *createSymbol(const llvm::DenseSet<const llvm::Comdat *> &KeptComdats,
-                       const llvm::object::IRObjectFile &Obj,
-                       const llvm::object::BasicSymbolRef &Sym);
 };
 
 // .so file.
@@ -311,16 +322,15 @@ public:
 class BinaryFile : public InputFile {
 public:
   explicit BinaryFile(MemoryBufferRef M) : InputFile(BinaryKind, M) {}
-
   static bool classof(const InputFile *F) { return F->kind() == BinaryKind; }
-
   template <class ELFT> InputFile *createELF();
 
 private:
   std::vector<uint8_t> ELFData;
 };
 
-InputFile *createObjectFile(MemoryBufferRef MB, StringRef ArchiveName = "");
+InputFile *createObjectFile(MemoryBufferRef MB, StringRef ArchiveName = "",
+                            uint64_t OffsetInArchive = 0);
 InputFile *createSharedFile(MemoryBufferRef MB);
 
 } // namespace elf

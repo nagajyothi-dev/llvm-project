@@ -97,8 +97,7 @@ class CGDebugInfo {
   /// List of interfaces we want to keep even if orphaned.
   std::vector<void *> RetainedTypes;
 
-  /// Cache of forward declared types to RAUW at the end of
-  /// compilation.
+  /// Cache of forward declared types to RAUW at the end of compilation.
   std::vector<std::pair<const TagType *, llvm::TrackingMDRef>> ReplaceMap;
 
   /// Cache of replaceable forward declarations (functions and
@@ -236,9 +235,19 @@ class CGDebugInfo {
 
   llvm::DIType *createFieldType(StringRef name, QualType type,
                                 SourceLocation loc, AccessSpecifier AS,
+                                uint64_t offsetInBits,
+                                uint32_t AlignInBits,
+                                llvm::DIFile *tunit, llvm::DIScope *scope,
+                                const RecordDecl *RD = nullptr);
+
+  llvm::DIType *createFieldType(StringRef name, QualType type,
+                                SourceLocation loc, AccessSpecifier AS,
                                 uint64_t offsetInBits, llvm::DIFile *tunit,
                                 llvm::DIScope *scope,
-                                const RecordDecl *RD = nullptr);
+                                const RecordDecl *RD = nullptr) {
+    return createFieldType(name, type, loc, AS, offsetInBits, 0, tunit, scope,
+                           RD);
+  }
 
   /// Create new bit field member.
   llvm::DIType *createBitFieldType(const FieldDecl *BitFieldDecl,

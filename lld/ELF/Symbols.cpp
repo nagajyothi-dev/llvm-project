@@ -15,6 +15,7 @@
 #include "Target.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Path.h"
 
 using namespace llvm;
 using namespace llvm::object;
@@ -59,8 +60,12 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
       Addend = 0;
     }
     uintX_t VA = (SC->OutSec ? SC->OutSec->getVA() : 0) + SC->getOffset(Offset);
-    if (D.isTls() && !Config->Relocatable)
+    if (D.isTls() && !Config->Relocatable) {
+      if (!Out<ELFT>::TlsPhdr)
+        fatal(getFilename(D.File) +
+              " has a STT_TLS symbol but doesn't have a PT_TLS section");
       return VA - Out<ELFT>::TlsPhdr->p_vaddr;
+    }
     return VA;
   }
   case SymbolBody::DefinedCommonKind:
@@ -190,6 +195,13 @@ Defined::Defined(Kind K, StringRef Name, uint8_t StOther, uint8_t Type)
 Defined::Defined(Kind K, uint32_t NameOffset, uint8_t StOther, uint8_t Type)
     : SymbolBody(K, NameOffset, StOther, Type) {}
 
+template <class ELFT> bool DefinedRegular<ELFT>::isMipsPIC() const {
+  if (!Section || !isFunc())
+    return false;
+  return (this->StOther & STO_MIPS_MIPS16) == STO_MIPS_PIC ||
+         (Section->getFile()->getObj().getHeader()->e_flags & EF_MIPS_PIC);
+}
+
 Undefined::Undefined(StringRef Name, uint8_t StOther, uint8_t Type,
                      InputFile *File)
     : SymbolBody(SymbolBody::UndefinedKind, Name, StOther, Type) {
@@ -233,13 +245,13 @@ LazyObject::LazyObject(StringRef Name, LazyObjectFile &File, uint8_t Type)
 }
 
 InputFile *LazyArchive::fetch() {
-  MemoryBufferRef MBRef = file()->getMember(&Sym);
+  std::pair<MemoryBufferRef, uint64_t> MBInfo = file()->getMember(&Sym);
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
-  if (MBRef.getBuffer().empty())
+  if (MBInfo.first.getBuffer().empty())
     return nullptr;
-  return createObjectFile(MBRef, file()->getName());
+  return createObjectFile(MBInfo.first, file()->getName(), MBInfo.second);
 }
 
 InputFile *LazyObject::fetch() {
@@ -314,6 +326,11 @@ template uint32_t SymbolBody::template getSize<ELF32LE>() const;
 template uint32_t SymbolBody::template getSize<ELF32BE>() const;
 template uint64_t SymbolBody::template getSize<ELF64LE>() const;
 template uint64_t SymbolBody::template getSize<ELF64BE>() const;
+
+template class elf::DefinedRegular<ELF32LE>;
+template class elf::DefinedRegular<ELF32BE>;
+template class elf::DefinedRegular<ELF64LE>;
+template class elf::DefinedRegular<ELF64BE>;
 
 template class elf::DefinedSynthetic<ELF32LE>;
 template class elf::DefinedSynthetic<ELF32BE>;

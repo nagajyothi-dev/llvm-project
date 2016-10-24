@@ -33,12 +33,17 @@ template <class ELFT> class OutputSectionBase;
 template <class ELFT> class OutputSectionFactory;
 class InputSectionData;
 
+// This represents an expression in the linker script.
+// ScriptParser::readExpr reads an expression and returns an Expr.
+// Later, we evaluate the expression by calling the function
+// with the value of special context variable ".".
 typedef std::function<uint64_t(uint64_t)> Expr;
 
 // Parses a linker script. Calling this function updates
 // Config and ScriptConfig.
 void readLinkerScript(MemoryBufferRef MB);
 
+// Parses a version script.
 void readVersionScript(MemoryBufferRef MB);
 
 // This enum is used to implement linker script SECTIONS command.
@@ -57,6 +62,7 @@ struct BaseCommand {
   int Kind;
 };
 
+// This represents ". = <expr>" or "<symbol> = <expr>".
 struct SymbolAssignment : BaseCommand {
   SymbolAssignment(StringRef Name, Expr E, bool IsAbsolute)
       : BaseCommand(AssignmentKind), Name(Name), Expression(E),
@@ -77,10 +83,9 @@ struct SymbolAssignment : BaseCommand {
 };
 
 // Linker scripts allow additional constraints to be put on ouput sections.
-// An output section will only be created if all of its input sections are
-// read-only
-// or all of its input sections are read-write by using the keyword ONLY_IF_RO
-// and ONLY_IF_RW respectively.
+// If an output section is marked as ONLY_IF_RO, the section is created
+// only if its input sections are read-only. Likewise, an output section
+// with ONLY_IF_RW is created if all input sections are RW.
 enum class ConstraintKind { NoConstraint, ReadOnly, ReadWrite };
 
 struct OutputSectionCommand : BaseCommand {
@@ -90,7 +95,7 @@ struct OutputSectionCommand : BaseCommand {
   StringRef Name;
   Expr AddrExpr;
   Expr AlignExpr;
-  Expr LmaExpr;
+  Expr LMAExpr;
   Expr SubalignExpr;
   std::vector<std::unique_ptr<BaseCommand>> Commands;
   std::vector<StringRef> Phdrs;
@@ -133,12 +138,14 @@ struct InputSectionDescription : BaseCommand {
   std::vector<InputSectionData *> Sections;
 };
 
+// Represents an ASSERT().
 struct AssertCommand : BaseCommand {
   AssertCommand(Expr E) : BaseCommand(AssertKind), Expression(E) {}
   static bool classof(const BaseCommand *C);
   Expr Expression;
 };
 
+// Represents BYTE(), SHORT(), LONG(), or QUAD().
 struct BytesDataCommand : BaseCommand {
   BytesDataCommand(uint64_t Data, unsigned Size)
       : BaseCommand(BytesDataKind), Data(Data), Size(Size) {}
@@ -165,6 +172,7 @@ public:
   virtual uint64_t getOutputSectionAddress(StringRef Name) = 0;
   virtual uint64_t getOutputSectionSize(StringRef Name) = 0;
   virtual uint64_t getOutputSectionAlign(StringRef Name) = 0;
+  virtual uint64_t getOutputSectionLMA(StringRef Name) = 0;
   virtual uint64_t getHeaderSize() = 0;
   virtual uint64_t getSymbolValue(StringRef S) = 0;
   virtual bool isDefined(StringRef S) = 0;
@@ -184,7 +192,7 @@ struct ScriptConfiguration {
 
   // List of section patterns specified with KEEP commands. They will
   // be kept even if they are unused and --gc-sections is specified.
-  std::vector<llvm::Regex *> KeptSections;
+  std::vector<InputSectionDescription *> KeptSections;
 };
 
 extern ScriptConfiguration *ScriptConfig;
@@ -205,14 +213,15 @@ public:
 
   ArrayRef<uint8_t> getFiller(StringRef Name);
   void writeDataBytes(StringRef Name, uint8_t *Buf);
-  Expr getLma(StringRef Name);
+  bool hasLMA(StringRef Name);
   bool shouldKeep(InputSectionBase<ELFT> *S);
   void assignOffsets(OutputSectionCommand *Cmd);
-  void assignAddresses();
+  void assignAddresses(std::vector<PhdrEntry<ELFT>> &Phdrs);
   bool hasPhdrsCommands();
   uint64_t getOutputSectionAddress(StringRef Name) override;
   uint64_t getOutputSectionSize(StringRef Name) override;
   uint64_t getOutputSectionAlign(StringRef Name) override;
+  uint64_t getOutputSectionLMA(StringRef Name) override;
   uint64_t getHeaderSize() override;
   uint64_t getSymbolValue(StringRef S) override;
   bool isDefined(StringRef S) override;
@@ -238,6 +247,7 @@ private:
   size_t getPhdrIndex(StringRef PhdrName);
 
   uintX_t Dot;
+  uintX_t LMAOffset = 0;
   OutputSectionBase<ELFT> *CurOutSec = nullptr;
   uintX_t ThreadBssOffset = 0;
   void switchTo(OutputSectionBase<ELFT> *Sec);

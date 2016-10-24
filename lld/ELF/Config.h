@@ -45,6 +45,9 @@ enum class UnresolvedPolicy { NoUndef, ReportError, Warn, Ignore };
 // For --sort-section and linkerscript sorting rules.
 enum class SortSectionPolicy { Default, None, Alignment, Name, Priority };
 
+// For --target2
+enum class Target2Policy { Abs, Rel, GotRel };
+
 struct SymbolVersion {
   llvm::StringRef Name;
   bool IsExternCpp;
@@ -66,7 +69,6 @@ struct VersionDefinition {
 // and such fields have the same name as the corresponding options.
 // Most fields are initialized by the driver.
 struct Configuration {
-  Symbol *EntrySym = nullptr;
   InputFile *FirstElf = nullptr;
   llvm::StringMap<uint64_t> SectionStartMap;
   llvm::StringRef DynamicLinker;
@@ -89,7 +91,6 @@ struct Configuration {
   std::vector<uint8_t> BuildIdVector;
   bool AllowMultipleDefinition;
   bool AsNeeded = false;
-  bool Binary = false;
   bool Bsymbolic;
   bool BsymbolicFunctions;
   bool Demangle = true;
@@ -99,6 +100,7 @@ struct Configuration {
   bool ExportDynamic;
   bool FatalWarnings;
   bool GcSections;
+  bool GdbIndex;
   bool GnuHash = false;
   bool ICF;
   bool Mips64EL = false;
@@ -121,25 +123,29 @@ struct Configuration {
   bool Verbose;
   bool WarnCommon;
   bool ZCombreloc;
-  bool ZExecStack;
+  bool ZExecstack;
   bool ZNodelete;
   bool ZNow;
   bool ZOrigin;
   bool ZRelro;
+  bool ZWxneeded;
   DiscardPolicy Discard;
   SortSectionPolicy SortSection;
   StripPolicy Strip = StripPolicy::None;
   UnresolvedPolicy UnresolvedSymbols;
+  Target2Policy Target2 = Target2Policy::GotRel;
   BuildIdKind BuildId = BuildIdKind::None;
   ELFKind EKind = ELFNoneKind;
   uint16_t DefaultSymbolVersion = llvm::ELF::VER_NDX_GLOBAL;
   uint16_t EMachine = llvm::ELF::EM_NONE;
   uint64_t EntryAddr = 0;
   uint64_t ImageBase;
-  uint64_t ZStackSize = -1;
-  unsigned LtoJobs;
+  uint64_t MaxPageSize;
+  uint64_t ZStackSize;
+  unsigned LtoPartitions;
   unsigned LtoO;
   unsigned Optimize;
+  unsigned ThinLtoJobs;
 };
 
 // The only instance of Configuration struct.

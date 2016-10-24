@@ -147,6 +147,14 @@ bool ConstantRange::getEquivalentICmp(CmpInst::Predicate &Pred,
     Pred = isEmptySet() ? CmpInst::ICMP_ULT : CmpInst::ICMP_UGE;
     RHS = APInt(getBitWidth(), 0);
     Success = true;
+  } else if (auto *OnlyElt = getSingleElement()) {
+    Pred = CmpInst::ICMP_EQ;
+    RHS = *OnlyElt;
+    Success = true;
+  } else if (auto *OnlyMissingElt = getSingleMissingElement()) {
+    Pred = CmpInst::ICMP_NE;
+    RHS = *OnlyMissingElt;
+    Success = true;
   } else if (getLower().isMinSignedValue() || getLower().isMinValue()) {
     Pred =
         getLower().isMinSignedValue() ? CmpInst::ICMP_SLT : CmpInst::ICMP_ULT;
@@ -664,6 +672,19 @@ ConstantRange::add(const ConstantRange &Other) const {
     return ConstantRange(getBitWidth(), /*isFullSet=*/true);
 
   return X;
+}
+
+ConstantRange ConstantRange::addWithNoSignedWrap(const APInt &Other) const {
+  // Calculate the subset of this range such that "X + Other" is
+  // guaranteed not to wrap (overflow) for all X in this subset.
+  // makeGuaranteedNoWrapRegion will produce an exact NSW range since we are
+  // passing a single element range.
+  auto NSWRange = ConstantRange::makeGuaranteedNoWrapRegion(BinaryOperator::Add,
+                                      ConstantRange(Other),
+                                      OverflowingBinaryOperator::NoSignedWrap);
+  auto NSWConstrainedRange = intersectWith(NSWRange);
+
+  return NSWConstrainedRange.add(ConstantRange(Other));
 }
 
 ConstantRange

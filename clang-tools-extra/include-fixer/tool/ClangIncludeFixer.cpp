@@ -90,8 +90,7 @@ enum DatabaseFormatTy {
 cl::opt<DatabaseFormatTy> DatabaseFormat(
     "db", cl::desc("Specify input format"),
     cl::values(clEnumVal(fixed, "Hard-coded mapping"),
-               clEnumVal(yaml, "Yaml database created by find-all-symbols"),
-               clEnumValEnd),
+               clEnumVal(yaml, "Yaml database created by find-all-symbols")),
     cl::init(yaml), cl::cat(IncludeFixerCategory));
 
 cl::opt<std::string> Input("input",
@@ -417,7 +416,7 @@ int includeFixerMain(int argc, const char **argv) {
 
   // Write replacements to disk.
   Rewriter Rewrites(SM, LangOptions());
-  for (const auto Replacement : FixerReplacements) {
+  for (const auto &Replacement : FixerReplacements) {
     if (!tooling::applyAllReplacements(Replacement, Rewrites)) {
       llvm::errs() << "Failed to apply replacements.\n";
       return 1;

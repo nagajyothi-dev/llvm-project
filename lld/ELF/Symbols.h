@@ -214,6 +214,9 @@ public:
     this->File = F;
   }
 
+  // Return true if the symbol is a PIC function.
+  bool isMipsPIC() const;
+
   static bool classof(const SymbolBody *S) {
     return S->kind() == SymbolBody::DefinedRegularKind;
   }
@@ -410,9 +413,6 @@ struct Symbol {
   // observed non-DSO symbols.
   unsigned Visibility : 2;
 
-  // True if the symbol has unnamed_addr.
-  unsigned HasUnnamedAddr : 1;
-
   // True if the symbol was used for linking and thus need to be added to the
   // output file's symbol table. This is true for all symbols except for
   // unreferenced DSO symbols and bitcode symbols that are unreferenced except
@@ -439,8 +439,7 @@ struct Symbol {
   llvm::AlignedCharArrayUnion<
       DefinedCommon, DefinedRegular<llvm::object::ELF64LE>,
       DefinedSynthetic<llvm::object::ELF64LE>, Undefined,
-      SharedSymbol<llvm::object::ELF64LE>, LazyArchive, LazyObject>
-      Body;
+      SharedSymbol<llvm::object::ELF64LE>, LazyArchive, LazyObject> Body;
 
   SymbolBody *body() { return reinterpret_cast<SymbolBody *>(Body.buffer); }
   const SymbolBody *body() const { return const_cast<Symbol *>(this)->body(); }
@@ -451,8 +450,7 @@ void printTraceSymbol(Symbol *Sym);
 template <typename T, typename... ArgT>
 void replaceBody(Symbol *S, ArgT &&... Arg) {
   static_assert(sizeof(T) <= sizeof(S->Body), "Body too small");
-  static_assert(llvm::AlignOf<T>::Alignment <=
-                    llvm::AlignOf<decltype(S->Body)>::Alignment,
+  static_assert(alignof(T) <= alignof(decltype(S->Body)),
                 "Body not aligned enough");
   assert(static_cast<SymbolBody *>(static_cast<T *>(nullptr)) == nullptr &&
          "Not a SymbolBody");

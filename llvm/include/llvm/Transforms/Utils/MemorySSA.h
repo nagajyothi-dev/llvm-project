@@ -662,11 +662,7 @@ public:
   // unique_ptr<MemorySSA> to avoid build breakage on MSVC.
   struct Result {
     Result(std::unique_ptr<MemorySSA> &&MSSA) : MSSA(std::move(MSSA)) {}
-    Result(Result &&R) : MSSA(std::move(R.MSSA)) {}
     MemorySSA &getMSSA() { return *MSSA.get(); }
-
-    Result(const Result &) = delete;
-    void operator=(const Result &) = delete;
 
     std::unique_ptr<MemorySSA> MSSA;
   };
@@ -973,6 +969,10 @@ inline upward_defs_iterator upward_defs_begin(const MemoryAccessPair &Pair) {
 }
 
 inline upward_defs_iterator upward_defs_end() { return upward_defs_iterator(); }
+
+// Return true when MD may alias MU, return false otherwise.
+bool defClobbersUseOrDef(MemoryDef *MD, const MemoryUseOrDef *MU,
+                         AliasAnalysis &AA);
 
 } // end namespace llvm
 
