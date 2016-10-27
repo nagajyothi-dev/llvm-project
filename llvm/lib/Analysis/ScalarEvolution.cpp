@@ -121,6 +121,11 @@ static cl::opt<bool>
                   cl::desc("Verify no dangling value in ScalarEvolution's "
                            "ExprValueMap (slow)"));
 
+static cl::opt<unsigned> MulOpsInlineThreshold(
+    "scev-mulops-inline-threshold", cl::Hidden,
+    cl::desc("Threshold for inlining multiplication operands into a SCEV"),
+    cl::init(1000));
+
 //===----------------------------------------------------------------------===//
 //                           SCEV class definitions
 //===----------------------------------------------------------------------===//
@@ -2516,6 +2521,8 @@ const SCEV *ScalarEvolution::getMulExpr(SmallVectorImpl<const SCEV *> &Ops,
   if (Idx < Ops.size()) {
     bool DeletedMul = false;
     while (const SCEVMulExpr *Mul = dyn_cast<SCEVMulExpr>(Ops[Idx])) {
+      if (Ops.size() > MulOpsInlineThreshold)
+        break;
       // If we have an mul, expand the mul operands onto the end of the operands
       // list.
       Ops.erase(Ops.begin()+Idx);
@@ -5417,6 +5424,10 @@ const SCEV *ScalarEvolution::getMaxBackedgeTakenCount(const Loop *L) {
   return getBackedgeTakenInfo(L).getMax(this);
 }
 
+bool ScalarEvolution::isBackedgeTakenCountMaxOrZero(const Loop *L) {
+  return getBackedgeTakenInfo(L).isMaxOrZero(this);
+}
+
 /// Push PHI nodes in the header of the given loop onto the given Worklist.
 static void
 PushLoopPHIs(const Loop *L, SmallVectorImpl<Instruction *> &Worklist) {
@@ -5649,6 +5660,13 @@ ScalarEvolution::BackedgeTakenInfo::getMax(ScalarEvolution *SE) const {
   return getMax();
 }
 
+bool ScalarEvolution::BackedgeTakenInfo::isMaxOrZero(ScalarEvolution *SE) const {
+  auto PredicateNotAlwaysTrue = [](const ExitNotTakenInfo &ENT) {
+    return !ENT.hasAlwaysTruePredicate();
+  };
+  return MaxOrZero && !any_of(ExitNotTaken, PredicateNotAlwaysTrue);
+}
+
 bool ScalarEvolution::BackedgeTakenInfo::hasOperand(const SCEV *S,
                                                     ScalarEvolution *SE) const {
   if (getMax() && getMax() != SE->getCouldNotCompute() &&
@@ -5668,8 +5686,8 @@ bool ScalarEvolution::BackedgeTakenInfo::hasOperand(const SCEV *S,
 ScalarEvolution::BackedgeTakenInfo::BackedgeTakenInfo(
     SmallVectorImpl<ScalarEvolution::BackedgeTakenInfo::EdgeExitInfo>
         &&ExitCounts,
-    bool Complete, const SCEV *MaxCount)
-    : MaxAndComplete(MaxCount, Complete) {
+    bool Complete, const SCEV *MaxCount, bool MaxOrZero)
+    : MaxAndComplete(MaxCount, Complete), MaxOrZero(MaxOrZero) {
   typedef ScalarEvolution::BackedgeTakenInfo::EdgeExitInfo EdgeExitInfo;
   ExitNotTaken.reserve(ExitCounts.size());
   std::transform(
@@ -5707,6 +5725,7 @@ ScalarEvolution::computeBackedgeTakenCount(const Loop *L,
   BasicBlock *Latch = L->getLoopLatch(); // may be NULL.
   const SCEV *MustExitMaxBECount = nullptr;
   const SCEV *MayExitMaxBECount = nullptr;
+  bool MustExitMaxOrZero = false;
 
   // Compute the ExitLimit for each loop exit. Use this to populate ExitCounts
   // and compute maxBECount.
@@ -5739,9 +5758,10 @@ ScalarEvolution::computeBackedgeTakenCount(const Loop *L,
     // computable EL.MaxNotTaken.
     if (EL.MaxNotTaken != getCouldNotCompute() && Latch &&
         DT.dominates(ExitBB, Latch)) {
-      if (!MustExitMaxBECount)
+      if (!MustExitMaxBECount) {
         MustExitMaxBECount = EL.MaxNotTaken;
-      else {
+        MustExitMaxOrZero = EL.MaxOrZero;
+      } else {
         MustExitMaxBECount =
             getUMinFromMismatchedTypes(MustExitMaxBECount, EL.MaxNotTaken);
       }
@@ -5756,8 +5776,11 @@ ScalarEvolution::computeBackedgeTakenCount(const Loop *L,
   }
   const SCEV *MaxBECount = MustExitMaxBECount ? MustExitMaxBECount :
     (MayExitMaxBECount ? MayExitMaxBECount : getCouldNotCompute());
+  // The loop backedge will be taken the maximum or zero times if there's
+  // a single exit that must be taken the maximum or zero times.
+  bool MaxOrZero = (MustExitMaxOrZero && ExitingBlocks.size() == 1);
   return BackedgeTakenInfo(std::move(ExitCounts), CouldComputeBECount,
-                           MaxBECount);
+                           MaxBECount, MaxOrZero);
 }
 
 ScalarEvolution::ExitLimit
@@ -5894,7 +5917,8 @@ ScalarEvolution::computeExitLimitFromCond(const Loop *L,
           !isa<SCEVCouldNotCompute>(BECount))
         MaxBECount = BECount;
 
-      return ExitLimit(BECount, MaxBECount, {&EL0.Predicates, &EL1.Predicates});
+      return ExitLimit(BECount, MaxBECount, false,
+                       {&EL0.Predicates, &EL1.Predicates});
     }
     if (BO->getOpcode() == Instruction::Or) {
       // Recurse on the operands of the or.
@@ -5933,7 +5957,8 @@ ScalarEvolution::computeExitLimitFromCond(const Loop *L,
           BECount = EL0.ExactNotTaken;
       }
 
-      return ExitLimit(BECount, MaxBECount, {&EL0.Predicates, &EL1.Predicates});
+      return ExitLimit(BECount, MaxBECount, false,
+                       {&EL0.Predicates, &EL1.Predicates});
     }
   }
 
@@ -6318,7 +6343,7 @@ ScalarEvolution::ExitLimit ScalarEvolution::computeShiftCompareExitLimit(
     unsigned BitWidth = getTypeSizeInBits(RHS->getType());
     const SCEV *UpperBound =
         getConstant(getEffectiveSCEVType(RHS->getType()), BitWidth);
-    return ExitLimit(getCouldNotCompute(), UpperBound);
+    return ExitLimit(getCouldNotCompute(), UpperBound, false);
   }
 
   return getCouldNotCompute();
@@ -7114,7 +7139,8 @@ ScalarEvolution::howFarToZero(const SCEV *V, const Loop *L, bool ControlsExit,
         // should not accept a root of 2.
         const SCEV *Val = AddRec->evaluateAtIteration(R1, *this);
         if (Val->isZero())
-          return ExitLimit(R1, R1, Predicates); // We found a quadratic root!
+          // We found a quadratic root!
+          return ExitLimit(R1, R1, false, Predicates);
       }
     }
     return getCouldNotCompute();
@@ -7171,7 +7197,7 @@ ScalarEvolution::howFarToZero(const SCEV *V, const Loop *L, bool ControlsExit,
     else
       MaxBECount = getConstant(CountDown ? CR.getUnsignedMax()
                                          : -CR.getUnsignedMin());
-    return ExitLimit(Distance, MaxBECount, Predicates);
+    return ExitLimit(Distance, MaxBECount, false, Predicates);
   }
 
   // As a special case, handle the instance where Step is a positive power of
@@ -7226,7 +7252,7 @@ ScalarEvolution::howFarToZero(const SCEV *V, const Loop *L, bool ControlsExit,
 
       const SCEV *Limit =
           getZeroExtendExpr(getTruncateExpr(ModuloResult, NarrowTy), WideTy);
-      return ExitLimit(Limit, Limit, Predicates);
+      return ExitLimit(Limit, Limit, false, Predicates);
     }
   }
 
@@ -7239,14 +7265,14 @@ ScalarEvolution::howFarToZero(const SCEV *V, const Loop *L, bool ControlsExit,
       loopHasNoAbnormalExits(AddRec->getLoop())) {
     const SCEV *Exact =
         getUDivExpr(Distance, CountDown ? getNegativeSCEV(Step) : Step);
-    return ExitLimit(Exact, Exact, Predicates);
+    return ExitLimit(Exact, Exact, false, Predicates);
   }
 
   // Then, try to solve the above equation provided that Start is constant.
   if (const SCEVConstant *StartC = dyn_cast<SCEVConstant>(Start)) {
     const SCEV *E = SolveLinEquationWithOverflow(
         StepC->getValue()->getValue(), -StartC->getValue()->getValue(), *this);
-    return ExitLimit(E, E, Predicates);
+    return ExitLimit(E, E, false, Predicates);
   }
   return getCouldNotCompute();
 }
@@ -8688,14 +8714,16 @@ ScalarEvolution::howManyLessThans(const SCEV *LHS, const SCEV *RHS,
   }
 
   const SCEV *MaxBECount;
+  bool MaxOrZero = false;
   if (isa<SCEVConstant>(BECount))
     MaxBECount = BECount;
-  else if (isa<SCEVConstant>(BECountIfBackedgeTaken))
+  else if (isa<SCEVConstant>(BECountIfBackedgeTaken)) {
     // If we know exactly how many times the backedge will be taken if it's
     // taken at least once, then the backedge count will either be that or
     // zero.
     MaxBECount = BECountIfBackedgeTaken;
-  else {
+    MaxOrZero = true;
+  } else {
     // Calculate the maximum backedge count based on the range of values
     // permitted by Start, End, and Stride.
     APInt MinStart = IsSigned ? getSignedRange(Start).getSignedMin()
@@ -8732,7 +8760,7 @@ ScalarEvolution::howManyLessThans(const SCEV *LHS, const SCEV *RHS,
   if (isa<SCEVCouldNotCompute>(MaxBECount))
     MaxBECount = BECount;
 
-  return ExitLimit(BECount, MaxBECount, Predicates);
+  return ExitLimit(BECount, MaxBECount, MaxOrZero, Predicates);
 }
 
 ScalarEvolution::ExitLimit
@@ -8809,7 +8837,7 @@ ScalarEvolution::howManyGreaterThans(const SCEV *LHS, const SCEV *RHS,
   if (isa<SCEVCouldNotCompute>(MaxBECount))
     MaxBECount = BECount;
 
-  return ExitLimit(BECount, MaxBECount, Predicates);
+  return ExitLimit(BECount, MaxBECount, false, Predicates);
 }
 
 const SCEV *SCEVAddRecExpr::getNumIterationsInRange(const ConstantRange &Range,
@@ -9591,6 +9619,8 @@ static void PrintLoopInfo(raw_ostream &OS, ScalarEvolution *SE,
 
   if (!isa<SCEVCouldNotCompute>(SE->getMaxBackedgeTakenCount(L))) {
     OS << "max backedge-taken count is " << *SE->getMaxBackedgeTakenCount(L);
+    if (SE->isBackedgeTakenCountMaxOrZero(L))
+      OS << ", actual taken count either this or zero.";
   } else {
     OS << "Unpredictable max backedge-taken count. ";
   }

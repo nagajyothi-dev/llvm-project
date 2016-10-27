@@ -202,8 +202,15 @@ void GotSection<ELFT>::addMipsEntry(SymbolBody &Sym, uintX_t Addend,
     // Ignore addends for preemptible symbols. They got single GOT entry anyway.
     AddEntry(Sym, 0, MipsGlobal);
     Sym.IsInGlobalMipsGot = true;
-  } else
+  } else if (Expr == R_MIPS_GOT_OFF32) {
+    AddEntry(Sym, Addend, MipsLocal32);
+    Sym.Is32BitMipsGot = true;
+  } else {
+    // Hold local GOT entries accessed via a 16-bit index separately.
+    // That allows to write them in the beginning of the GOT and keep
+    // their indexes as less as possible to escape relocation's overflow.
     AddEntry(Sym, Addend, MipsLocal);
+  }
 }
 
 template <class ELFT> bool GotSection<ELFT>::addDynTlsEntry(SymbolBody &Sym) {
@@ -244,25 +251,31 @@ GotSection<ELFT>::getMipsLocalPageOffset(uintX_t EntryValue) {
 template <class ELFT>
 typename GotSection<ELFT>::uintX_t
 GotSection<ELFT>::getMipsGotOffset(const SymbolBody &B, uintX_t Addend) const {
-  uintX_t Off = MipsPageEntries;
+  // Calculate offset of the GOT entries block: TLS, global, local.
+  uintX_t GotBlockOff;
   if (B.isTls())
-    Off += MipsLocal.size() + MipsGlobal.size() + B.GotIndex;
+    GotBlockOff = getMipsTlsOffset();
   else if (B.IsInGlobalMipsGot)
-    Off += MipsLocal.size() + B.GotIndex;
-  else if (B.isInGot())
-    Off += B.GotIndex;
+    GotBlockOff = getMipsLocalEntriesNum() * sizeof(uintX_t);
+  else if (B.Is32BitMipsGot)
+    GotBlockOff = (MipsPageEntries + MipsLocal.size()) * sizeof(uintX_t);
+  else
+    GotBlockOff = MipsPageEntries * sizeof(uintX_t);
+  // Calculate index of the GOT entry in the block.
+  uintX_t GotIndex;
+  if (B.isInGot())
+    GotIndex = B.GotIndex;
   else {
     auto It = MipsGotMap.find({&B, Addend});
     assert(It != MipsGotMap.end());
-    Off += It->second;
+    GotIndex = It->second;
   }
-  return Off * sizeof(uintX_t) - MipsGPOffset;
+  return GotBlockOff + GotIndex * sizeof(uintX_t) - MipsGPOffset;
 }
 
 template <class ELFT>
 typename GotSection<ELFT>::uintX_t GotSection<ELFT>::getMipsTlsOffset() const {
-  return (MipsPageEntries + MipsLocal.size() + MipsGlobal.size()) *
-         sizeof(uintX_t);
+  return (getMipsLocalEntriesNum() + MipsGlobal.size()) * sizeof(uintX_t);
 }
 
 template <class ELFT>
@@ -284,7 +297,7 @@ const SymbolBody *GotSection<ELFT>::getMipsFirstGlobalEntry() const {
 
 template <class ELFT>
 unsigned GotSection<ELFT>::getMipsLocalEntriesNum() const {
-  return MipsPageEntries + MipsLocal.size();
+  return MipsPageEntries + MipsLocal.size() + MipsLocal32.size();
 }
 
 template <class ELFT> void GotSection<ELFT>::finalize() {
@@ -301,7 +314,7 @@ template <class ELFT> void GotSection<ELFT>::finalize() {
       // in the GOT entry is calculated as (value + 0x8000) & ~0xffff.
       MipsPageEntries += (OutSec->getSize() + 0x8000 + 0xfffe) / 0xffff;
     }
-    EntriesNum += MipsPageEntries + MipsLocal.size() + MipsGlobal.size();
+    EntriesNum += getMipsLocalEntriesNum() + MipsGlobal.size();
   }
   this->Header.sh_size = EntriesNum * sizeof(uintX_t);
 }
@@ -343,6 +356,7 @@ template <class ELFT> void GotSection<ELFT>::writeMipsGot(uint8_t *Buf) {
     writeUint<ELFT>(Entry, VA);
   };
   std::for_each(std::begin(MipsLocal), std::end(MipsLocal), AddEntry);
+  std::for_each(std::begin(MipsLocal32), std::end(MipsLocal32), AddEntry);
   std::for_each(std::begin(MipsGlobal), std::end(MipsGlobal), AddEntry);
   // Initialize TLS-related GOT entries. If the entry has a corresponding
   // dynamic relocations, leave it initialized by zero. Write down adjusted
@@ -919,9 +933,21 @@ OutputSection<ELFT>::OutputSection(StringRef Name, uint32_t Type, uintX_t Flags)
 
 template <class ELFT> void OutputSection<ELFT>::finalize() {
   uint32_t Type = this->Header.sh_type;
-  // SHF_LINK_ORDER only has meaning in relocatable objects
-  if (!Config->Relocatable)
-    this->Header.sh_flags &= ~SHF_LINK_ORDER;
+  if (this->Header.sh_flags & SHF_LINK_ORDER) {
+    if (!Config->Relocatable) {
+      // SHF_LINK_ORDER only has meaning in relocatable objects
+      this->Header.sh_flags &= ~SHF_LINK_ORDER;
+    }
+    else if (!this->Sections.empty()) {
+      // When doing a relocatable link we must preserve the link order
+      // dependency of sections with the SHF_LINK_ORDER flag. The dependency
+      // is indicated by the sh_link field. We need to translate the
+      // InputSection sh_link to the OutputSection sh_link, all InputSections
+      // in the OutputSection have the same dependency.
+      if (auto *D = this->Sections.front()->getLinkOrderDep())
+        this->Header.sh_link = D->OutSec->SectionIndex;
+    }
+  }
   if (Type != SHT_RELA && Type != SHT_REL)
     return;
   this->Header.sh_link = Out<ELFT>::SymTab->SectionIndex;
@@ -940,8 +966,8 @@ void OutputSection<ELFT>::addSection(InputSectionBase<ELFT> *C) {
   this->updateAlignment(S->Alignment);
   // Keep sh_entsize value of the input section to be able to perform merging
   // later during a final linking using the generated relocatable object.
-  if (Config->Relocatable && (S->getSectionHdr()->sh_flags & SHF_MERGE))
-    this->Header.sh_entsize = S->getSectionHdr()->sh_entsize;
+  if (Config->Relocatable && (S->Flags & SHF_MERGE))
+    this->Header.sh_entsize = S->Entsize;
 }
 
 // This function is called after we sort input sections
@@ -1278,7 +1304,7 @@ void MergeOutputSection<ELFT>::addSection(InputSectionBase<ELFT> *C) {
   auto *Sec = cast<MergeInputSection<ELFT>>(C);
   Sec->OutSec = this;
   this->updateAlignment(Sec->Alignment);
-  this->Header.sh_entsize = Sec->getSectionHdr()->sh_entsize;
+  this->Header.sh_entsize = Sec->Entsize;
   Sections.push_back(Sec);
 
   auto HashI = Sec->Hashes.begin();
@@ -1539,7 +1565,7 @@ SymbolTableSection<ELFT>::getOutputSection(SymbolBody *Sym) {
     break;
   }
   case SymbolBody::DefinedCommonKind:
-    return CommonInputSection<ELFT>::X->OutSec;
+    return InputSection<ELFT>::CommonInputSection->OutSec;
   case SymbolBody::SharedKind:
     if (cast<SharedSymbol<ELFT>>(Sym)->needsCopy())
       return Out<ELFT>::Bss;
@@ -1870,13 +1896,12 @@ void MipsAbiFlagsOutputSection<ELFT>::addSection(InputSectionBase<ELFT> *C) {
 
 template <class ELFT>
 static typename ELFT::uint getOutFlags(InputSectionBase<ELFT> *S) {
-  return S->getSectionHdr()->sh_flags & ~SHF_GROUP & ~SHF_COMPRESSED;
+  return S->Flags & ~SHF_GROUP & ~SHF_COMPRESSED;
 }
 
 template <class ELFT>
 static SectionKey<ELFT::Is64Bits> createKey(InputSectionBase<ELFT> *C,
                                             StringRef OutsecName) {
-  const typename ELFT::Shdr *H = C->getSectionHdr();
   typedef typename ELFT::uint uintX_t;
   uintX_t Flags = getOutFlags(C);
 
@@ -1888,11 +1913,10 @@ static SectionKey<ELFT::Is64Bits> createKey(InputSectionBase<ELFT> *C,
   // output sections for them to allow merging at final linking stage.
   uintX_t Alignment = 0;
   if (isa<MergeInputSection<ELFT>>(C) ||
-      (Config->Relocatable && (H->sh_flags & SHF_MERGE)))
-    Alignment = std::max(H->sh_addralign, H->sh_entsize);
+      (Config->Relocatable && (C->Flags & SHF_MERGE)))
+    Alignment = std::max<uintX_t>(C->Alignment, C->Entsize);
 
-  uint32_t Type = H->sh_type;
-  return SectionKey<ELFT::Is64Bits>{OutsecName, Type, Flags, Alignment};
+  return SectionKey<ELFT::Is64Bits>{OutsecName, C->Type, Flags, Alignment};
 }
 
 template <class ELFT>
@@ -1914,7 +1938,7 @@ OutputSectionFactory<ELFT>::create(const SectionKey<ELFT::Is64Bits> &Key,
     return {Sec, false};
   }
 
-  uint32_t Type = C->getSectionHdr()->sh_type;
+  uint32_t Type = C->Type;
   switch (C->kind()) {
   case InputSectionBase<ELFT>::Regular:
     Sec = new OutputSection<ELFT>(Key.Name, Type, Flags);

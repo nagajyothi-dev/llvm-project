@@ -2935,7 +2935,7 @@ bool Scop::buildAliasGroups(AliasAnalysis &AA) {
         HasWriteAccess.insert(MA->getBaseAddr());
       MemAccInst Acc(MA->getAccessInstruction());
       if (MA->isRead() && isa<MemTransferInst>(Acc))
-        PtrToAcc[cast<MemTransferInst>(Acc)->getSource()] = MA;
+        PtrToAcc[cast<MemTransferInst>(Acc)->getRawSource()] = MA;
       else
         PtrToAcc[Acc.getPointerOperand()] = MA;
       AST.add(Acc);
@@ -2978,7 +2978,7 @@ bool Scop::buildAliasGroups(AliasAnalysis &AA) {
   }
 
   auto &F = getFunction();
-  MapVector<const Value *, SmallPtrSet<MemoryAccess *, 8>> ReadOnlyPairs;
+  MapVector<const Value *, SmallSetVector<MemoryAccess *, 8>> ReadOnlyPairs;
   SmallPtrSet<const Value *, 4> NonReadOnlyBaseValues;
   for (AliasGroupTy &AG : AliasGroups) {
     NonReadOnlyBaseValues.clear();

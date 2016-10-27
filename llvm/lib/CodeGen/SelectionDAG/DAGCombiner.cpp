@@ -622,7 +622,8 @@ static char isNegatibleForFree(SDValue Op, bool LegalOperations,
                               Depth + 1);
   case ISD::FSUB:
     // We can't turn -(A-B) into B-A when we honor signed zeros.
-    if (!Options->UnsafeFPMath) return 0;
+    if (!Options->UnsafeFPMath && !Op.getNode()->getFlags()->hasNoSignedZeros())
+      return 0;
 
     // fold (fneg (fsub A, B)) -> (fsub B, A)
     return 1;
@@ -685,9 +686,6 @@ static SDValue GetNegatedExpression(SDValue Op, SelectionDAG &DAG,
                                             LegalOperations, Depth+1),
                        Op.getOperand(0), Flags);
   case ISD::FSUB:
-    // We can't turn -(A-B) into B-A when we honor signed zeros.
-    assert(Options.UnsafeFPMath);
-
     // fold (fneg (fsub 0, B)) -> B
     if (ConstantFPSDNode *N0CFP = dyn_cast<ConstantFPSDNode>(Op.getOperand(0)))
       if (N0CFP->isZero())
@@ -834,6 +832,13 @@ static bool isAllOnesConstantOrAllOnesSplatConstant(SDValue N) {
     return Splat->isAllOnesValue() &&
            Splat->getAPIntValue().getBitWidth() == BitWidth;
   return false;
+}
+
+// Determines if a BUILD_VECTOR is composed of all-constants possibly mixed with
+// undef's.
+static bool isAnyConstantBuildVector(const SDNode *N) {
+  return ISD::isBuildVectorOfConstantSDNodes(N) ||
+         ISD::isBuildVectorOfConstantFPSDNodes(N);
 }
 
 SDValue DAGCombiner::ReassociateOps(unsigned Opc, const SDLoc &DL, SDValue N0,
@@ -1916,17 +1921,33 @@ SDValue DAGCombiner::visitSUB(SDNode *N) {
                        DAG.getConstant(-N1C->getAPIntValue(), DL, VT));
   }
 
-  // Right-shifting everything out but the sign bit followed by negation is the
-  // same as flipping arithmetic/logical shift type without the negation:
-  // -(X >>u 31) -> (X >>s 31)
-  // -(X >>s 31) -> (X >>u 31)
-  if (isNullConstantOrNullSplatConstant(N0) &&
-      (N1->getOpcode() == ISD::SRA || N1->getOpcode() == ISD::SRL)) {
-    ConstantSDNode *ShiftAmt = isConstOrConstSplat(N1.getOperand(1));
-    if (ShiftAmt && ShiftAmt->getZExtValue() == VT.getScalarSizeInBits() - 1) {
-      auto NewOpc = N1->getOpcode() == ISD::SRA ? ISD::SRL :ISD::SRA;
-      if (!LegalOperations || TLI.isOperationLegal(NewOpc, VT))
-        return DAG.getNode(NewOpc, DL, VT, N1.getOperand(0), N1.getOperand(1));
+  if (isNullConstantOrNullSplatConstant(N0)) {
+    unsigned BitWidth = VT.getScalarSizeInBits();
+    // Right-shifting everything out but the sign bit followed by negation is
+    // the same as flipping arithmetic/logical shift type without the negation:
+    // -(X >>u 31) -> (X >>s 31)
+    // -(X >>s 31) -> (X >>u 31)
+    if (N1->getOpcode() == ISD::SRA || N1->getOpcode() == ISD::SRL) {
+      ConstantSDNode *ShiftAmt = isConstOrConstSplat(N1.getOperand(1));
+      if (ShiftAmt && ShiftAmt->getZExtValue() == BitWidth - 1) {
+        auto NewSh = N1->getOpcode() == ISD::SRA ? ISD::SRL : ISD::SRA;
+        if (!LegalOperations || TLI.isOperationLegal(NewSh, VT))
+          return DAG.getNode(NewSh, DL, VT, N1.getOperand(0), N1.getOperand(1));
+      }
+    }
+
+    // 0 - X --> 0 if the sub is NUW.
+    if (N->getFlags()->hasNoUnsignedWrap())
+      return N0;
+
+    if (DAG.MaskedValueIsZero(N1, ~APInt::getSignBit(BitWidth))) {
+      // N1 is either 0 or the minimum signed value. If the sub is NSW, then
+      // N1 must be 0 because negating the minimum signed value is undefined.
+      if (N->getFlags()->hasNoSignedWrap())
+        return N0;
+
+      // 0 - X --> X if X is 0 or the minimum signed value.
+      return N1;
     }
   }
 
@@ -2296,10 +2317,8 @@ SDValue DAGCombiner::visitSDIV(SDNode *N) {
 
   // If we know the sign bits of both operands are zero, strength reduce to a
   // udiv instead.  Handles (X&15) /s 4 -> X&15 >> 2
-  if (!VT.isVector()) {
-    if (DAG.SignBitIsZero(N1) && DAG.SignBitIsZero(N0))
-      return DAG.getNode(ISD::UDIV, DL, N1.getValueType(), N0, N1);
-  }
+  if (DAG.SignBitIsZero(N1) && DAG.SignBitIsZero(N0))
+    return DAG.getNode(ISD::UDIV, DL, N1.getValueType(), N0, N1);
 
   // fold (sdiv X, pow2) -> simple ops after legalize
   // FIXME: We check for the exact bit here because the generic lowering gives
@@ -2452,10 +2471,8 @@ SDValue DAGCombiner::visitREM(SDNode *N) {
   if (isSigned) {
     // If we know the sign bits of both operands are zero, strength reduce to a
     // urem instead.  Handles (X & 0x0FFFFFFF) %s 16 -> X&15
-    if (!VT.isVector()) {
-      if (DAG.SignBitIsZero(N1) && DAG.SignBitIsZero(N0))
-        return DAG.getNode(ISD::UREM, DL, VT, N0, N1);
-    }
+    if (DAG.SignBitIsZero(N1) && DAG.SignBitIsZero(N0))
+      return DAG.getNode(ISD::UREM, DL, VT, N0, N1);
   } else {
     // fold (urem x, pow2) -> (and x, pow2-1)
     if (N1C && !N1C->isNullValue() && !N1C->isOpaque() &&
@@ -2465,9 +2482,9 @@ SDValue DAGCombiner::visitREM(SDNode *N) {
     }
     // fold (urem x, (shl pow2, y)) -> (and x, (add (shl pow2, y), -1))
     if (N1.getOpcode() == ISD::SHL) {
-      ConstantSDNode *SHC = getAsNonOpaqueConstant(N1.getOperand(0));
-      if (SHC && SHC->getAPIntValue().isPowerOf2()) {
-        APInt NegOne = APInt::getAllOnesValue(VT.getSizeInBits());
+      ConstantSDNode *SHC = isConstOrConstSplat(N1.getOperand(0));
+      if (SHC && !SHC->isOpaque() && SHC->getAPIntValue().isPowerOf2()) {
+        APInt NegOne = APInt::getAllOnesValue(VT.getScalarSizeInBits());
         SDValue Add =
             DAG.getNode(ISD::ADD, DL, VT, N1, DAG.getConstant(NegOne, DL, VT));
         AddToWorklist(Add.getNode());
@@ -8462,16 +8479,19 @@ SDValue DAGCombiner::visitFADD(SDNode *N) {
     return DAG.getNode(ISD::FSUB, DL, VT, N1,
                        GetNegatedExpression(N0, DAG, LegalOperations), Flags);
 
+  // FIXME: Auto-upgrade the target/function-level option.
+  if (Options.UnsafeFPMath || N->getFlags()->hasNoSignedZeros()) {
+    // fold (fadd A, 0) -> A
+    if (ConstantFPSDNode *N1C = isConstOrConstSplatFP(N1))
+      if (N1C->isZero())
+        return N0;
+  }
+
   // If 'unsafe math' is enabled, fold lots of things.
   if (Options.UnsafeFPMath) {
     // No FP constant should be created after legalization as Instruction
     // Selection pass has a hard time dealing with FP constants.
     bool AllowNewConst = (Level < AfterLegalizeDAG);
-
-    // fold (fadd A, 0) -> A
-    if (ConstantFPSDNode *N1C = isConstOrConstSplatFP(N1))
-      if (N1C->isZero())
-        return N0;
 
     // fold (fadd (fadd x, c1), c2) -> (fadd x, (fadd c1, c2))
     if (N1CFP && N0.getOpcode() == ISD::FADD && N0.getNode()->hasOneUse() &&
@@ -8599,19 +8619,22 @@ SDValue DAGCombiner::visitFSUB(SDNode *N) {
     return DAG.getNode(ISD::FADD, DL, VT, N0,
                        GetNegatedExpression(N1, DAG, LegalOperations), Flags);
 
-  // If 'unsafe math' is enabled, fold lots of things.
-  if (Options.UnsafeFPMath) {
-    // (fsub A, 0) -> A
-    if (N1CFP && N1CFP->isZero())
-      return N0;
-
+  // FIXME: Auto-upgrade the target/function-level option.
+  if (Options.UnsafeFPMath || N->getFlags()->hasNoSignedZeros()) {
     // (fsub 0, B) -> -B
     if (N0CFP && N0CFP->isZero()) {
       if (isNegatibleForFree(N1, LegalOperations, TLI, &Options))
         return GetNegatedExpression(N1, DAG, LegalOperations);
       if (!LegalOperations || TLI.isOperationLegal(ISD::FNEG, VT))
-        return DAG.getNode(ISD::FNEG, DL, VT, N1);
+        return DAG.getNode(ISD::FNEG, DL, VT, N1, Flags);
     }
+  }
+
+  // If 'unsafe math' is enabled, fold lots of things.
+  if (Options.UnsafeFPMath) {
+    // (fsub A, 0) -> A
+    if (N1CFP && N1CFP->isZero())
+      return N0;
 
     // (fsub x, x) -> 0.0
     if (N0 == N1)
@@ -13017,10 +13040,7 @@ SDValue DAGCombiner::createBuildVecShuffle(SDLoc DL, SDNode *N,
     if (VectorMask[i] <= 0)
       continue;
 
-    SDValue Extract = N->getOperand(i);
-    unsigned ExtIndex =
-        cast<ConstantSDNode>(Extract.getOperand(1))->getZExtValue();
-
+    unsigned ExtIndex = N->getOperand(i).getConstantOperandVal(1);
     if (VectorMask[i] == (int)LeftIdx) {
       Mask[i] = ExtIndex;
     } else if (VectorMask[i] == (int)LeftIdx + 1) {
@@ -13727,6 +13747,71 @@ static SDValue partitionShuffleOfConcats(SDNode *N, SelectionDAG &DAG) {
   return DAG.getNode(ISD::CONCAT_VECTORS, SDLoc(N), VT, Ops);
 }
 
+// Attempt to combine a shuffle of 2 inputs of 'scalar sources' -
+// BUILD_VECTOR or SCALAR_TO_VECTOR into a single BUILD_VECTOR.
+// This combine is done in the following cases:
+// 1. Both N0,N1 are BUILD_VECTOR's composed of constants or undefs.
+// 2. Only one of N0,N1 is a BUILD_VECTOR composed of constants or undefs -
+//    Combine iff that node is ALL_ZEROS. We prefer not to combine a
+//    BUILD_VECTOR of all constants to allow efficient materialization of
+//    constant vectors, but the ALL_ZEROS is an exception because
+//    zero-extension matching seems to rely on having BUILD_VECTOR nodes with
+//    zero padding between elements. FIXME: Eliminate this exception for
+//    ALL_ZEROS constant vectors.
+// 3. Neither N0,N1 are composed of only constants.
+static SDValue combineShuffleOfScalars(ShuffleVectorSDNode *SVN,
+                                       SelectionDAG &DAG,
+                                       const TargetLowering &TLI) {
+  EVT VT = SVN->getValueType(0);
+  unsigned NumElts = VT.getVectorNumElements();
+  SDValue N0 = SVN->getOperand(0);
+  SDValue N1 = SVN->getOperand(1);
+
+  if (!N0->hasOneUse() || !N1->hasOneUse())
+    return SDValue();
+  // If only one of N1,N2 is constant, bail out if it is not ALL_ZEROS as
+  // discussed above.
+  if (!N1.isUndef()) {
+    bool N0AnyConst = isAnyConstantBuildVector(N0.getNode());
+    bool N1AnyConst = isAnyConstantBuildVector(N1.getNode());
+    if (N0AnyConst && !N1AnyConst && !ISD::isBuildVectorAllZeros(N0.getNode()))
+      return SDValue();
+    if (!N0AnyConst && N1AnyConst && !ISD::isBuildVectorAllZeros(N1.getNode()))
+      return SDValue();
+  }
+
+  SmallVector<SDValue, 8> Ops;
+  for (int M : SVN->getMask()) {
+    SDValue Op = DAG.getUNDEF(VT.getScalarType());
+    if (M >= 0) {
+      int Idx = M < (int)NumElts ? M : M - NumElts;
+      SDValue &S = (M < (int)NumElts ? N0 : N1);
+      if (S.getOpcode() == ISD::BUILD_VECTOR) {
+        Op = S.getOperand(Idx);
+      } else if (S.getOpcode() == ISD::SCALAR_TO_VECTOR) {
+        if (Idx == 0)
+          Op = S.getOperand(0);
+      } else {
+        // Operand can't be combined - bail out.
+        return SDValue();
+      }
+    }
+    Ops.push_back(Op);
+  }
+  // BUILD_VECTOR requires all inputs to be of the same type, find the
+  // maximum type and extend them all.
+  EVT SVT = VT.getScalarType();
+  if (SVT.isInteger())
+    for (SDValue &Op : Ops)
+      SVT = (SVT.bitsLT(Op.getValueType()) ? Op.getValueType() : SVT);
+  if (SVT != VT.getScalarType())
+    for (SDValue &Op : Ops)
+      Op = TLI.isZExtFree(Op.getValueType(), SVT)
+               ? DAG.getZExtOrTrunc(Op, SDLoc(SVN), SVT)
+               : DAG.getSExtOrTrunc(Op, SDLoc(SVN), SVT);
+  return DAG.getBuildVector(VT, SDLoc(SVN), Ops);
+}
+
 SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
   EVT VT = N->getValueType(0);
   unsigned NumElts = VT.getVectorNumElements();
@@ -13842,40 +13927,9 @@ SDValue DAGCombiner::visitVECTOR_SHUFFLE(SDNode *N) {
 
   // Attempt to combine a shuffle of 2 inputs of 'scalar sources' -
   // BUILD_VECTOR or SCALAR_TO_VECTOR into a single BUILD_VECTOR.
-  if (Level < AfterLegalizeVectorOps && TLI.isTypeLegal(VT)) {
-    SmallVector<SDValue, 8> Ops;
-    for (int M : SVN->getMask()) {
-      SDValue Op = DAG.getUNDEF(VT.getScalarType());
-      if (M >= 0) {
-        int Idx = M % NumElts;
-        SDValue &S = (M < (int)NumElts ? N0 : N1);
-        if (S.getOpcode() == ISD::BUILD_VECTOR && S.hasOneUse()) {
-          Op = S.getOperand(Idx);
-        } else if (S.getOpcode() == ISD::SCALAR_TO_VECTOR && S.hasOneUse()) {
-          if (Idx == 0)
-            Op = S.getOperand(0);
-        } else {
-          // Operand can't be combined - bail out.
-          break;
-        }
-      }
-      Ops.push_back(Op);
-    }
-    if (Ops.size() == VT.getVectorNumElements()) {
-      // BUILD_VECTOR requires all inputs to be of the same type, find the
-      // maximum type and extend them all.
-      EVT SVT = VT.getScalarType();
-      if (SVT.isInteger())
-        for (SDValue &Op : Ops)
-          SVT = (SVT.bitsLT(Op.getValueType()) ? Op.getValueType() : SVT);
-      if (SVT != VT.getScalarType())
-        for (SDValue &Op : Ops)
-          Op = TLI.isZExtFree(Op.getValueType(), SVT)
-                   ? DAG.getZExtOrTrunc(Op, SDLoc(N), SVT)
-                   : DAG.getSExtOrTrunc(Op, SDLoc(N), SVT);
-      return DAG.getBuildVector(VT, SDLoc(N), Ops);
-    }
-  }
+  if (Level < AfterLegalizeVectorOps && TLI.isTypeLegal(VT))
+    if (SDValue Res = combineShuffleOfScalars(SVN, DAG, TLI))
+      return Res;
 
   // If this shuffle only has a single input that is a bitcasted shuffle,
   // attempt to merge the 2 shuffles and suitably bitcast the inputs/output

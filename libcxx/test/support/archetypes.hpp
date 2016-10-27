@@ -60,20 +60,20 @@ struct TestBase {
         ++alive; ++constructed; ++value_constructed;
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit TestBase(int x, int y) noexcept : value(y) {
+    explicit TestBase(int, int y) noexcept : value(y) {
         ++alive; ++constructed; ++value_constructed;
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    TestBase(int x, int y) noexcept : value(y) {
+    TestBase(int, int y) noexcept : value(y) {
         ++alive; ++constructed; ++value_constructed;
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit TestBase(std::initializer_list<int>& il, int y = 0) noexcept
+    explicit TestBase(std::initializer_list<int>& il, int = 0) noexcept
       : value(il.size()) {
         ++alive; ++constructed; ++value_constructed;
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    explicit TestBase(std::initializer_list<int>& il, int y = 0) noexcept : value(il.size()) {
+    explicit TestBase(std::initializer_list<int>& il, int = 0) noexcept : value(il.size()) {
         ++alive; ++constructed; ++value_constructed;
     }
     TestBase& operator=(int xvalue) noexcept {
@@ -131,13 +131,13 @@ struct ValueBase {
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
     constexpr ValueBase(int x) : value(x) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr ValueBase(int x, int y) : value(y) {}
+    explicit constexpr ValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr ValueBase(int x, int y) : value(y) {}
+    constexpr ValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr ValueBase(std::initializer_list<int>& il, int y = 0) : value(il.size()) {}
+    explicit constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr ValueBase(std::initializer_list<int>& il, int y = 0) : value(il.size()) {}
+    constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
     TEST_CONSTEXPR_CXX14 ValueBase& operator=(int xvalue) noexcept {
         value = xvalue;
         return *this;
@@ -189,13 +189,13 @@ struct TrivialValueBase {
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
     constexpr TrivialValueBase(int x) : value(x) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr TrivialValueBase(int x, int y) : value(y) {}
+    explicit constexpr TrivialValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr TrivialValueBase(int x, int y) : value(y) {}
+    constexpr TrivialValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr TrivialValueBase(std::initializer_list<int>& il, int y = 0) : value(il.size()) {}
+    explicit constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr TrivialValueBase(std::initializer_list<int>& il, int y = 0) : value(il.size()) {};
+    constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {};
     int value;
 protected:
     constexpr TrivialValueBase() noexcept : value(0) {}

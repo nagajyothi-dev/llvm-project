@@ -883,20 +883,53 @@ static Error checkThreadCommand(const MachOObjectFile *Obj,
   return Error::success();
 }
 
+static Error checkTwoLevelHintsCommand(const MachOObjectFile *Obj,
+                                       const MachOObjectFile::LoadCommandInfo
+                                         &Load,
+                                       uint32_t LoadCommandIndex,
+                                       const char **LoadCmd) {
+  if (Load.C.cmdsize != sizeof(MachO::twolevel_hints_command))
+    return malformedError("load command " + Twine(LoadCommandIndex) +
+                          " LC_TWOLEVEL_HINTS has incorrect cmdsize");
+  if (*LoadCmd != nullptr)
+    return malformedError("more than one LC_TWOLEVEL_HINTS command");
+  MachO::twolevel_hints_command Hints =
+    getStruct<MachO::twolevel_hints_command>(Obj, Load.Ptr);
+  uint64_t FileSize = Obj->getData().size();
+  if (Hints.offset > FileSize)
+    return malformedError("offset field of LC_TWOLEVEL_HINTS command " +
+                          Twine(LoadCommandIndex) + " extends past the end of "
+                          "the file");
+  uint64_t BigSize = Hints.nhints;
+  BigSize *= Hints.nhints * sizeof(MachO::twolevel_hint);
+  BigSize += Hints.offset;
+  if (BigSize > FileSize)
+    return malformedError("offset field plus nhints times sizeof(struct "
+                          "twolevel_hint) field of LC_TWOLEVEL_HINTS command " +
+                          Twine(LoadCommandIndex) + " extends past the end of "
+                          "the file");
+  *LoadCmd = Load.Ptr;
+  return Error::success();
+}
+
 Expected<std::unique_ptr<MachOObjectFile>>
 MachOObjectFile::create(MemoryBufferRef Object, bool IsLittleEndian,
-                        bool Is64Bits) {
+                        bool Is64Bits, uint32_t UniversalCputype,
+                        uint32_t UniversalIndex) {
   Error Err;
   std::unique_ptr<MachOObjectFile> Obj(
       new MachOObjectFile(std::move(Object), IsLittleEndian,
-                           Is64Bits, Err));
+                          Is64Bits, Err, UniversalCputype,
+                          UniversalIndex));
   if (Err)
     return std::move(Err);
   return std::move(Obj);
 }
 
 MachOObjectFile::MachOObjectFile(MemoryBufferRef Object, bool IsLittleEndian,
-                                 bool Is64bits, Error &Err)
+                                 bool Is64bits, Error &Err,
+                                 uint32_t UniversalCputype,
+                                 uint32_t UniversalIndex)
     : ObjectFile(getMachOType(IsLittleEndian, Is64bits), Object),
       SymtabLoadCmd(nullptr), DysymtabLoadCmd(nullptr),
       DataInCodeLoadCmd(nullptr), LinkOptHintsLoadCmd(nullptr),
@@ -904,18 +937,27 @@ MachOObjectFile::MachOObjectFile(MemoryBufferRef Object, bool IsLittleEndian,
       HasPageZeroSegment(false) {
   ErrorAsOutParameter ErrAsOutParam(&Err);
   uint64_t SizeOfHeaders;
+  uint32_t cputype;
   if (is64Bit()) {
     parseHeader(this, Header64, Err);
     SizeOfHeaders = sizeof(MachO::mach_header_64);
+    cputype = Header64.cputype;
   } else {
     parseHeader(this, Header, Err);
     SizeOfHeaders = sizeof(MachO::mach_header);
+    cputype = Header.cputype;
   }
   if (Err)
     return;
   SizeOfHeaders += getHeader().sizeofcmds;
   if (getData().data() + SizeOfHeaders > getData().end()) {
     Err = malformedError("load commands extend past the end of the file");
+    return;
+  }
+  if (UniversalCputype != 0 && cputype != UniversalCputype) {
+    Err = malformedError("universal header architecture: " +
+                         Twine(UniversalIndex) + "'s cputype does not match "
+                         "object file's mach header");
     return;
   }
 
@@ -941,6 +983,7 @@ MachOObjectFile::MachOObjectFile(MemoryBufferRef Object, bool IsLittleEndian,
   const char *EncryptLoadCmd = nullptr;
   const char *RoutinesLoadCmd = nullptr;
   const char *UnixThreadLoadCmd = nullptr;
+  const char *TwoLevelHintsLoadCmd = nullptr;
   for (unsigned I = 0; I < LoadCommandCount; ++I) {
     if (is64Bit()) {
       if (Load.C.cmdsize % 8 != 0) {
@@ -1207,6 +1250,10 @@ MachOObjectFile::MachOObjectFile(MemoryBufferRef Object, bool IsLittleEndian,
     } else if (Load.C.cmd == MachO::LC_THREAD) {
       if ((Err = checkThreadCommand(this, Load, I, "LC_THREAD")))
         return;
+    } else if (Load.C.cmd == MachO::LC_TWOLEVEL_HINTS) {
+       if ((Err = checkTwoLevelHintsCommand(this, Load, I,
+                                            &TwoLevelHintsLoadCmd)))
+         return;
     }
     if (I < LoadCommandCount - 1) {
       if (auto LoadOrErr = getNextLoadCommandInfo(this, I, Load))
@@ -3247,16 +3294,22 @@ bool MachOObjectFile::isRelocatableObject() const {
 }
 
 Expected<std::unique_ptr<MachOObjectFile>>
-ObjectFile::createMachOObjectFile(MemoryBufferRef Buffer) {
+ObjectFile::createMachOObjectFile(MemoryBufferRef Buffer,
+                                  uint32_t UniversalCputype,
+                                  uint32_t UniversalIndex) {
   StringRef Magic = Buffer.getBuffer().slice(0, 4);
   if (Magic == "\xFE\xED\xFA\xCE")
-    return MachOObjectFile::create(Buffer, false, false);
+    return MachOObjectFile::create(Buffer, false, false,
+                                   UniversalCputype, UniversalIndex);
   if (Magic == "\xCE\xFA\xED\xFE")
-    return MachOObjectFile::create(Buffer, true, false);
+    return MachOObjectFile::create(Buffer, true, false,
+                                   UniversalCputype, UniversalIndex);
   if (Magic == "\xFE\xED\xFA\xCF")
-    return MachOObjectFile::create(Buffer, false, true);
+    return MachOObjectFile::create(Buffer, false, true,
+                                   UniversalCputype, UniversalIndex);
   if (Magic == "\xCF\xFA\xED\xFE")
-    return MachOObjectFile::create(Buffer, true, true);
+    return MachOObjectFile::create(Buffer, true, true,
+                                   UniversalCputype, UniversalIndex);
   return make_error<GenericBinaryError>("Unrecognized MachO magic number",
                                         object_error::invalid_file_type);
 }

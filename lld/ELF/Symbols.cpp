@@ -69,8 +69,8 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
     return VA;
   }
   case SymbolBody::DefinedCommonKind:
-    return CommonInputSection<ELFT>::X->OutSec->getVA() +
-           CommonInputSection<ELFT>::X->OutSecOff +
+    return InputSection<ELFT>::CommonInputSection->OutSec->getVA() +
+           InputSection<ELFT>::CommonInputSection->OutSecOff +
            cast<DefinedCommon>(Body).Offset;
   case SymbolBody::SharedKind: {
     auto &SS = cast<SharedSymbol<ELFT>>(Body);
@@ -93,13 +93,13 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
 SymbolBody::SymbolBody(Kind K, uint32_t NameOffset, uint8_t StOther,
                        uint8_t Type)
     : SymbolKind(K), NeedsCopyOrPltAddr(false), IsLocal(true),
-      IsInGlobalMipsGot(false), Type(Type), StOther(StOther),
-      NameOffset(NameOffset) {}
+      IsInGlobalMipsGot(false), Is32BitMipsGot(false), Type(Type),
+      StOther(StOther), NameOffset(NameOffset) {}
 
 SymbolBody::SymbolBody(Kind K, StringRef Name, uint8_t StOther, uint8_t Type)
     : SymbolKind(K), NeedsCopyOrPltAddr(false), IsLocal(false),
-      IsInGlobalMipsGot(false), Type(Type), StOther(StOther),
-      Name({Name.data(), Name.size()}) {}
+      IsInGlobalMipsGot(false), Is32BitMipsGot(false), Type(Type),
+      StOther(StOther), Name({Name.data(), Name.size()}) {}
 
 StringRef SymbolBody::getName() const {
   assert(!isLocal());
@@ -227,10 +227,10 @@ DefinedCommon::DefinedCommon(StringRef N, uint64_t Size, uint64_t Alignment,
   this->File = File;
 }
 
-InputFile *Lazy::fetch() {
+InputFile *Lazy::fetch(BumpPtrAllocator &Alloc) {
   if (auto *S = dyn_cast<LazyArchive>(this))
-    return S->fetch();
-  return cast<LazyObject>(this)->fetch();
+    return S->fetch(Alloc);
+  return cast<LazyObject>(this)->fetch(Alloc);
 }
 
 LazyArchive::LazyArchive(ArchiveFile &File,
@@ -244,21 +244,22 @@ LazyObject::LazyObject(StringRef Name, LazyObjectFile &File, uint8_t Type)
   this->File = &File;
 }
 
-InputFile *LazyArchive::fetch() {
+InputFile *LazyArchive::fetch(BumpPtrAllocator &Alloc) {
   std::pair<MemoryBufferRef, uint64_t> MBInfo = file()->getMember(&Sym);
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
   if (MBInfo.first.getBuffer().empty())
     return nullptr;
-  return createObjectFile(MBInfo.first, file()->getName(), MBInfo.second);
+  return createObjectFile(Alloc, MBInfo.first, file()->getName(),
+                          MBInfo.second);
 }
 
-InputFile *LazyObject::fetch() {
+InputFile *LazyObject::fetch(BumpPtrAllocator &Alloc) {
   MemoryBufferRef MBRef = file()->getBuffer();
   if (MBRef.getBuffer().empty())
     return nullptr;
-  return createObjectFile(MBRef);
+  return createObjectFile(Alloc, MBRef);
 }
 
 bool Symbol::includeInDynsym() const {

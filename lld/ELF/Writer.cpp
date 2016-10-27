@@ -23,6 +23,10 @@
 #include "llvm/Support/raw_ostream.h"
 #include <climits>
 
+#if !defined(_MSC_VER) && !defined(__MINGW32__)
+#include <unistd.h>
+#endif
+
 using namespace llvm;
 using namespace llvm::ELF;
 using namespace llvm::object;
@@ -261,8 +265,9 @@ template <class ELFT> void Writer<ELFT>::run() {
   if (Target->NeedsThunks)
     forEachRelSec(createThunks<ELFT>);
 
-  CommonInputSection<ELFT> Common(getCommonSymbols<ELFT>());
-  CommonInputSection<ELFT>::X = &Common;
+  InputSection<ELFT> Common =
+      InputSection<ELFT>::createCommonInputSection(getCommonSymbols<ELFT>());
+  InputSection<ELFT>::CommonInputSection = &Common;
 
   Script<ELFT>::X->OutputSections = &OutputSections;
   if (ScriptConfig->HasSections) {
@@ -315,6 +320,14 @@ template <class ELFT> void Writer<ELFT>::run() {
     return;
   if (auto EC = Buffer->commit())
     error(EC, "failed to write to the output file");
+  if (Config->ExitEarly) {
+    // Flush the output streams and exit immediately.  A full shutdown is a good
+    // test that we are keeping track of all allocated memory, but actually
+    // freeing it is a waste of time in a regular linker run.
+    outs().flush();
+    errs().flush();
+    _exit(0);
+  }
 }
 
 template <class ELFT>
@@ -345,7 +358,7 @@ static bool shouldKeepInSymtab(InputSectionBase<ELFT> *Sec, StringRef SymName,
   if (Config->Discard == DiscardPolicy::Locals)
     return false;
 
-  return !Sec || !(Sec->getSectionHdr()->sh_flags & SHF_MERGE);
+  return !Sec || !(Sec->Flags & SHF_MERGE);
 }
 
 template <class ELFT> static bool includeInSymtab(const SymbolBody &B) {
@@ -559,14 +572,6 @@ addOptionalSynthetic(StringRef Name, OutputSectionBase<ELFT> *Sec,
   return Symtab<ELFT>::X->addSynthetic(Name, Sec, Val, StOther);
 }
 
-template <class ELFT>
-static void addSynthetic(StringRef Name, OutputSectionBase<ELFT> *Sec,
-                         typename ELFT::uint Val) {
-  SymbolBody *S = Symtab<ELFT>::X->find(Name);
-  if (!S || S->isUndefined() || S->isShared())
-    Symtab<ELFT>::X->addSynthetic(Name, Sec, Val, STV_HIDDEN);
-}
-
 // The beginning and the ending of .rel[a].plt section are marked
 // with __rel[a]_iplt_{start,end} symbols if it is a statically linked
 // executable. The runtime needs these symbols in order to resolve
@@ -627,10 +632,11 @@ template <class ELFT> void Writer<ELFT>::addReservedSymbols() {
   // __tls_get_addr is defined by the dynamic linker for dynamic ELFs. For
   // static linking the linker is required to optimize away any references to
   // __tls_get_addr, so it's not defined anywhere. Create a hidden definition
-  // to avoid the undefined symbol error. As usual as special case is MIPS -
-  // MIPS libc defines __tls_get_addr itself because there are no TLS
-  // optimizations for this target.
-  if (!Out<ELFT>::DynSymTab && Config->EMachine != EM_MIPS)
+  // to avoid the undefined symbol error. As usual special cases are ARM and
+  // MIPS - the libc for these targets defines __tls_get_addr itself because
+  // there are no TLS optimizations for these targets.
+  if (!Out<ELFT>::DynSymTab &&
+      (Config->EMachine != EM_MIPS && Config->EMachine != EM_ARM))
     Symtab<ELFT>::X->addIgnored("__tls_get_addr");
 
   // If linker script do layout we do not need to create any standart symbols.
@@ -683,7 +689,7 @@ void Writer<ELFT>::forEachRelSec(
       // creating GOT, PLT, copy relocations, etc.
       // Note that relocations for non-alloc sections are directly
       // processed by InputSection::relocateNonAlloc.
-      if (!(IS->getSectionHdr()->sh_flags & SHF_ALLOC))
+      if (!(IS->Flags & SHF_ALLOC))
         continue;
       if (auto *S = dyn_cast<InputSection<ELFT>>(IS)) {
         for (const Elf_Shdr *RelSec : S->RelocSections)
@@ -833,8 +839,8 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
 
   // If linker script processor hasn't added common symbol section yet,
   // then add it to .bss now.
-  if (!CommonInputSection<ELFT>::X->OutSec) {
-    Out<ELFT>::Bss->addSection(CommonInputSection<ELFT>::X);
+  if (!InputSection<ELFT>::CommonInputSection->OutSec) {
+    Out<ELFT>::Bss->addSection(InputSection<ELFT>::CommonInputSection);
     Out<ELFT>::Bss->assignOffsets();
   }
 
@@ -953,19 +959,18 @@ template <class ELFT> void Writer<ELFT>::addPredefinedSections() {
 template <class ELFT> void Writer<ELFT>::addStartEndSymbols() {
   auto Define = [&](StringRef Start, StringRef End,
                     OutputSectionBase<ELFT> *OS) {
-    if (OS) {
-      addSynthetic(Start, OS, 0);
-      addSynthetic(End, OS, DefinedSynthetic<ELFT>::SectionEnd);
-    } else {
-      addOptionalSynthetic(Start, (OutputSectionBase<ELFT> *)nullptr, 0);
-      addOptionalSynthetic(End, (OutputSectionBase<ELFT> *)nullptr, 0);
-    }
+    // These symbols resolve to the image base if the section does not exist.
+    addOptionalSynthetic(Start, OS, 0);
+    addOptionalSynthetic(End, OS, OS ? DefinedSynthetic<ELFT>::SectionEnd : 0);
   };
 
   Define("__preinit_array_start", "__preinit_array_end",
          Out<ELFT>::PreinitArray);
   Define("__init_array_start", "__init_array_end", Out<ELFT>::InitArray);
   Define("__fini_array_start", "__fini_array_end", Out<ELFT>::FiniArray);
+
+  if (OutputSectionBase<ELFT> *Sec = findSection(".ARM.exidx"))
+    Define("__exidx_start", "__exidx_end", Sec);
 }
 
 // If a section name is valid as a C identifier (which is rare because of

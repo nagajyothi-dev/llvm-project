@@ -27,7 +27,7 @@ extern class LinkerDriver *Driver;
 
 class LinkerDriver {
 public:
-  void main(ArrayRef<const char *> Args);
+  void main(ArrayRef<const char *> Args, bool CanExitEarly);
   void addFile(StringRef Path);
   void addLibrary(StringRef Name);
   llvm::LLVMContext Context;      // to parse bitcode files
@@ -42,7 +42,7 @@ private:
   template <class ELFT> void link(llvm::opt::InputArgList &Args);
 
   // True if we are in --whole-archive and --no-whole-archive.
-  bool WholeArchive = false;
+  bool InWholeArchive = false;
 
   // True if we are in --start-lib and --end-lib.
   bool InLib = false;

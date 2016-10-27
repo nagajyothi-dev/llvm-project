@@ -22,7 +22,7 @@
 // Should not link because of undefined symbol _bar
 // RUN: not ld.lld -o %t3 %t.o %tbar.o 2>&1 \
 // RUN:   | FileCheck --check-prefix=UNDEFINED %s
-// UNDEFINED: undefined symbol: _bar
+// UNDEFINED: error: {{.*}} (.bar+0x0): undefined symbol '_bar'
 
 // Should fail if cannot find specified library (without -L switch)
 // RUN: not ld.lld -o %t3 %t.o -lls 2>&1 \
@@ -90,7 +90,7 @@
 // RUN: llvm-readobj --symbols %t3 | FileCheck --check-prefix=DYNAMIC %s
 
 // -nostdlib
-// RUN: echo 'SEARCH_DIR("'%t.dir'")' > %t.script
+// RUN: echo ' SEARCH_DIR("'%t.dir'")' > %t.script
 // RUN: ld.lld -o %t3 %t.o -script %t.script -lls
 // RUN: not ld.lld -o %t3 %t.o -script %t.script -lls -nostdlib \
 // RUN:   2>&1 | FileCheck --check-prefix=NOSTDLIB %s

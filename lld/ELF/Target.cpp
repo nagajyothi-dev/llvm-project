@@ -1487,6 +1487,9 @@ void AMDGPUTargetInfo::relocateOne(uint8_t *Loc, uint32_t Type,
   case R_AMDGPU_REL32_LO:
     write32le(Loc, Val);
     break;
+  case R_AMDGPU_ABS64:
+    write64le(Loc, Val);
+    break;
   case R_AMDGPU_GOTPCREL32_HI:
   case R_AMDGPU_REL32_HI:
     write32le(Loc, Val >> 32);
@@ -1499,6 +1502,7 @@ void AMDGPUTargetInfo::relocateOne(uint8_t *Loc, uint32_t Type,
 RelExpr AMDGPUTargetInfo::getRelExpr(uint32_t Type, const SymbolBody &S) const {
   switch (Type) {
   case R_AMDGPU_ABS32:
+  case R_AMDGPU_ABS64:
     return R_ABS;
   case R_AMDGPU_REL32:
   case R_AMDGPU_REL32_LO:
@@ -1936,13 +1940,14 @@ RelExpr MipsTargetInfo<ELFT>::getRelExpr(uint32_t Type,
       return R_MIPS_GOT_LOCAL_PAGE;
   // fallthrough
   case R_MIPS_CALL16:
-  case R_MIPS_CALL_HI16:
-  case R_MIPS_CALL_LO16:
   case R_MIPS_GOT_DISP:
-  case R_MIPS_GOT_HI16:
-  case R_MIPS_GOT_LO16:
   case R_MIPS_TLS_GOTTPREL:
     return R_MIPS_GOT_OFF;
+  case R_MIPS_CALL_HI16:
+  case R_MIPS_CALL_LO16:
+  case R_MIPS_GOT_HI16:
+  case R_MIPS_GOT_LO16:
+    return R_MIPS_GOT_OFF32;
   case R_MIPS_GOT_PAGE:
     return R_MIPS_GOT_LOCAL_PAGE;
   case R_MIPS_TLS_GD:

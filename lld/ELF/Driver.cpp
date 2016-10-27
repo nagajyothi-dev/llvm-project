@@ -39,7 +39,8 @@ using namespace lld::elf;
 Configuration *elf::Config;
 LinkerDriver *elf::Driver;
 
-bool elf::link(ArrayRef<const char *> Args, raw_ostream &Error) {
+bool elf::link(ArrayRef<const char *> Args, bool CanExitEarly,
+               raw_ostream &Error) {
   HasError = false;
   ErrorOS = &Error;
   Argv0 = Args[0];
@@ -51,7 +52,7 @@ bool elf::link(ArrayRef<const char *> Args, raw_ostream &Error) {
   Driver = &D;
   ScriptConfig = &SC;
 
-  Driver->main(Args);
+  Driver->main(Args, CanExitEarly);
   InputFile::freePool();
   return !HasError;
 }
@@ -135,9 +136,9 @@ void LinkerDriver::addFile(StringRef Path) {
     readLinkerScript(MBRef);
     return;
   case file_magic::archive:
-    if (WholeArchive) {
+    if (InWholeArchive) {
       for (MemoryBufferRef MB : getArchiveMembers(MBRef))
-        Files.push_back(createObjectFile(MB, Path));
+        Files.push_back(createObjectFile(Alloc, MB, Path));
       return;
     }
     Files.push_back(new ArchiveFile(MBRef));
@@ -147,13 +148,13 @@ void LinkerDriver::addFile(StringRef Path) {
       error("attempted static link of dynamic object " + Path);
       return;
     }
-    Files.push_back(createSharedFile(MBRef));
+    Files.push_back(createSharedFile(Alloc, MBRef));
     return;
   default:
     if (InLib)
       Files.push_back(new LazyObjectFile(MBRef));
     else
-      Files.push_back(createObjectFile(MBRef));
+      Files.push_back(createObjectFile(Alloc, MBRef));
   }
 }
 
@@ -281,7 +282,7 @@ static uint64_t getZOptionValue(opt::InputArgList &Args, StringRef Key,
   return Default;
 }
 
-void LinkerDriver::main(ArrayRef<const char *> ArgsArr) {
+void LinkerDriver::main(ArrayRef<const char *> ArgsArr, bool CanExitEarly) {
   ELFOptTable Parser;
   opt::InputArgList Args = Parser.parse(ArgsArr.slice(1));
   if (Args.hasArg(OPT_help)) {
@@ -290,6 +291,7 @@ void LinkerDriver::main(ArrayRef<const char *> ArgsArr) {
   }
   if (Args.hasArg(OPT_version))
     outs() << getLLDVersion() << "\n";
+  Config->ExitEarly = CanExitEarly && !Args.hasArg(OPT_full_shutdown);
 
   if (const char *Path = getReproduceOption(Args)) {
     // Note that --reproduce is a debug option so you can ignore it
@@ -298,7 +300,7 @@ void LinkerDriver::main(ArrayRef<const char *> ArgsArr) {
     if (F) {
       Cpio.reset(*F);
       Cpio->append("response.txt", createResponseFile(Args));
-      Cpio->append("version.txt", (getLLDVersion() + "\n").str());
+      Cpio->append("version.txt", getLLDVersion() + "\n");
     } else
       error(F.getError(),
             Twine("--reproduce: failed to open ") + Path + ".cpio");
@@ -619,10 +621,10 @@ void LinkerDriver::createFiles(opt::InputArgList &Args) {
       Config->Static = false;
       break;
     case OPT_whole_archive:
-      WholeArchive = true;
+      InWholeArchive = true;
       break;
     case OPT_no_whole_archive:
-      WholeArchive = false;
+      InWholeArchive = false;
       break;
     case OPT_start_lib:
       InLib = true;
@@ -652,6 +654,26 @@ void LinkerDriver::inferMachineType() {
   error("target emulation unknown: -m or at least one .o file required");
 }
 
+// Parses -image-base option.
+static uint64_t getImageBase(opt::InputArgList &Args) {
+  // Use default if no -image-base option is given.
+  // Because we are using "Target" here, this function
+  // has to be called after the variable is initialized.
+  auto *Arg = Args.getLastArg(OPT_image_base);
+  if (!Arg)
+    return Config->Pic ? 0 : Target->DefaultImageBase;
+
+  StringRef S = Arg->getValue();
+  uint64_t V;
+  if (S.getAsInteger(0, V)) {
+    error("-image-base: number expected, but got " + S);
+    return 0;
+  }
+  if ((V % Target->MaxPageSize) != 0)
+    warn("-image-base: address isn't multiple of page size: " + S);
+  return V;
+}
+
 // Do actual linking. Note that when this function is called,
 // all linker scripts have already been parsed.
 template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
@@ -666,6 +688,7 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
   Config->Rela = ELFT::Is64Bits || Config->EMachine == EM_X86_64;
   Config->Mips64EL =
       (Config->EMachine == EM_MIPS && Config->EKind == ELF64LEKind);
+  Config->ImageBase = getImageBase(Args);
 
   // Default output filename is "a.out" by the Unix tradition.
   if (Config->OutputFile.empty())
@@ -674,17 +697,6 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
   // Handle --trace-symbol.
   for (auto *Arg : Args.filtered(OPT_trace_symbol))
     Symtab.trace(Arg->getValue());
-
-  // Initialize Config->ImageBase.
-  if (auto *Arg = Args.getLastArg(OPT_image_base)) {
-    StringRef S = Arg->getValue();
-    if (S.getAsInteger(0, Config->ImageBase))
-      error(Arg->getSpelling() + ": number expected, but got " + S);
-    else if ((Config->ImageBase % Target->MaxPageSize) != 0)
-      warn(Arg->getSpelling() + ": address isn't multiple of page size");
-  } else {
-    Config->ImageBase = Config->Pic ? 0 : Target->DefaultImageBase;
-  }
 
   // Initialize Config->MaxPageSize. The default value is defined by
   // the target, but it can be overriden using the option.
