@@ -10,6 +10,7 @@ Clang-Tidy Checks
    cert-dcl54-cpp (redirects to misc-new-delete-overloads) <cert-dcl54-cpp>
    cert-dcl59-cpp (redirects to google-build-namespaces) <cert-dcl59-cpp>
    cert-env33-c
+   cert-err09-cpp (redirects to misc-throw-by-value-catch-by-reference) <cert-err09-cpp>
    cert-err34-c
    cert-err52-cpp
    cert-err58-cpp
@@ -73,7 +74,6 @@ Clang-Tidy Checks
    misc-new-delete-overloads
    misc-noexcept-move-constructor
    misc-non-copyable-objects
-   misc-pointer-and-integral-operation
    misc-redundant-expression
    misc-sizeof-container
    misc-sizeof-expression
@@ -133,6 +133,7 @@ Clang-Tidy Checks
    readability-named-parameter
    readability-non-const-parameter
    readability-redundant-control-flow
+   readability-redundant-member-init
    readability-redundant-smartptr-get
    readability-redundant-string-cstr
    readability-redundant-string-init

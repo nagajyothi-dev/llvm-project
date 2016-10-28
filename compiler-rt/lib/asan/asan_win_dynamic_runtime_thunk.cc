@@ -48,6 +48,10 @@ extern "C" {
 __declspec(dllimport) int __asan_should_detect_stack_use_after_return();
 int __asan_option_detect_stack_use_after_return =
     __asan_should_detect_stack_use_after_return();
+
+__declspec(dllimport) void* __asan_get_shadow_memory_dynamic_address();
+void* __asan_shadow_memory_dynamic_address =
+    __asan_get_shadow_memory_dynamic_address();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -73,6 +77,7 @@ void UnregisterGlobals() {
 int ScheduleUnregisterGlobals() {
   return atexit(UnregisterGlobals);
 }
+}  // namespace
 
 // We need to call 'atexit(UnregisterGlobals);' as early as possible, but after
 // atexit() is initialized (.CRT$XIC).  As this is executed before C++
@@ -80,8 +85,6 @@ int ScheduleUnregisterGlobals() {
 // dtors for C++ globals.
 __declspec(allocate(".CRT$XID"))
 int (*__asan_schedule_unregister_globals)() = ScheduleUnregisterGlobals;
-
-}  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // ASan SEH handling.

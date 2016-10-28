@@ -17,6 +17,7 @@
 
 #include "lld/Core/LLVM.h"
 #include "lld/Core/Reproduce.h"
+#include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/Comdat.h"
@@ -27,6 +28,13 @@
 
 #include <map>
 
+namespace llvm {
+class DWARFDebugLine;
+namespace lto {
+class InputFile;
+}
+}
+
 namespace lld {
 namespace elf {
 
@@ -35,6 +43,21 @@ using llvm::object::Archive;
 class InputFile;
 class Lazy;
 class SymbolBody;
+
+// Debugging information helper class. The main purpose is to
+// retrieve source file and line for error reporting. Linker may
+// find reasonable number of errors in a single object file, so
+// we cache debugging information in order to parse it only once
+// for each object file we link.
+template <class ELFT> class DIHelper {
+public:
+  typedef typename ELFT::uint uintX_t;
+
+  DIHelper(InputFile *F);
+  std::string getLineInfo(uintX_t Offset);
+private:
+  std::unique_ptr<llvm::DWARFDebugLine> DwarfLine;
+};
 
 // The root class of input files.
 class InputFile {
@@ -59,6 +82,12 @@ public:
   // not in an archive file, it is the empty string. We use this
   // string for creating error messages.
   StringRef ArchiveName;
+
+  // If this file is in an archive, the member contains the offset of
+  // the file in the archive. Otherwise, it's just zero. We store this
+  // field so that we can pass it to lib/LTO in order to disambiguate
+  // between objects.
+  uint64_t OffsetInArchive;
 
   // If this is an architecture-specific file, the following members
   // have ELF type (i.e. ELF{32,64}{LE,BE}) and target machine type.
@@ -138,22 +167,29 @@ public:
   ArrayRef<SymbolBody *> getLocalSymbols();
   ArrayRef<SymbolBody *> getNonLocalSymbols();
 
-  explicit ObjectFile(MemoryBufferRef M);
-  void parse(llvm::DenseSet<StringRef> &ComdatGroups);
+  explicit ObjectFile(llvm::BumpPtrAllocator &Alloc, MemoryBufferRef M);
+  void parse(llvm::DenseSet<llvm::CachedHashStringRef> &ComdatGroups);
 
   ArrayRef<InputSectionBase<ELFT> *> getSections() const { return Sections; }
   InputSectionBase<ELFT> *getSection(const Elf_Sym &Sym) const;
 
   SymbolBody &getSymbolBody(uint32_t SymbolIndex) const {
+    if (SymbolIndex >= SymbolBodies.size())
+      fatal(getFilename(this) + ": invalid symbol index");
     return *SymbolBodies[SymbolIndex];
   }
 
-  template <typename RelT> SymbolBody &getRelocTargetSym(const RelT &Rel) const {
+  template <typename RelT>
+  SymbolBody &getRelocTargetSym(const RelT &Rel) const {
     uint32_t SymIndex = Rel.getSymbol(Config->Mips64EL);
     return getSymbolBody(SymIndex);
   }
 
   const Elf_Shdr *getSymbolTable() const { return this->Symtab; };
+
+  // DI helper allows manipilating debugging information for this
+  // object file. Used for error reporting.
+  DIHelper<ELFT> *getDIHelper();
 
   // Get MIPS GP0 value defined by this file. This value represents the gp value
   // used to create the relocatable object and required to support
@@ -166,11 +202,18 @@ public:
 
   // SymbolBodies and Thunks for sections in this file are allocated
   // using this buffer.
-  llvm::BumpPtrAllocator Alloc;
+  llvm::BumpPtrAllocator &Alloc;
+
+  // Name of source file obtained from STT_FILE symbol value,
+  // or empty string if there is no such symbol in object file
+  // symbol table.
+  StringRef SourceFile;
 
 private:
-  void initializeSections(llvm::DenseSet<StringRef> &ComdatGroups);
+  void
+  initializeSections(llvm::DenseSet<llvm::CachedHashStringRef> &ComdatGroups);
   void initializeSymbols();
+  void initializeReverseDependencies();
   InputSectionBase<ELFT> *getRelocTarget(const Elf_Shdr &Sec);
   InputSectionBase<ELFT> *createInputSection(const Elf_Shdr &Sec);
 
@@ -193,6 +236,7 @@ private:
   llvm::SpecificBumpPtrAllocator<InputSection<ELFT>> IAlloc;
   llvm::SpecificBumpPtrAllocator<MergeInputSection<ELFT>> MAlloc;
   llvm::SpecificBumpPtrAllocator<EhInputSection<ELFT>> EHAlloc;
+  std::unique_ptr<DIHelper<ELFT>> DIH;
 };
 
 // LazyObjectFile is analogous to ArchiveFile in the sense that
@@ -230,10 +274,11 @@ public:
   static bool classof(const InputFile *F) { return F->kind() == ArchiveKind; }
   template <class ELFT> void parse();
 
-  // Returns a memory buffer for a given symbol. An empty memory buffer
+  // Returns a memory buffer for a given symbol and the offset in the archive
+  // for the member. An empty memory buffer and an offset of zero
   // is returned if we have already returned the same memory buffer.
   // (So that we don't instantiate same members more than once.)
-  MemoryBufferRef getMember(const Archive::Symbol *Sym);
+  std::pair<MemoryBufferRef, uint64_t> getMember(const Archive::Symbol *Sym);
 
 private:
   std::unique_ptr<Archive> File;
@@ -245,19 +290,14 @@ public:
   explicit BitcodeFile(MemoryBufferRef M);
   static bool classof(const InputFile *F) { return F->kind() == BitcodeKind; }
   template <class ELFT>
-  void parse(llvm::DenseSet<StringRef> &ComdatGroups);
+  void parse(llvm::DenseSet<llvm::CachedHashStringRef> &ComdatGroups);
   ArrayRef<Symbol *> getSymbols() { return Symbols; }
-  static bool shouldSkip(uint32_t Flags);
-  std::unique_ptr<llvm::object::IRObjectFile> Obj;
+  std::unique_ptr<llvm::lto::InputFile> Obj;
 
 private:
   std::vector<Symbol *> Symbols;
   llvm::BumpPtrAllocator Alloc;
   llvm::StringSaver Saver{Alloc};
-  template <class ELFT>
-  Symbol *createSymbol(const llvm::DenseSet<const llvm::Comdat *> &KeptComdats,
-                       const llvm::object::IRObjectFile &Obj,
-                       const llvm::object::BasicSymbolRef &Sym);
 };
 
 // .so file.
@@ -284,7 +324,7 @@ public:
     return F->kind() == Base::SharedKind;
   }
 
-  explicit SharedFile(MemoryBufferRef M);
+  explicit SharedFile(llvm::BumpPtrAllocator &Alloc, MemoryBufferRef M);
 
   void parseSoName();
   void parseRest();
@@ -311,17 +351,18 @@ public:
 class BinaryFile : public InputFile {
 public:
   explicit BinaryFile(MemoryBufferRef M) : InputFile(BinaryKind, M) {}
-
   static bool classof(const InputFile *F) { return F->kind() == BinaryKind; }
-
   template <class ELFT> InputFile *createELF();
 
 private:
-  std::vector<uint8_t> ELFData;
+  std::vector<uint8_t> Buffer;
+  llvm::BumpPtrAllocator Alloc;
 };
 
-InputFile *createObjectFile(MemoryBufferRef MB, StringRef ArchiveName = "");
-InputFile *createSharedFile(MemoryBufferRef MB);
+InputFile *createObjectFile(llvm::BumpPtrAllocator &Alloc, MemoryBufferRef MB,
+                            StringRef ArchiveName = "",
+                            uint64_t OffsetInArchive = 0);
+InputFile *createSharedFile(llvm::BumpPtrAllocator &Alloc, MemoryBufferRef MB);
 
 } // namespace elf
 } // namespace lld

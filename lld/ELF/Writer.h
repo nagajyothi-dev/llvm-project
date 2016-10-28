@@ -10,12 +10,10 @@
 #ifndef LLD_ELF_WRITER_H
 #define LLD_ELF_WRITER_H
 
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Allocator.h"
 #include <cstdint>
 #include <memory>
-
-namespace llvm {
-  class StringRef;
-}
 
 namespace lld {
 namespace elf {
@@ -30,8 +28,7 @@ template <class ELFT> bool isRelroSection(OutputSectionBase<ELFT> *Sec);
 // This describes a program header entry.
 // Each contains type, access flags and range of output sections that will be
 // placed in it.
-template<class ELFT>
-struct PhdrEntry {
+template <class ELFT> struct PhdrEntry {
   PhdrEntry(unsigned Type, unsigned Flags);
   void add(OutputSectionBase<ELFT> *Sec);
 
@@ -41,8 +38,8 @@ struct PhdrEntry {
   bool HasLMA = false;
 };
 
-template <class ELFT>
-llvm::StringRef getOutputSectionName(InputSectionBase<ELFT> *S);
+llvm::StringRef getOutputSectionName(llvm::StringRef Name,
+                                     llvm::BumpPtrAllocator &Alloc);
 
 template <class ELFT> void reportDiscarded(InputSectionBase<ELFT> *IS);
 

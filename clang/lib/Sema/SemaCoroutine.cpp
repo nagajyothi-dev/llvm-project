@@ -26,15 +26,15 @@ using namespace sema;
 static QualType lookupPromiseType(Sema &S, const FunctionProtoType *FnType,
                                   SourceLocation Loc) {
   // FIXME: Cache std::coroutine_traits once we've found it.
-  NamespaceDecl *Std = S.getStdNamespace();
-  if (!Std) {
+  NamespaceDecl *StdExp = S.lookupStdExperimentalNamespace();
+  if (!StdExp) {
     S.Diag(Loc, diag::err_implied_std_coroutine_traits_not_found);
     return QualType();
   }
 
   LookupResult Result(S, &S.PP.getIdentifierTable().get("coroutine_traits"),
                       Loc, Sema::LookupOrdinaryName);
-  if (!S.LookupQualifiedName(Result, Std)) {
+  if (!S.LookupQualifiedName(Result, StdExp)) {
     S.Diag(Loc, diag::err_implied_std_coroutine_traits_not_found);
     return QualType();
   }
@@ -86,7 +86,7 @@ static QualType lookupPromiseType(Sema &S, const FunctionProtoType *FnType,
   QualType PromiseType = S.Context.getTypeDeclType(Promise);
   if (!PromiseType->getAsCXXRecordDecl()) {
     // Use the fully-qualified name of the type.
-    auto *NNS = NestedNameSpecifier::Create(S.Context, nullptr, Std);
+    auto *NNS = NestedNameSpecifier::Create(S.Context, nullptr, StdExp);
     NNS = NestedNameSpecifier::Create(S.Context, NNS, false,
                                       CoroTrait.getTypePtr());
     PromiseType = S.Context.getElaboratedType(ETK_None, NNS, PromiseType);
@@ -127,6 +127,11 @@ checkCoroutineContext(Sema &S, SourceLocation Loc, StringRef Keyword) {
     S.Diag(Loc, diag::err_coroutine_constexpr) << Keyword;
   } else if (FD->isVariadic()) {
     S.Diag(Loc, diag::err_coroutine_varargs) << Keyword;
+  } else if (FD->isMain()) {
+    S.Diag(FD->getLocStart(), diag::err_coroutine_main);
+    S.Diag(Loc, diag::note_declared_coroutine_here)
+      << (Keyword == "co_await" ? 0 :
+          Keyword == "co_yield" ? 1 : 2);
   } else {
     auto *ScopeInfo = S.getCurFunction();
     assert(ScopeInfo && "missing function scope for function");
@@ -213,6 +218,11 @@ static ReadySuspendResumeResult buildCoawaitCalls(Sema &S, SourceLocation Loc,
 }
 
 ExprResult Sema::ActOnCoawaitExpr(Scope *S, SourceLocation Loc, Expr *E) {
+  auto *Coroutine = checkCoroutineContext(*this, Loc, "co_await");
+  if (!Coroutine) {
+    CorrectDelayedTyposInExpr(E);
+    return ExprError();
+  }
   if (E->getType()->isPlaceholderType()) {
     ExprResult R = CheckPlaceholderExpr(E);
     if (R.isInvalid()) return ExprError();
@@ -222,6 +232,7 @@ ExprResult Sema::ActOnCoawaitExpr(Scope *S, SourceLocation Loc, Expr *E) {
   ExprResult Awaitable = buildOperatorCoawaitCall(*this, S, Loc, E);
   if (Awaitable.isInvalid())
     return ExprError();
+
   return BuildCoawaitExpr(Loc, Awaitable.get());
 }
 ExprResult Sema::BuildCoawaitExpr(SourceLocation Loc, Expr *E) {
@@ -275,8 +286,10 @@ static ExprResult buildPromiseCall(Sema &S, FunctionScopeInfo *Coroutine,
 
 ExprResult Sema::ActOnCoyieldExpr(Scope *S, SourceLocation Loc, Expr *E) {
   auto *Coroutine = checkCoroutineContext(*this, Loc, "co_yield");
-  if (!Coroutine)
+  if (!Coroutine) {
+    CorrectDelayedTyposInExpr(E);
     return ExprError();
+  }
 
   // Build yield_value call.
   ExprResult Awaitable =
@@ -325,8 +338,14 @@ ExprResult Sema::BuildCoyieldExpr(SourceLocation Loc, Expr *E) {
 }
 
 StmtResult Sema::ActOnCoreturnStmt(SourceLocation Loc, Expr *E) {
+  auto *Coroutine = checkCoroutineContext(*this, Loc, "co_return");
+  if (!Coroutine) {
+    CorrectDelayedTyposInExpr(E);
+    return StmtError();
+  }
   return BuildCoreturnStmt(Loc, E);
 }
+
 StmtResult Sema::BuildCoreturnStmt(SourceLocation Loc, Expr *E) {
   auto *Coroutine = checkCoroutineContext(*this, Loc, "co_return");
   if (!Coroutine)
@@ -343,7 +362,7 @@ StmtResult Sema::BuildCoreturnStmt(SourceLocation Loc, Expr *E) {
   // of scope, we should treat the operand as an xvalue for this overload
   // resolution.
   ExprResult PC;
-  if (E && !E->getType()->isVoidType()) {
+  if (E && (isa<InitListExpr>(E) || !E->getType()->isVoidType())) {
     PC = buildPromiseCall(*this, Coroutine, Loc, "return_value", E);
   } else {
     E = MakeFullDiscardedValueExpr(E).get();
@@ -356,6 +375,34 @@ StmtResult Sema::BuildCoreturnStmt(SourceLocation Loc, Expr *E) {
 
   Stmt *Res = new (Context) CoreturnStmt(Loc, E, PCE);
   Coroutine->CoroutineStmts.push_back(Res);
+  return Res;
+}
+
+static ExprResult buildStdCurrentExceptionCall(Sema &S, SourceLocation Loc) {
+  NamespaceDecl *Std = S.getStdNamespace();
+  if (!Std) {
+    S.Diag(Loc, diag::err_implied_std_current_exception_not_found);
+    return ExprError();
+  }
+  LookupResult Result(S, &S.PP.getIdentifierTable().get("current_exception"),
+                      Loc, Sema::LookupOrdinaryName);
+  if (!S.LookupQualifiedName(Result, Std)) {
+    S.Diag(Loc, diag::err_implied_std_current_exception_not_found);
+    return ExprError();
+  }
+
+  // FIXME The STL is free to provide more than one overload.
+  FunctionDecl *FD = Result.getAsSingle<FunctionDecl>();
+  if (!FD) {
+    S.Diag(Loc, diag::err_malformed_std_current_exception);
+    return ExprError();
+  }
+  ExprResult Res = S.BuildDeclRefExpr(FD, FD->getType(), VK_LValue, Loc);
+  Res = S.ActOnCallExpr(/*Scope*/ nullptr, Res.get(), Loc, None, Loc);
+  if (Res.isInvalid()) {
+    S.Diag(Loc, diag::err_malformed_std_current_exception);
+    return ExprError();
+  }
   return Res;
 }
 
@@ -413,10 +460,59 @@ void Sema::CheckCompletedCoroutineBody(FunctionDecl *FD, Stmt *&Body) {
   if (FinalSuspend.isInvalid())
     return FD->setInvalidDecl();
 
-  // FIXME: Perform analysis of set_exception call.
-
-  // FIXME: Try to form 'p.return_void();' expression statement to handle
+  // Try to form 'p.return_void();' expression statement to handle
   // control flowing off the end of the coroutine.
+  // Also try to form 'p.set_exception(std::current_exception());' to handle
+  // uncaught exceptions.
+  ExprResult SetException;
+  StmtResult Fallthrough;
+  if (Fn->CoroutinePromise &&
+      !Fn->CoroutinePromise->getType()->isDependentType()) {
+    CXXRecordDecl *RD = Fn->CoroutinePromise->getType()->getAsCXXRecordDecl();
+    assert(RD && "Type should have already been checked");
+    // [dcl.fct.def.coroutine]/4
+    // The unqualified-ids 'return_void' and 'return_value' are looked up in
+    // the scope of class P. If both are found, the program is ill-formed.
+    DeclarationName RVoidDN = PP.getIdentifierInfo("return_void");
+    LookupResult RVoidResult(*this, RVoidDN, Loc, Sema::LookupMemberName);
+    const bool HasRVoid = LookupQualifiedName(RVoidResult, RD);
+
+    DeclarationName RValueDN = PP.getIdentifierInfo("return_value");
+    LookupResult RValueResult(*this, RValueDN, Loc, Sema::LookupMemberName);
+    const bool HasRValue = LookupQualifiedName(RValueResult, RD);
+
+    if (HasRVoid && HasRValue) {
+      // FIXME Improve this diagnostic
+      Diag(FD->getLocation(), diag::err_coroutine_promise_return_ill_formed)
+          << RD;
+      return FD->setInvalidDecl();
+    } else if (HasRVoid) {
+      // If the unqualified-id return_void is found, flowing off the end of a
+      // coroutine is equivalent to a co_return with no operand. Otherwise,
+      // flowing off the end of a coroutine results in undefined behavior.
+      Fallthrough = BuildCoreturnStmt(FD->getLocation(), nullptr);
+      Fallthrough = ActOnFinishFullStmt(Fallthrough.get());
+      if (Fallthrough.isInvalid())
+        return FD->setInvalidDecl();
+    }
+
+    // [dcl.fct.def.coroutine]/3
+    // The unqualified-id set_exception is found in the scope of P by class
+    // member access lookup (3.4.5).
+    DeclarationName SetExDN = PP.getIdentifierInfo("set_exception");
+    LookupResult SetExResult(*this, SetExDN, Loc, Sema::LookupMemberName);
+    if (LookupQualifiedName(SetExResult, RD)) {
+      // Form the call 'p.set_exception(std::current_exception())'
+      SetException = buildStdCurrentExceptionCall(*this, Loc);
+      if (SetException.isInvalid())
+        return FD->setInvalidDecl();
+      Expr *E = SetException.get();
+      SetException = buildPromiseCall(*this, Fn, Loc, "set_exception", E);
+      SetException = ActOnFinishFullExpr(SetException.get(), Loc);
+      if (SetException.isInvalid())
+        return FD->setInvalidDecl();
+    }
+  }
 
   // Build implicit 'p.get_return_object()' expression and form initialization
   // of return type from it.
@@ -443,6 +539,5 @@ void Sema::CheckCompletedCoroutineBody(FunctionDecl *FD, Stmt *&Body) {
   // Build body for the coroutine wrapper statement.
   Body = new (Context) CoroutineBodyStmt(
       Body, PromiseStmt.get(), InitialSuspend.get(), FinalSuspend.get(),
-      /*SetException*/nullptr, /*Fallthrough*/nullptr,
-      ReturnObject.get(), ParamMoves);
+      SetException.get(), Fallthrough.get(), ReturnObject.get(), ParamMoves);
 }

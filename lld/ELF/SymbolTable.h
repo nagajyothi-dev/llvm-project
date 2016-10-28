@@ -12,6 +12,7 @@
 
 #include "InputFiles.h"
 #include "LTO.h"
+#include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Regex.h"
 
@@ -21,7 +22,7 @@ class Lazy;
 template <class ELFT> class OutputSectionBase;
 struct Symbol;
 
-typedef llvm::CachedHash<StringRef> SymName;
+typedef llvm::CachedHashStringRef SymName;
 
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
@@ -60,8 +61,11 @@ public:
 
   Symbol *addUndefined(StringRef Name);
   Symbol *addUndefined(StringRef Name, uint8_t Binding, uint8_t StOther,
-                       uint8_t Type, bool CanOmitFromDynSym,
-                       bool HasUnnamedAddr, InputFile *File);
+                       uint8_t Type, bool CanOmitFromDynSym, InputFile *File);
+
+  Symbol *addRegular(StringRef Name, uint8_t StOther, uint8_t Type,
+                     uintX_t Value, uintX_t Size, uint8_t Binding,
+                     InputSectionBase<ELFT> *Section);
 
   Symbol *addRegular(StringRef Name, const Elf_Sym &Sym,
                      InputSectionBase<ELFT> *Section);
@@ -74,12 +78,11 @@ public:
   void addLazyArchive(ArchiveFile *F, const llvm::object::Archive::Symbol S);
   void addLazyObject(StringRef Name, LazyObjectFile &Obj);
   Symbol *addBitcode(StringRef Name, uint8_t Binding, uint8_t StOther,
-                     uint8_t Type, bool CanOmitFromDynSym, bool HasUnnamedAddr,
-                     BitcodeFile *File);
+                     uint8_t Type, bool CanOmitFromDynSym, BitcodeFile *File);
 
   Symbol *addCommon(StringRef N, uint64_t Size, uint64_t Alignment,
                     uint8_t Binding, uint8_t StOther, uint8_t Type,
-                    bool HasUnnamedAddr, InputFile *File);
+                    InputFile *File);
 
   void scanUndefinedFlags();
   void scanShlibUndefined();
@@ -96,9 +99,8 @@ private:
   std::pair<Symbol *, bool> insert(StringRef &Name);
   std::pair<Symbol *, bool> insert(StringRef &Name, uint8_t Type,
                                    uint8_t Visibility, bool CanOmitFromDynSym,
-                                   bool HasUnnamedAddr, InputFile *File);
+                                   InputFile *File);
 
-  std::string conflictMsg(SymbolBody *Existing, InputFile *NewFile);
   void reportDuplicate(SymbolBody *Existing, InputFile *NewFile);
 
   std::map<std::string, std::vector<SymbolBody *>> getDemangledSyms();
@@ -124,7 +126,7 @@ private:
   // Comdat groups define "link once" sections. If two comdat groups have the
   // same name, only one of them is linked, and the other is ignored. This set
   // is used to uniquify them.
-  llvm::DenseSet<StringRef> ComdatGroups;
+  llvm::DenseSet<llvm::CachedHashStringRef> ComdatGroups;
 
   std::vector<ObjectFile<ELFT> *> ObjectFiles;
   std::vector<SharedFile<ELFT> *> SharedFiles;

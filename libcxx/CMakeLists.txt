@@ -270,9 +270,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBCXX_LIBRARY_DIR})
 # LIBCXX_CXX_FLAGS: General flags for both the compiler and linker.
 # LIBCXX_COMPILE_FLAGS: Compile only flags.
 # LIBCXX_LINK_FLAGS: Linker only flags.
+# LIBCXX_LIBRARIES: libraries libc++ is linked to.
+# LIBCXX_INTERFACE_LIBRARIES: Libraries that must be linked when using libc++
+#                             These libraries are exposed in the linker script.
 set(LIBCXX_COMPILE_FLAGS "")
 set(LIBCXX_LINK_FLAGS "")
 set(LIBCXX_LIBRARIES "")
+set(LIBCXX_INTERFACE_LIBRARIES "")
 
 # Include macros for adding and removing libc++ flags.
 include(HandleLibcxxFlags)
@@ -319,20 +323,13 @@ remove_flags(-stdlib=libc++ -stdlib=libstdc++)
 # so they don't get transformed into -Wno and -errors respectivly.
 remove_flags(-Wno-pedantic -pedantic-errors -pedantic)
 
-# FIXME: this is cribbed from HandleLLVMOptions.cmake.
-if(LIBCXX_STANDALONE_BUILD)
-  # Pass -Wl,-z,defs. This makes sure all symbols are defined. Otherwise a DSO
-  # build might work on ELF but fail on MachO/COFF.
-  if(NOT (${CMAKE_SYSTEM_NAME} MATCHES "Darwin" OR WIN32 OR CYGWIN OR
-          ${CMAKE_SYSTEM_NAME} MATCHES "FreeBSD" OR
-          ${CMAKE_SYSTEM_NAME} MATCHES "OpenBSD") AND
-     NOT LLVM_USE_SANITIZER)
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,defs")
-  endif()
-endif()
-
 # Required flags ==============================================================
 set(LIBCXX_STANDARD_VER c++11 CACHE INTERNAL "internal option to change build dialect")
+if (LIBCXX_HAS_MUSL_LIBC)
+  # musl's pthread implementations uses volatile types in their structs which is
+  # not a constexpr in C++11 but is in C++14, so we use C++14 with musl.
+  set(LIBCXX_STANDARD_VER c++14 CACHE INTERNAL "internal option to change build dialect")
+endif()
 add_compile_flags_if_supported(-std=${LIBCXX_STANDARD_VER})
 mangle_name("LIBCXX_SUPPORTS_STD_EQ_${LIBCXX_STANDARD_VER}_FLAG" SUPPORTS_DIALECT_NAME)
 if (NOT MSVC AND NOT ${SUPPORTS_DIALECT_NAME})
@@ -344,6 +341,11 @@ endif()
 # Thus, we do nothing and hope we don't accidentally include any of the C++
 # headers
 add_compile_flags_if_supported(-nostdinc++)
+
+# Hide all inline function definitions which have not explicitly been marked
+# visible. This prevents new definitions for inline functions from appearing in
+# the dylib when get ODR used by another function.
+add_compile_flags_if_supported(-fvisibility-inlines-hidden)
 
 # Let the library headers know they are currently being used to build the
 # library.
@@ -418,6 +420,16 @@ endif()
 
 # Feature flags ===============================================================
 define_if(MSVC -D_CRT_SECURE_NO_WARNINGS)
+
+# Modules flags ===============================================================
+# FIXME The libc++ sources are fundamentally non-modular. They need special
+# versions of the headers in order to provide C++03 and legacy ABI definitions.
+# NOTE: The public headers can be used with modules in all other contexts.
+if (LLVM_ENABLE_MODULES)
+  # Ignore that the rest of the modules flags are now unused.
+  add_compile_flags_if_supported(-Wno-unused-command-line-argument)
+  add_compile_flags(-fno-modules)
+endif()
 
 # Sanitizer flags =============================================================
 

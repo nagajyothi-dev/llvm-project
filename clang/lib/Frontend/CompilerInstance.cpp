@@ -859,7 +859,7 @@ bool CompilerInstance::ExecuteAction(FrontendAction &Act) {
     createFrontendTimer();
 
   if (getFrontendOpts().ShowStats || !getFrontendOpts().StatsFile.empty())
-    llvm::EnableStatistics();
+    llvm::EnableStatistics(false);
 
   for (const FrontendInputFile &FIF : getFrontendOpts().Inputs) {
     // Reset the ID tables if we are reusing the SourceManager and parsing
@@ -955,7 +955,8 @@ static bool compileModuleImpl(CompilerInstance &ImportingInstance,
       std::remove_if(PPOpts.Macros.begin(), PPOpts.Macros.end(),
                      [&HSOpts](const std::pair<std::string, bool> &def) {
         StringRef MacroDef = def.first;
-        return HSOpts.ModulesIgnoreMacros.count(MacroDef.split('=').first) > 0;
+        return HSOpts.ModulesIgnoreMacros.count(
+                   llvm::CachedHashString(MacroDef.split('=').first)) > 0;
       }),
       PPOpts.Macros.end());
 

@@ -101,15 +101,26 @@ static void computeFunctionSummary(ModuleSummaryIndex &Index, const Module &M,
       auto CS = ImmutableCallSite(&I);
       if (!CS)
         continue;
+      auto *CalledValue = CS.getCalledValue();
       auto *CalledFunction = CS.getCalledFunction();
+      // Check if this is an alias to a function. If so, get the
+      // called aliasee for the checks below.
+      if (auto *GA = dyn_cast<GlobalAlias>(CalledValue)) {
+        assert(!CalledFunction && "Expected null called function in callsite for alias");
+        CalledFunction = dyn_cast<Function>(GA->getBaseObject());
+      }
       // Check if this is a direct call to a known function.
       if (CalledFunction) {
         // Skip nameless and intrinsics.
         if (!CalledFunction->hasName() || CalledFunction->isIntrinsic())
           continue;
         auto ScaledCount = BFI ? BFI->getBlockProfileCount(&BB) : None;
+        // Use the original CalledValue, in case it was an alias. We want
+        // to record the call edge to the alias in that case. Eventually
+        // an alias summary will be created to associate the alias and
+        // aliasee.
         auto *CalleeId =
-            M.getValueSymbolTable().lookup(CalledFunction->getName());
+            M.getValueSymbolTable().lookup(CalledValue->getName());
 
         auto Hotness = ScaledCount ? getHotness(ScaledCount.getValue(), PSI)
                                    : CalleeInfo::HotnessType::Unknown;
@@ -228,7 +239,7 @@ ModuleSummaryIndexWrapperPass::ModuleSummaryIndexWrapperPass()
 }
 
 bool ModuleSummaryIndexWrapperPass::runOnModule(Module &M) {
-  auto &PSI = *getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI(M);
+  auto &PSI = *getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI();
   Index = buildModuleSummaryIndex(
       M,
       [this](const Function &F) {

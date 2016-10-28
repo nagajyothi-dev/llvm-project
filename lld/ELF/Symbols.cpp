@@ -15,6 +15,7 @@
 #include "Target.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Path.h"
 
 using namespace llvm;
 using namespace llvm::object;
@@ -59,13 +60,17 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
       Addend = 0;
     }
     uintX_t VA = (SC->OutSec ? SC->OutSec->getVA() : 0) + SC->getOffset(Offset);
-    if (D.isTls() && !Config->Relocatable)
+    if (D.isTls() && !Config->Relocatable) {
+      if (!Out<ELFT>::TlsPhdr)
+        fatal(getFilename(D.File) +
+              " has a STT_TLS symbol but doesn't have a PT_TLS section");
       return VA - Out<ELFT>::TlsPhdr->p_vaddr;
+    }
     return VA;
   }
   case SymbolBody::DefinedCommonKind:
-    return CommonInputSection<ELFT>::X->OutSec->getVA() +
-           CommonInputSection<ELFT>::X->OutSecOff +
+    return InputSection<ELFT>::CommonInputSection->OutSec->getVA() +
+           InputSection<ELFT>::CommonInputSection->OutSecOff +
            cast<DefinedCommon>(Body).Offset;
   case SymbolBody::SharedKind: {
     auto &SS = cast<SharedSymbol<ELFT>>(Body);
@@ -88,13 +93,13 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
 SymbolBody::SymbolBody(Kind K, uint32_t NameOffset, uint8_t StOther,
                        uint8_t Type)
     : SymbolKind(K), NeedsCopyOrPltAddr(false), IsLocal(true),
-      IsInGlobalMipsGot(false), Type(Type), StOther(StOther),
-      NameOffset(NameOffset) {}
+      IsInGlobalMipsGot(false), Is32BitMipsGot(false), Type(Type),
+      StOther(StOther), NameOffset(NameOffset) {}
 
 SymbolBody::SymbolBody(Kind K, StringRef Name, uint8_t StOther, uint8_t Type)
     : SymbolKind(K), NeedsCopyOrPltAddr(false), IsLocal(false),
-      IsInGlobalMipsGot(false), Type(Type), StOther(StOther),
-      Name({Name.data(), Name.size()}) {}
+      IsInGlobalMipsGot(false), Is32BitMipsGot(false), Type(Type),
+      StOther(StOther), Name({Name.data(), Name.size()}) {}
 
 StringRef SymbolBody::getName() const {
   assert(!isLocal());
@@ -190,6 +195,13 @@ Defined::Defined(Kind K, StringRef Name, uint8_t StOther, uint8_t Type)
 Defined::Defined(Kind K, uint32_t NameOffset, uint8_t StOther, uint8_t Type)
     : SymbolBody(K, NameOffset, StOther, Type) {}
 
+template <class ELFT> bool DefinedRegular<ELFT>::isMipsPIC() const {
+  if (!Section || !isFunc())
+    return false;
+  return (this->StOther & STO_MIPS_MIPS16) == STO_MIPS_PIC ||
+         (Section->getFile()->getObj().getHeader()->e_flags & EF_MIPS_PIC);
+}
+
 Undefined::Undefined(StringRef Name, uint8_t StOther, uint8_t Type,
                      InputFile *File)
     : SymbolBody(SymbolBody::UndefinedKind, Name, StOther, Type) {
@@ -215,10 +227,10 @@ DefinedCommon::DefinedCommon(StringRef N, uint64_t Size, uint64_t Alignment,
   this->File = File;
 }
 
-InputFile *Lazy::fetch() {
+InputFile *Lazy::fetch(BumpPtrAllocator &Alloc) {
   if (auto *S = dyn_cast<LazyArchive>(this))
-    return S->fetch();
-  return cast<LazyObject>(this)->fetch();
+    return S->fetch(Alloc);
+  return cast<LazyObject>(this)->fetch(Alloc);
 }
 
 LazyArchive::LazyArchive(ArchiveFile &File,
@@ -232,21 +244,22 @@ LazyObject::LazyObject(StringRef Name, LazyObjectFile &File, uint8_t Type)
   this->File = &File;
 }
 
-InputFile *LazyArchive::fetch() {
-  MemoryBufferRef MBRef = file()->getMember(&Sym);
+InputFile *LazyArchive::fetch(BumpPtrAllocator &Alloc) {
+  std::pair<MemoryBufferRef, uint64_t> MBInfo = file()->getMember(&Sym);
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
-  if (MBRef.getBuffer().empty())
+  if (MBInfo.first.getBuffer().empty())
     return nullptr;
-  return createObjectFile(MBRef, file()->getName());
+  return createObjectFile(Alloc, MBInfo.first, file()->getName(),
+                          MBInfo.second);
 }
 
-InputFile *LazyObject::fetch() {
+InputFile *LazyObject::fetch(BumpPtrAllocator &Alloc) {
   MemoryBufferRef MBRef = file()->getBuffer();
   if (MBRef.getBuffer().empty())
     return nullptr;
-  return createObjectFile(MBRef);
+  return createObjectFile(Alloc, MBRef);
 }
 
 bool Symbol::includeInDynsym() const {
@@ -314,6 +327,11 @@ template uint32_t SymbolBody::template getSize<ELF32LE>() const;
 template uint32_t SymbolBody::template getSize<ELF32BE>() const;
 template uint64_t SymbolBody::template getSize<ELF64LE>() const;
 template uint64_t SymbolBody::template getSize<ELF64BE>() const;
+
+template class elf::DefinedRegular<ELF32LE>;
+template class elf::DefinedRegular<ELF32BE>;
+template class elf::DefinedRegular<ELF64LE>;
+template class elf::DefinedRegular<ELF64BE>;
 
 template class elf::DefinedSynthetic<ELF32LE>;
 template class elf::DefinedSynthetic<ELF32BE>;

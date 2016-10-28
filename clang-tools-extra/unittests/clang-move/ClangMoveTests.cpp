@@ -29,8 +29,12 @@ const char TestHeaderName[] = "foo.h";
 const char TestCCName[] = "foo.cc";
 
 const char TestHeader[] = "namespace a {\n"
-                          "class C1;\n"
+                          "class C1; // test\n"
+                          "template <typename T> class C2;\n"
                           "namespace b {\n"
+                          "// This is a Foo class\n"
+                          "// which is used in\n"
+                          "// test.\n"
                           "class Foo {\n"
                           "public:\n"
                           "  void f();\n"
@@ -38,7 +42,7 @@ const char TestHeader[] = "namespace a {\n"
                           "private:\n"
                           "  C1 *c1;\n"
                           "  static int b;\n"
-                          "};\n"
+                          "}; // abc\n"
                           "\n"
                           "class Foo2 {\n"
                           "public:\n"
@@ -51,19 +55,29 @@ const char TestCC[] = "#include \"foo.h\"\n"
                       "namespace a {\n"
                       "namespace b {\n"
                       "namespace {\n"
+                      "// comment1.\n"
                       "void f1() {}\n"
+                      "/// comment2.\n"
                       "int kConstInt1 = 0;\n"
                       "} // namespace\n"
                       "\n"
+                      "/* comment 3*/\n"
                       "static int kConstInt2 = 1;\n"
                       "\n"
+                      "/** comment4\n"
+                      "*/\n"
                       "static int help() {\n"
                       "  int a = 0;\n"
                       "  return a;\n"
                       "}\n"
                       "\n"
+                      "// comment5\n"
+                      "// comment5\n"
                       "void Foo::f() { f1(); }\n"
                       "\n"
+                      "/////////////\n"
+                      "// comment //\n"
+                      "/////////////\n"
                       "int Foo::b = 2;\n"
                       "int Foo2::f() {\n"
                       "  f1();\n"
@@ -73,7 +87,8 @@ const char TestCC[] = "#include \"foo.h\"\n"
                       "} // namespace a\n";
 
 const char ExpectedTestHeader[] = "namespace a {\n"
-                                  "class C1;\n"
+                                  "class C1; // test\n"
+                                  "template <typename T> class C2;\n"
                                   "namespace b {\n"
                                   "\n"
                                   "class Foo2 {\n"
@@ -87,12 +102,17 @@ const char ExpectedTestCC[] = "#include \"foo.h\"\n"
                               "namespace a {\n"
                               "namespace b {\n"
                               "namespace {\n"
+                              "// comment1.\n"
                               "void f1() {}\n"
+                              "/// comment2.\n"
                               "int kConstInt1 = 0;\n"
                               "} // namespace\n"
                               "\n"
+                              "/* comment 3*/\n"
                               "static int kConstInt2 = 1;\n"
                               "\n"
+                              "/** comment4\n"
+                              "*/\n"
                               "static int help() {\n"
                               "  int a = 0;\n"
                               "  return a;\n"
@@ -105,9 +125,15 @@ const char ExpectedTestCC[] = "#include \"foo.h\"\n"
                               "} // namespace b\n"
                               "} // namespace a\n";
 
-const char ExpectedNewHeader[] = "namespace a {\n"
-                                 "class C1;\n"
+const char ExpectedNewHeader[] = "#ifndef NEW_FOO_H\n"
+                                 "#define NEW_FOO_H\n"
+                                 "namespace a {\n"
+                                 "class C1; // test\n"
+                                 "template <typename T> class C2;\n"
                                  "namespace b {\n"
+                                 "// This is a Foo class\n"
+                                 "// which is used in\n"
+                                 "// test.\n"
                                  "class Foo {\n"
                                  "public:\n"
                                  "  void f();\n"
@@ -115,22 +141,33 @@ const char ExpectedNewHeader[] = "namespace a {\n"
                                  "private:\n"
                                  "  C1 *c1;\n"
                                  "  static int b;\n"
-                                 "};\n"
+                                 "}; // abc\n"
                                  "} // namespace b\n"
-                                 "} // namespace a\n";
+                                 "} // namespace a\n"
+                                 "#endif // NEW_FOO_H\n";
 
 const char ExpectedNewCC[] = "namespace a {\n"
                              "namespace b {\n"
                              "namespace {\n"
+                             "// comment1.\n"
                              "void f1() {}\n"
+                             "/// comment2.\n"
                              "int kConstInt1 = 0;\n"
                              "} // namespace\n"
+                             "/* comment 3*/\n"
                              "static int kConstInt2 = 1;\n"
+                             "/** comment4\n"
+                             "*/\n"
                              "static int help() {\n"
                              "  int a = 0;\n"
                              "  return a;\n"
                              "}\n"
+                             "// comment5\n"
+                             "// comment5\n"
                              "void Foo::f() { f1(); }\n"
+                             "/////////////\n"
+                             "// comment //\n"
+                             "/////////////\n"
                              "int Foo::b = 2;\n"
                              "} // namespace b\n"
                              "} // namespace a\n";
@@ -156,13 +193,17 @@ runClangMoveOnCode(const move::ClangMoveTool::MoveDefinitionSpec &Spec) {
   CreateFiles(Spec.OldCC, TestCC);
 
   std::map<std::string, tooling::Replacements> FileToReplacements;
-  ClangMoveTool MoveTool(Spec, FileToReplacements);
+  llvm::SmallString<128> InitialDirectory;
+  std::error_code EC = llvm::sys::fs::current_path(InitialDirectory);
+  assert(!EC);
+  (void)EC;
   auto Factory = llvm::make_unique<clang::move::ClangMoveActionFactory>(
-      Spec, FileToReplacements);
+      Spec, FileToReplacements, InitialDirectory.str(), "LLVM");
 
   tooling::runToolOnCodeWithArgs(
-      Factory->create(), TestCC, {"-std=c++11"}, TestCCName, "clang-move",
-      std::make_shared<PCHContainerOperations>(), FileToSourceText);
+      Factory->create(), TestCC, {"-std=c++11", "-fparse-all-comments"},
+      TestCCName, "clang-move", std::make_shared<PCHContainerOperations>(),
+      FileToSourceText);
   formatAndApplyAllReplacements(FileToReplacements, Context.Rewrite, "llvm");
   // The Key is file name, value is the new code after moving the class.
   std::map<std::string, std::string> Results;
@@ -175,12 +216,12 @@ runClangMoveOnCode(const move::ClangMoveTool::MoveDefinitionSpec &Spec) {
 
 TEST(ClangMove, MoveHeaderAndCC) {
   move::ClangMoveTool::MoveDefinitionSpec Spec;
-  Spec.Name = "a::b::Foo";
+  Spec.Names = {std::string("a::b::Foo")};
   Spec.OldHeader = "foo.h";
   Spec.OldCC = "foo.cc";
   Spec.NewHeader = "new_foo.h";
   Spec.NewCC = "new_foo.cc";
-  std::string ExpectedHeader = "#include \"" + Spec.NewHeader + "\"\n";
+  std::string ExpectedHeader = "#include \"" + Spec.NewHeader + "\"\n\n";
   auto Results = runClangMoveOnCode(Spec);
   EXPECT_EQ(ExpectedTestHeader, Results[Spec.OldHeader]);
   EXPECT_EQ(ExpectedTestCC, Results[Spec.OldCC]);
@@ -190,7 +231,7 @@ TEST(ClangMove, MoveHeaderAndCC) {
 
 TEST(ClangMove, MoveHeaderOnly) {
   move::ClangMoveTool::MoveDefinitionSpec Spec;
-  Spec.Name = "a::b::Foo";
+  Spec.Names = {std::string("a::b::Foo")};
   Spec.OldHeader = "foo.h";
   Spec.NewHeader = "new_foo.h";
   auto Results = runClangMoveOnCode(Spec);
@@ -201,10 +242,10 @@ TEST(ClangMove, MoveHeaderOnly) {
 
 TEST(ClangMove, MoveCCOnly) {
   move::ClangMoveTool::MoveDefinitionSpec Spec;
-  Spec.Name = "a::b::Foo";
+  Spec.Names = {std::string("a::b::Foo")};
   Spec.OldCC = "foo.cc";
   Spec.NewCC = "new_foo.cc";
-  std::string ExpectedHeader = "#include \"foo.h\"\n";
+  std::string ExpectedHeader = "#include \"foo.h\"\n\n";
   auto Results = runClangMoveOnCode(Spec);
   EXPECT_EQ(2u, Results.size());
   EXPECT_EQ(ExpectedTestCC, Results[Spec.OldCC]);
@@ -213,7 +254,7 @@ TEST(ClangMove, MoveCCOnly) {
 
 TEST(ClangMove, MoveNonExistClass) {
   move::ClangMoveTool::MoveDefinitionSpec Spec;
-  Spec.Name = "NonExistFoo";
+  Spec.Names = {std::string("NonExistFoo")};
   Spec.OldHeader = "foo.h";
   Spec.OldCC = "foo.cc";
   Spec.NewHeader = "new_foo.h";

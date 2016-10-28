@@ -47,6 +47,7 @@
 #include "SymbolTable.h"
 #include "Target.h"
 #include "Thunks.h"
+#include "Strings.h"
 
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/raw_ostream.h"
@@ -61,10 +62,11 @@ namespace elf {
 
 static bool refersToGotEntry(RelExpr Expr) {
   return Expr == R_GOT || Expr == R_GOT_OFF || Expr == R_MIPS_GOT_LOCAL_PAGE ||
-         Expr == R_MIPS_GOT_OFF || Expr == R_MIPS_TLSGD ||
-         Expr == R_MIPS_TLSLD || Expr == R_GOT_PAGE_PC || Expr == R_GOT_PC ||
-         Expr == R_GOT_FROM_END || Expr == R_TLSGD || Expr == R_TLSGD_PC ||
-         Expr == R_TLSDESC || Expr == R_TLSDESC_PAGE;
+         Expr == R_MIPS_GOT_OFF || Expr == R_MIPS_GOT_OFF32 ||
+         Expr == R_MIPS_TLSGD || Expr == R_MIPS_TLSLD ||
+         Expr == R_GOT_PAGE_PC || Expr == R_GOT_PC || Expr == R_GOT_FROM_END ||
+         Expr == R_TLSGD || Expr == R_TLSGD_PC || Expr == R_TLSDESC ||
+         Expr == R_TLSDESC_PAGE;
 }
 
 static bool isPreemptible(const SymbolBody &Body, uint32_t Type) {
@@ -130,7 +132,7 @@ static unsigned handleTlsRelocation(uint32_t Type, SymbolBody &Body,
                                     InputSectionBase<ELFT> &C,
                                     typename ELFT::uint Offset,
                                     typename ELFT::uint Addend, RelExpr Expr) {
-  if (!(C.getSectionHdr()->sh_flags & SHF_ALLOC))
+  if (!(C.Flags & SHF_ALLOC))
     return 0;
 
   if (!Body.isTls())
@@ -142,14 +144,14 @@ static unsigned handleTlsRelocation(uint32_t Type, SymbolBody &Body,
     return handleNoRelaxTlsRelocation<ELFT>(Type, Body, C, Offset, Addend,
                                             Expr);
 
-  if ((Expr == R_TLSDESC || Expr == R_TLSDESC_PAGE || Expr == R_HINT) &&
+  if ((Expr == R_TLSDESC || Expr == R_TLSDESC_PAGE || Expr == R_TLSDESC_CALL) &&
       Config->Shared) {
     if (Out<ELFT>::Got->addDynTlsEntry(Body)) {
       uintX_t Off = Out<ELFT>::Got->getGlobalDynOffset(Body);
       Out<ELFT>::RelaDyn->addReloc(
           {Target->TlsDescRel, Out<ELFT>::Got, Off, false, &Body, 0});
     }
-    if (Expr != R_HINT)
+    if (Expr != R_TLSDESC_CALL)
       C.Relocations.push_back({Expr, Type, Offset, Addend, &Body});
     return 1;
   }
@@ -176,7 +178,7 @@ static unsigned handleTlsRelocation(uint32_t Type, SymbolBody &Body,
     return 1;
   }
 
-  if (Expr == R_TLSDESC_PAGE || Expr == R_TLSDESC || Expr == R_HINT ||
+  if (Expr == R_TLSDESC_PAGE || Expr == R_TLSDESC || Expr == R_TLSDESC_CALL ||
       Target->isTlsGlobalDynamicRel(Type)) {
     if (Config->Shared) {
       if (Out<ELFT>::Got->addDynTlsEntry(Body)) {
@@ -269,8 +271,8 @@ static int32_t findMipsPairedAddend(const uint8_t *Buf, const uint8_t *BufLoc,
     return ((read32<E>(BufLoc) & 0xffff) << 16) +
            readSignedLo16<E>(Buf + RI->r_offset);
   }
-  warning("can't find matching " + getRelName(Type) + " relocation for " +
-          getRelName(Rel->getType(Config->Mips64EL)));
+  warn("can't find matching " + getRelName(Type) + " relocation for " +
+       getRelName(Rel->getType(Config->Mips64EL)));
   return 0;
 }
 
@@ -302,9 +304,10 @@ static bool isStaticLinkTimeConstant(RelExpr E, uint32_t Type,
                                      const SymbolBody &Body) {
   // These expressions always compute a constant
   if (E == R_SIZE || E == R_GOT_FROM_END || E == R_GOT_OFF ||
-      E == R_MIPS_GOT_LOCAL_PAGE || E == R_MIPS_GOT_OFF || E == R_MIPS_TLSGD ||
-      E == R_GOT_PAGE_PC || E == R_GOT_PC || E == R_PLT_PC || E == R_TLSGD_PC ||
-      E == R_TLSGD || E == R_PPC_PLT_OPD || E == R_TLSDESC_PAGE ||
+      E == R_MIPS_GOT_LOCAL_PAGE || E == R_MIPS_GOT_OFF ||
+      E == R_MIPS_GOT_OFF32 || E == R_MIPS_TLSGD || E == R_GOT_PAGE_PC ||
+      E == R_GOT_PC || E == R_PLT_PC || E == R_TLSGD_PC || E == R_TLSGD ||
+      E == R_PPC_PLT_OPD || E == R_TLSDESC_CALL || E == R_TLSDESC_PAGE ||
       E == R_HINT || E == R_THUNK_PC || E == R_THUNK_PLT_PC)
     return true;
 
@@ -443,8 +446,8 @@ static RelExpr adjustExpr(const elf::ObjectFile<ELFT> &File, SymbolBody &Body,
   // the refered symbol can be preemepted to refer to the executable.
   if (Config->Shared || (Config->Pic && !isRelExpr(Expr))) {
     StringRef Name = getSymbolName(File, Body);
-    error("can't create dynamic relocation " + getRelName(Type) +
-          " against " + (Name.empty() ? "readonly segment" : "symbol " + Name));
+    error("can't create dynamic relocation " + getRelName(Type) + " against " +
+          (Name.empty() ? "readonly segment" : "symbol " + Name));
     return Expr;
   }
   if (Body.getVisibility() != STV_DEFAULT) {
@@ -519,6 +522,65 @@ static typename ELFT::uint computeAddend(const elf::ObjectFile<ELFT> &File,
   return Addend;
 }
 
+// Find symbol that encloses given offset. Used for error reporting.
+template <class ELFT>
+static DefinedRegular<ELFT> *getSymbolAt(InputSectionBase<ELFT> *S,
+                                         typename ELFT::uint Offset) {
+  for (SymbolBody *B : S->getFile()->getSymbols())
+    if (auto *D = dyn_cast<DefinedRegular<ELFT>>(B))
+      if (D->Value <= Offset && D->Value + D->Size > Offset && D->Section == S)
+        return D;
+
+  return nullptr;
+}
+
+template <class ELFT>
+static std::string getLocation(SymbolBody &Sym, InputSectionBase<ELFT> &S,
+                               typename ELFT::uint Offset) {
+  ObjectFile<ELFT> *File = S.getFile();
+
+  // First check if we can get desired values from debugging information.
+  std::string LineInfo = File->getDIHelper()->getLineInfo(Offset);
+  if (!LineInfo.empty())
+    return LineInfo;
+
+  // If don't have STT_FILE typed symbol in object file then
+  // use object file name.
+  std::string SrcFile = File->SourceFile;
+  if (SrcFile.empty())
+    SrcFile = Sym.File ? getFilename(Sym.File) : getFilename(File);
+
+  // Find a symbol at a given location.
+  DefinedRegular<ELFT> *Encl = getSymbolAt(&S, Offset);
+  if (Encl && Encl->Type == STT_FUNC) {
+    StringRef Func = getSymbolName(*File, *Encl);
+    return SrcFile + " (function " + maybeDemangle(Func) + ")";
+  }
+
+  // If there's no symbol, print out the offset instead of a symbol name.
+  return (SrcFile + " (" + S.Name + "+0x" + Twine::utohexstr(Offset) + ")")
+      .str();
+}
+
+template <class ELFT>
+static void reportUndefined(SymbolBody &Sym, InputSectionBase<ELFT> &S,
+                            typename ELFT::uint Offset) {
+  if (Config->UnresolvedSymbols == UnresolvedPolicy::Ignore)
+    return;
+
+  if (Config->Shared && Sym.symbol()->Visibility == STV_DEFAULT &&
+      Config->UnresolvedSymbols != UnresolvedPolicy::NoUndef)
+    return;
+
+  std::string Msg = getLocation(Sym, S, Offset) + ": undefined symbol '" +
+                    maybeDemangle(Sym.getName()) + "'";
+
+  if (Config->UnresolvedSymbols == UnresolvedPolicy::Warn)
+    warn(Msg);
+  else
+    error(Msg);
+}
+
 // The reason we have to do this early scan is as follows
 // * To mmap the output file, we need to know the size
 // * For that, we need to know how many dynamic relocs we will have.
@@ -536,7 +598,7 @@ template <class ELFT, class RelTy>
 static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
   typedef typename ELFT::uint uintX_t;
 
-  bool IsWrite = C.getSectionHdr()->sh_flags & SHF_WRITE;
+  bool IsWrite = C.Flags & SHF_WRITE;
 
   auto AddDyn = [=](const DynamicReloc<ELFT> &Reloc) {
     Out<ELFT>::RelaDyn->addReloc(Reloc);
@@ -558,6 +620,11 @@ static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
     SymbolBody &Body = File.getRelocTargetSym(RI);
     uint32_t Type = RI.getType(Config->Mips64EL);
 
+    // We only report undefined symbols if they are referenced somewhere in the
+    // code.
+    if (!Body.isLocal() && Body.isUndefined() && !Body.symbol()->isWeak())
+      reportUndefined(Body, C, RI.r_offset);
+
     RelExpr Expr = Target->getRelExpr(Type, Body);
     bool Preemptible = isPreemptible(Body, Type);
     Expr = adjustExpr(File, Body, IsWrite, Expr, Type, Buf + RI.r_offset);
@@ -575,7 +642,7 @@ static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
     uintX_t Offset;
     if (PieceI != PieceE) {
       assert(PieceI->InputOff <= RI.r_offset && "Relocation not in any piece");
-      if (PieceI->OutputOff == (size_t)-1)
+      if (PieceI->OutputOff == -1)
         continue;
       Offset = PieceI->OutputOff + RI.r_offset - PieceI->InputOff;
     } else {
@@ -596,8 +663,9 @@ static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
       continue;
     }
 
-    // Ignore "hint" relocation because it is for optional code optimization.
-    if (Expr == R_HINT)
+    // Ignore "hint" and TLS Descriptor call relocation because they are
+    // only markers for relaxation.
+    if (Expr == R_HINT || Expr == R_TLSDESC_CALL)
       continue;
 
     if (needsPlt(Expr) || Expr == R_THUNK_ABS || Expr == R_THUNK_PC ||

@@ -1957,7 +1957,8 @@ Instruction *InstCombiner::foldICmpShlConstant(ICmpInst &Cmp,
   // free on the target. It has the additional benefit of comparing to a
   // smaller constant, which will be target friendly.
   unsigned Amt = ShiftAmt->getLimitedValue(TypeBits - 1);
-  if (Shl->hasOneUse() && Amt != 0 && C->countTrailingZeros() >= Amt) {
+  if (Shl->hasOneUse() && Amt != 0 && C->countTrailingZeros() >= Amt &&
+      DL.isLegalInteger(TypeBits - Amt)) {
     Type *TruncTy = IntegerType::get(Cmp.getContext(), TypeBits - Amt);
     if (X->getType()->isVectorTy())
       TruncTy = VectorType::get(TruncTy, X->getType()->getVectorNumElements());
@@ -2320,7 +2321,8 @@ Instruction *InstCombiner::foldICmpAddConstant(ICmpInst &Cmp,
   // Fold icmp pred (add X, C2), C.
   Value *X = Add->getOperand(0);
   Type *Ty = Add->getType();
-  auto CR = Cmp.makeConstantRange(Cmp.getPredicate(), *C).subtract(*C2);
+  auto CR =
+      ConstantRange::makeExactICmpRegion(Cmp.getPredicate(), *C).subtract(*C2);
   const APInt &Upper = CR.getUpper();
   const APInt &Lower = CR.getLower();
   if (Cmp.isSigned()) {

@@ -216,33 +216,24 @@ def parseExclusion(exclusion_file):
        <method name>
     """
     excl_type = None
-    case_type = None
 
     with open(exclusion_file) as f:
         for line in f:
+            line = line.strip()
             if not excl_type:
-                [excl_type, case_type] = line.split()
+                excl_type = line
                 continue
 
-            line = line.strip()
             if not line:
                 excl_type = None
-            elif excl_type == 'skip' and case_type == 'files':
-                if not configuration.skip_files:
-                    configuration.skip_files = []
-                configuration.skip_files.append(line)
-            elif excl_type == 'skip' and case_type == 'methods':
-                if not configuration.skip_methods:
-                    configuration.skip_methods = []
-                configuration.skip_methods.append(line)
-            elif excl_type == 'xfail' and case_type == 'files':
-                if not configuration.xfail_files:
-                    configuration.xfail_files = []
-                configuration.xfail_files.append(line)
-            elif excl_type == 'xfail' and case_type == 'methods':
-                if not configuration.xfail_methods:
-                    configuration.xfail_methods = []
-                configuration.xfail_methods.append(line)
+            elif excl_type == 'skip':
+                if not configuration.skip_tests:
+                    configuration.skip_tests = []
+                configuration.skip_tests.append(line)
+            elif excl_type == 'xfail':
+                if not configuration.xfail_tests:
+                    configuration.xfail_tests = []
+                configuration.xfail_tests.append(line)
 
 
 def parseOptionsAndInitTestdirs():
@@ -375,7 +366,8 @@ def parseOptionsAndInitTestdirs():
         lldbtest_config.lldbExec = os.path.realpath(args.executable)
 
     if args.excluded:
-        parseExclusion(args.excluded)
+        for excl_file in args.excluded:
+            parseExclusion(excl_file)
 
     if args.p:
         if args.p.startswith('-'):
@@ -488,6 +480,8 @@ def parseOptionsAndInitTestdirs():
             map(lambda x: os.path.realpath(os.path.abspath(x)), args.args))
         # Shut off multiprocessing mode when test directories are specified.
         configuration.no_multiprocess_test_runner = True
+
+    lldbtest_config.codesign_identity = args.codesign_identity
 
     #print("testdirs:", testdirs)
 
@@ -681,16 +675,17 @@ def setupSysPath():
 
     # Assume lldb-mi is in same place as lldb
     # If not found, disable the lldb-mi tests
-    lldbMiExec = None
-    if lldbtest_config.lldbExec and is_exe(lldbtest_config.lldbExec + "-mi"):
-        lldbMiExec = lldbtest_config.lldbExec + "-mi"
-    if not lldbMiExec:
+    # TODO: Append .exe on Windows
+    #   - this will be in a separate commit in case the mi tests fail horribly
+    lldbDir = os.path.dirname(lldbtest_config.lldbExec)
+    lldbMiExec = os.path.join(lldbDir, "lldb-mi")
+    if is_exe(lldbMiExec):
+        os.environ["LLDBMI_EXEC"] = lldbMiExec
+    else:
         if not configuration.shouldSkipBecauseOfCategories(["lldb-mi"]):
             print(
                 "The 'lldb-mi' executable cannot be located.  The lldb-mi tests can not be run as a result.")
             configuration.skipCategories.append("lldb-mi")
-    else:
-        os.environ["LLDBMI_EXEC"] = lldbMiExec
 
     lldbPythonDir = None  # The directory that contains 'lldb/__init__.py'
     if configuration.lldbFrameworkPath:
@@ -799,8 +794,8 @@ def visit_file(dir, name):
             # We didn't match the regex, we're done.
             return
 
-    if configuration.skip_files:
-        for file_regexp in configuration.skip_files:
+    if configuration.skip_tests:
+        for file_regexp in configuration.skip_tests:
             if re.search(file_regexp, name):
                 return
 

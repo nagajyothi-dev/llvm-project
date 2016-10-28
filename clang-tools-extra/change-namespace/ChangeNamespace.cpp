@@ -82,32 +82,42 @@ const NamespaceDecl *getOuterNamespace(const NamespaceDecl *InnerNs,
   return CurrentNs;
 }
 
-// FIXME: get rid of this helper function if this is supported in clang-refactor
-// library.
-SourceLocation getStartOfNextLine(SourceLocation Loc, const SourceManager &SM,
-                                  const LangOptions &LangOpts) {
+static std::unique_ptr<Lexer>
+getLexerStartingFromLoc(SourceLocation Loc, const SourceManager &SM,
+                        const LangOptions &LangOpts) {
   if (Loc.isMacroID() &&
       !Lexer::isAtEndOfMacroExpansion(Loc, SM, LangOpts, &Loc))
-    return SourceLocation();
+    return nullptr;
   // Break down the source location.
   std::pair<FileID, unsigned> LocInfo = SM.getDecomposedLoc(Loc);
   // Try to load the file buffer.
   bool InvalidTemp = false;
   llvm::StringRef File = SM.getBufferData(LocInfo.first, &InvalidTemp);
   if (InvalidTemp)
-    return SourceLocation();
+    return nullptr;
 
   const char *TokBegin = File.data() + LocInfo.second;
   // Lex from the start of the given location.
-  Lexer Lex(SM.getLocForStartOfFile(LocInfo.first), LangOpts, File.begin(),
-            TokBegin, File.end());
+  return llvm::make_unique<Lexer>(SM.getLocForStartOfFile(LocInfo.first),
+                                  LangOpts, File.begin(), TokBegin, File.end());
+}
 
+// FIXME: get rid of this helper function if this is supported in clang-refactor
+// library.
+static SourceLocation getStartOfNextLine(SourceLocation Loc,
+                                         const SourceManager &SM,
+                                         const LangOptions &LangOpts) {
+  std::unique_ptr<Lexer> Lex = getLexerStartingFromLoc(Loc, SM, LangOpts);
+  if (!Lex.get())
+    return SourceLocation();
   llvm::SmallVector<char, 16> Line;
   // FIXME: this is a bit hacky to get ReadToEndOfLine work.
-  Lex.setParsingPreprocessorDirective(true);
-  Lex.ReadToEndOfLine(&Line);
-  // FIXME: should not +1 at EOF.
-  return Loc.getLocWithOffset(Line.size() + 1);
+  Lex->setParsingPreprocessorDirective(true);
+  Lex->ReadToEndOfLine(&Line);
+  auto End = Loc.getLocWithOffset(Line.size());
+  return SM.getLocForEndOfFile(SM.getDecomposedLoc(Loc).first) == End
+             ? End
+             : End.getLocWithOffset(1);
 }
 
 // Returns `R` with new range that refers to code after `Replaces` being
@@ -172,21 +182,24 @@ tooling::Replacement createInsertion(SourceLocation Loc,
 // Returns the shortest qualified name for declaration `DeclName` in the
 // namespace `NsName`. For example, if `DeclName` is "a::b::X" and `NsName`
 // is "a::c::d", then "b::X" will be returned.
+// \param DeclName A fully qualified name, "::a::b::X" or "a::b::X".
+// \param NsName A fully qualified name, "::a::b" or "a::b". Global namespace
+//        will have empty name.
 std::string getShortestQualifiedNameInNamespace(llvm::StringRef DeclName,
                                                 llvm::StringRef NsName) {
-  llvm::SmallVector<llvm::StringRef, 4> DeclNameSplitted;
-  DeclName.split(DeclNameSplitted, "::");
-  if (DeclNameSplitted.size() == 1)
-    return DeclName;
-  const auto UnqualifiedName = DeclNameSplitted.back();
-  while (true) {
+  DeclName = DeclName.ltrim(':');
+  NsName = NsName.ltrim(':');
+  // If `DeclName` is a global variable, we prepend "::" to it if it is not in
+  // the global namespace.
+  if (DeclName.find(':') == llvm::StringRef::npos)
+    return NsName.empty() ? DeclName.str() : ("::" + DeclName).str();
+
+  while (!DeclName.consume_front((NsName + "::").str())) {
     const auto Pos = NsName.find_last_of(':');
     if (Pos == llvm::StringRef::npos)
       return DeclName;
-    const auto Prefix = NsName.substr(0, Pos - 1);
-    if (DeclName.startswith(Prefix))
-      return (Prefix + "::" + UnqualifiedName).str();
-    NsName = Prefix;
+    assert(Pos > 0);
+    NsName = NsName.substr(0, Pos - 1);
   }
   return DeclName;
 }
@@ -230,8 +243,6 @@ ChangeNamespaceTool::ChangeNamespaceTool(
   DiffNewNamespace = joinNamespaces(NewNsSplitted);
 }
 
-// FIXME: handle the following symbols:
-//   - Variable references.
 void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
   // Match old namespace blocks.
   std::string FullOldNs = "::" + OldNamespace;
@@ -303,6 +314,14 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
            IsInMovedNs, unless(isImplicit()))
           .bind("dc"),
       this);
+
+  auto GlobalVarMatcher = varDecl(
+      hasGlobalStorage(), hasParent(namespaceDecl()),
+      unless(anyOf(IsInMovedNs, hasAncestor(namespaceDecl(isAnonymous())))));
+  Finder->addMatcher(declRefExpr(IsInMovedNs, hasAncestor(decl().bind("dc")),
+                                 to(GlobalVarMatcher.bind("var_decl")))
+                         .bind("var_ref"),
+                     this);
 }
 
 void ChangeNamespaceTool::run(
@@ -324,8 +343,19 @@ void ChangeNamespaceTool::run(
   } else if (const auto *TLoc = Result.Nodes.getNodeAs<TypeLoc>("type")) {
     fixTypeLoc(Result, startLocationForType(*TLoc), EndLocationForType(*TLoc),
                *TLoc);
+  } else if (const auto *VarRef = Result.Nodes.getNodeAs<DeclRefExpr>("var_ref")){
+    const auto *Var = Result.Nodes.getNodeAs<VarDecl>("var_decl");
+    assert(Var);
+    if (Var->getCanonicalDecl()->isStaticDataMember())
+      return;
+    std::string Name = Var->getQualifiedNameAsString();
+    const clang::Decl *Context = Result.Nodes.getNodeAs<clang::Decl>("dc");
+    assert(Context && "Empty decl context.");
+    clang::SourceRange VarRefRange = VarRef->getSourceRange();
+    replaceQualifiedSymbolInDeclContext(Result, Context, VarRefRange.getBegin(),
+                                        VarRefRange.getEnd(), Name);
   } else {
-    const auto* Call = Result.Nodes.getNodeAs<clang::CallExpr>("call");
+    const auto *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call");
     assert(Call != nullptr &&"Expecting callback for CallExpr.");
     const clang::FunctionDecl* Func = Call->getDirectCallee();
     assert(Func != nullptr);
@@ -344,6 +374,23 @@ void ChangeNamespaceTool::run(
   }
 }
 
+static SourceLocation getLocAfterNamespaceLBrace(const NamespaceDecl *NsDecl,
+                                                 const SourceManager &SM,
+                                                 const LangOptions &LangOpts) {
+  std::unique_ptr<Lexer> Lex =
+      getLexerStartingFromLoc(NsDecl->getLocStart(), SM, LangOpts);
+  assert(Lex.get() &&
+         "Failed to create lexer from the beginning of namespace.");
+  if (!Lex.get())
+    return SourceLocation();
+  Token Tok;
+  while (!Lex->LexFromRawLexer(Tok) && Tok.isNot(tok::TokenKind::l_brace)) {
+  }
+  return Tok.isNot(tok::TokenKind::l_brace)
+             ? SourceLocation()
+             : Tok.getEndLoc().getLocWithOffset(1);
+}
+
 // Stores information about a moved namespace in `MoveNamespaces` and leaves
 // the actual movement to `onEndOfTranslationUnit()`.
 void ChangeNamespaceTool::moveOldNamespace(
@@ -354,7 +401,9 @@ void ChangeNamespaceTool::moveOldNamespace(
     return;
 
   // Get the range of the code in the old namespace.
-  SourceLocation Start = NsDecl->decls_begin()->getLocStart();
+  SourceLocation Start = getLocAfterNamespaceLBrace(
+      NsDecl, *Result.SourceManager, Result.Context->getLangOpts());
+  assert(Start.isValid() && "Can't find l_brace for namespace.");
   SourceLocation End = NsDecl->getRBraceLoc().getLocWithOffset(-1);
   // Create a replacement that deletes the code in the old namespace merely for
   // retrieving offset and length from it.

@@ -41,7 +41,7 @@
 using namespace llvm;
 using namespace lto;
 
-LLVM_ATTRIBUTE_NORETURN void reportOpenError(StringRef Path, Twine Msg) {
+LLVM_ATTRIBUTE_NORETURN static void reportOpenError(StringRef Path, Twine Msg) {
   errs() << "failed to open " << Path << ": " << Msg << '\n';
   errs().flush();
   exit(1);
@@ -253,6 +253,11 @@ void splitCodeGen(Config &C, TargetMachine *TM, AddStreamFn AddStream,
             std::move(BC), ThreadCount++);
       },
       false);
+
+  // Because the inner lambda (which runs in a worker thread) captures our local
+  // variables, we need to wait for the worker threads to terminate before we
+  // can leave the function scope.
+  CodegenThreadPool.wait();
 }
 
 Expected<const Target *> initAndLookupTarget(Config &C, Module &Mod) {

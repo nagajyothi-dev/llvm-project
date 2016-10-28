@@ -114,7 +114,7 @@ public:
 
   llvm::Type *ConvertMemberPointerType(const MemberPointerType *MPT) override;
 
-  llvm::Value *
+  CGCallee
     EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
                                     const Expr *E,
                                     Address This,
@@ -170,8 +170,8 @@ public:
   emitTerminateForUnexpectedException(CodeGenFunction &CGF,
                                       llvm::Value *Exn) override;
 
-  void EmitFundamentalRTTIDescriptor(QualType Type);
-  void EmitFundamentalRTTIDescriptors();
+  void EmitFundamentalRTTIDescriptor(QualType Type, bool DLLExport);
+  void EmitFundamentalRTTIDescriptors(bool DLLExport);
   llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty) override;
   CatchTypeInfo
   getAddrOfCXXCatchHandlerType(QualType Ty,
@@ -263,9 +263,9 @@ public:
   llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                         CharUnits VPtrOffset) override;
 
-  llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
-                                         Address This, llvm::Type *Ty,
-                                         SourceLocation Loc) override;
+  CGCallee getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
+                                     Address This, llvm::Type *Ty,
+                                     SourceLocation Loc) override;
 
   llvm::Value *EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                          const CXXDestructorDecl *Dtor,
@@ -520,7 +520,7 @@ ItaniumCXXABI::ConvertMemberPointerType(const MemberPointerType *MPT) {
 ///
 /// If the member is non-virtual, memptr.ptr is the address of
 /// the function to call.
-llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
+CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     CodeGenFunction &CGF, const Expr *E, Address ThisAddr,
     llvm::Value *&ThisPtrForCall,
     llvm::Value *MemFnPtr, const MemberPointerType *MPT) {
@@ -609,9 +609,11 @@ llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   
   // We're done.
   CGF.EmitBlock(FnEnd);
-  llvm::PHINode *Callee = Builder.CreatePHI(FTy->getPointerTo(), 2);
-  Callee->addIncoming(VirtualFn, FnVirtual);
-  Callee->addIncoming(NonVirtualFn, FnNonVirtual);
+  llvm::PHINode *CalleePtr = Builder.CreatePHI(FTy->getPointerTo(), 2);
+  CalleePtr->addIncoming(VirtualFn, FnVirtual);
+  CalleePtr->addIncoming(NonVirtualFn, FnNonVirtual);
+
+  CGCallee Callee(FPT, CalleePtr);
   return Callee;
 }
 
@@ -1448,15 +1450,18 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
   llvm::Value *VTT = CGF.GetVTTParameter(GD, ForVirtualBase, Delegating);
   QualType VTTTy = getContext().getPointerType(getContext().VoidPtrTy);
 
-  llvm::Value *Callee = nullptr;
-  if (getContext().getLangOpts().AppleKext)
+  CGCallee Callee;
+  if (getContext().getLangOpts().AppleKext &&
+      Type != Dtor_Base && DD->isVirtual())
     Callee = CGF.BuildAppleKextVirtualDestructorCall(DD, Type, DD->getParent());
-
-  if (!Callee)
-    Callee = CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type));
+  else
+    Callee =
+      CGCallee::forDirect(CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type)),
+                          DD);
 
   CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(),
-                                  This.getPointer(), VTT, VTTTy, nullptr);
+                                  This.getPointer(), VTT, VTTTy,
+                                  nullptr, nullptr);
 }
 
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1499,7 +1504,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
       isa<NamespaceDecl>(DC) && cast<NamespaceDecl>(DC)->getIdentifier() &&
       cast<NamespaceDecl>(DC)->getIdentifier()->isStr("__cxxabiv1") &&
       DC->getParent()->isTranslationUnit())
-    EmitFundamentalRTTIDescriptors();
+    EmitFundamentalRTTIDescriptors(RD->hasAttr<DLLExportAttr>());
 
   if (!VTable->isDeclarationForLinker())
     CGM.EmitVTableTypeMetadata(VTable, VTLayout);
@@ -1597,19 +1602,20 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   return VTable;
 }
 
-llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
-                                                      GlobalDecl GD,
-                                                      Address This,
-                                                      llvm::Type *Ty,
-                                                      SourceLocation Loc) {
+CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
+                                                  GlobalDecl GD,
+                                                  Address This,
+                                                  llvm::Type *Ty,
+                                                  SourceLocation Loc) {
   GD = GD.getCanonicalDecl();
   Ty = Ty->getPointerTo()->getPointerTo();
   auto *MethodDecl = cast<CXXMethodDecl>(GD.getDecl());
   llvm::Value *VTable = CGF.GetVTablePtr(This, Ty, MethodDecl->getParent());
 
   uint64_t VTableIndex = CGM.getItaniumVTableContext().getMethodVTableIndex(GD);
+  llvm::Value *VFunc;
   if (CGF.ShouldEmitVTableTypeCheckedLoad(MethodDecl->getParent())) {
-    return CGF.EmitVTableTypeCheckedLoad(
+    VFunc = CGF.EmitVTableTypeCheckedLoad(
         MethodDecl->getParent(), VTable,
         VTableIndex * CGM.getContext().getTargetInfo().getPointerWidth(0) / 8);
   } else {
@@ -1617,8 +1623,11 @@ llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
 
     llvm::Value *VFuncPtr =
         CGF.Builder.CreateConstInBoundsGEP1_64(VTable, VTableIndex, "vfn");
-    return CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
+    VFunc = CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
   }
+
+  CGCallee Callee(MethodDecl, VFunc);
+  return Callee;
 }
 
 llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
@@ -1630,13 +1639,13 @@ llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
   const CGFunctionInfo *FInfo = &CGM.getTypes().arrangeCXXStructorDeclaration(
       Dtor, getFromDtorType(DtorType));
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
-  llvm::Value *Callee =
+  CGCallee Callee =
       getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty,
                                 CE ? CE->getLocStart() : SourceLocation());
 
   CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(),
                                   This.getPointer(), /*ImplicitParam=*/nullptr,
-                                  QualType(), CE);
+                                  QualType(), CE, nullptr);
   return nullptr;
 }
 
@@ -2471,7 +2480,9 @@ public:
   /// BuildTypeInfo - Build the RTTI type info struct for the given type.
   ///
   /// \param Force - true to force the creation of this RTTI value
-  llvm::Constant *BuildTypeInfo(QualType Ty, bool Force = false);
+  /// \param DLLExport - true to mark the RTTI value as DLLExport
+  llvm::Constant *BuildTypeInfo(QualType Ty, bool Force = false,
+                                bool DLLExport = false);
 };
 }
 
@@ -2903,7 +2914,8 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
   llvm_unreachable("Invalid linkage!");
 }
 
-llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
+llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force,
+                                                  bool DLLExport) {
   // We want to operate on the canonical type.
   Ty = Ty.getCanonicalType();
 
@@ -3088,6 +3100,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
     llvmVisibility = CodeGenModule::GetLLVMVisibility(Ty->getVisibility());
   TypeName->setVisibility(llvmVisibility);
   GV->setVisibility(llvmVisibility);
+  if (DLLExport)
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 
   return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
 }
@@ -3369,15 +3383,18 @@ llvm::Constant *ItaniumCXXABI::getAddrOfRTTIDescriptor(QualType Ty) {
   return ItaniumRTTIBuilder(*this).BuildTypeInfo(Ty);
 }
 
-void ItaniumCXXABI::EmitFundamentalRTTIDescriptor(QualType Type) {
+void ItaniumCXXABI::EmitFundamentalRTTIDescriptor(QualType Type,
+                                                  bool DLLExport) {
   QualType PointerType = getContext().getPointerType(Type);
   QualType PointerTypeConst = getContext().getPointerType(Type.withConst());
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(Type, true);
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerType, true);
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerTypeConst, true);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(Type, /*Force=*/true, DLLExport);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerType, /*Force=*/true,
+                                          DLLExport);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerTypeConst, /*Force=*/true,
+                                          DLLExport);
 }
 
-void ItaniumCXXABI::EmitFundamentalRTTIDescriptors() {
+void ItaniumCXXABI::EmitFundamentalRTTIDescriptors(bool DLLExport) {
   // Types added here must also be added to TypeInfoIsInStandardLibrary.
   QualType FundamentalTypes[] = {
       getContext().VoidTy,             getContext().NullPtrTy,
@@ -3394,7 +3411,7 @@ void ItaniumCXXABI::EmitFundamentalRTTIDescriptors() {
       getContext().Char16Ty,           getContext().Char32Ty
   };
   for (const QualType &FundamentalType : FundamentalTypes)
-    EmitFundamentalRTTIDescriptor(FundamentalType);
+    EmitFundamentalRTTIDescriptor(FundamentalType, DLLExport);
 }
 
 /// What sort of uniqueness rules should we use for the RTTI for the

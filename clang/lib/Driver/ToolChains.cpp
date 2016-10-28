@@ -54,7 +54,7 @@ MachO::MachO(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
 Darwin::Darwin(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
     : MachO(D, Triple, Args), TargetInitialized(false) {}
 
-types::ID MachO::LookupTypeForExtension(const char *Ext) const {
+types::ID MachO::LookupTypeForExtension(StringRef Ext) const {
   types::ID Ty = types::lookupTypeForExtension(Ext);
 
   // Darwin always preprocesses assembly files (unless -x is used explicitly).
@@ -287,6 +287,14 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
   P += ".a";
 
   CmdArgs.push_back(Args.MakeArgString(P));
+}
+
+unsigned DarwinClang::GetDefaultDwarfVersion() const {
+  // Default to use DWARF 2 on OS X 10.10 / iOS 8 and lower.
+  if ((isTargetMacOS() && isMacosxVersionLT(10, 11)) ||
+      (isTargetIOSBased() && isIPhoneOSVersionLT(9)))
+    return 2;
+  return 4;
 }
 
 void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
@@ -801,7 +809,7 @@ void DarwinClang::AddCCKextLibArgs(const ArgList &Args,
 }
 
 DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
-                                     const char *BoundArch) const {
+                                     StringRef BoundArch) const {
   DerivedArgList *DAL = new DerivedArgList(Args.getBaseArgs());
   const OptTable &Opts = getDriver().getOpts();
 
@@ -819,7 +827,7 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
       llvm::Triple::ArchType XarchArch =
           tools::darwin::getArchTypeForMachOArchName(A->getValue(0));
       if (!(XarchArch == getArch() ||
-            (BoundArch &&
+            (!BoundArch.empty() &&
              XarchArch ==
                  tools::darwin::getArchTypeForMachOArchName(BoundArch))))
         continue;
@@ -935,7 +943,7 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
 
   // Add the arch options based on the particular spelling of -arch, to match
   // how the driver driver works.
-  if (BoundArch) {
+  if (!BoundArch.empty()) {
     StringRef Name = BoundArch;
     const Option MCpu = Opts.getOption(options::OPT_mcpu_EQ);
     const Option MArch = Opts.getOption(options::OPT_march_EQ);
@@ -1031,13 +1039,13 @@ void MachO::AddLinkRuntimeLibArgs(const ArgList &Args,
 }
 
 DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
-                                      const char *BoundArch) const {
+                                      StringRef BoundArch) const {
   // First get the generic Apple args, before moving onto Darwin-specific ones.
   DerivedArgList *DAL = MachO::TranslateArgs(Args, BoundArch);
   const OptTable &Opts = getDriver().getOpts();
 
   // If no architecture is bound, none of the translations here are relevant.
-  if (!BoundArch)
+  if (BoundArch.empty())
     return DAL;
 
   // Add an explicit version min argument for the deployment target. We do this
@@ -1430,6 +1438,43 @@ void Generic_GCC::GCCInstallationDetector::init(
     }
   }
 
+  // Try to respect gcc-config on Gentoo. However, do that only
+  // if --gcc-toolchain is not provided or equal to the Gentoo install
+  // in /usr. This avoids accidentally enforcing the system GCC version
+  // when using a custom toolchain.
+  if (GCCToolchainDir == "" || GCCToolchainDir == D.SysRoot + "/usr") {
+    for (StringRef CandidateTriple : CandidateTripleAliases) {
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> File =
+          D.getVFS().getBufferForFile(D.SysRoot + "/etc/env.d/gcc/config-" +
+                                      CandidateTriple.str());
+      if (File) {
+        SmallVector<StringRef, 2> Lines;
+        File.get()->getBuffer().split(Lines, "\n");
+        for (StringRef Line : Lines) {
+          // CURRENT=triple-version
+          if (Line.consume_front("CURRENT=")) {
+            const std::pair<StringRef, StringRef> ActiveVersion =
+              Line.rsplit('-');
+            // Note: Strictly speaking, we should be reading
+            // /etc/env.d/gcc/${CURRENT} now. However, the file doesn't
+            // contain anything new or especially useful to us.
+            const std::string GentooPath = D.SysRoot + "/usr/lib/gcc/" +
+                                           ActiveVersion.first.str() + "/" +
+                                           ActiveVersion.second.str();
+            if (D.getVFS().exists(GentooPath + "/crtbegin.o")) {
+              Version = GCCVersion::Parse(ActiveVersion.second);
+              GCCInstallPath = GentooPath;
+              GCCParentLibPath = GentooPath + "/../../..";
+              GCCTriple.setTriple(ActiveVersion.first);
+              IsValid = true;
+              return;
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Loop over the various components which exist and select the best GCC
   // installation available. GCC installs are ranked by version number.
   Version = GCCVersion::Parse("0.0.0");
@@ -1774,8 +1819,7 @@ void Generic_GCC::CudaInstallationDetector::init(
         Args.getLastArgValue(options::OPT_cuda_path_EQ));
   else {
     CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda");
-    // FIXME: Uncomment this once we can compile the cuda 8 headers.
-    // CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda-8.0");
+    CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda-8.0");
     CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda-7.5");
     CudaPathCandidates.push_back(D.SysRoot + "/usr/local/cuda-7.0");
   }
@@ -1795,6 +1839,16 @@ void Generic_GCC::CudaInstallationDetector::init(
           FS.exists(LibDevicePath)))
       continue;
 
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> VersionFile =
+        FS.getBufferForFile(InstallPath + "/version.txt");
+    if (!VersionFile) {
+      // CUDA 7.0 doesn't have a version.txt, so guess that's our version if
+      // version.txt isn't present.
+      Version = CudaVersion::CUDA_70;
+    } else {
+      Version = ParseCudaVersionFile((*VersionFile)->getBuffer());
+    }
+
     std::error_code EC;
     for (llvm::sys::fs::directory_iterator LI(LibDevicePath, EC), LE;
          !EC && LI != LE; LI = LI.increment(EC)) {
@@ -1807,24 +1861,20 @@ void Generic_GCC::CudaInstallationDetector::init(
       StringRef GpuArch = FileName.slice(
           LibDeviceName.size(), FileName.find('.', LibDeviceName.size()));
       LibDeviceMap[GpuArch] = FilePath.str();
-      // Insert map entries for specifc devices with this compute capability.
-      // NVCC's choice of libdevice library version is rather peculiar:
-      // http://docs.nvidia.com/cuda/libdevice-users-guide/basic-usage.html#version-selection
-      // TODO: this will need to be updated once CUDA-8 is released.
+      // Insert map entries for specifc devices with this compute
+      // capability. NVCC's choice of the libdevice library version is
+      // rather peculiar and depends on the CUDA version.
       if (GpuArch == "compute_20") {
         LibDeviceMap["sm_20"] = FilePath;
         LibDeviceMap["sm_21"] = FilePath;
         LibDeviceMap["sm_32"] = FilePath;
       } else if (GpuArch == "compute_30") {
         LibDeviceMap["sm_30"] = FilePath;
-        // compute_30 is the fallback libdevice variant for sm_30+,
-        // unless CUDA specifies different version for specific GPU
-        // arch.
-        LibDeviceMap["sm_50"] = FilePath;
-        LibDeviceMap["sm_52"] = FilePath;
-        LibDeviceMap["sm_53"] = FilePath;
-        // sm_6? are currently all aliases for sm_53 in LLVM and
-        // should use compute_30.
+        if (Version < CudaVersion::CUDA_80) {
+          LibDeviceMap["sm_50"] = FilePath;
+          LibDeviceMap["sm_52"] = FilePath;
+          LibDeviceMap["sm_53"] = FilePath;
+        }
         LibDeviceMap["sm_60"] = FilePath;
         LibDeviceMap["sm_61"] = FilePath;
         LibDeviceMap["sm_62"] = FilePath;
@@ -1832,19 +1882,12 @@ void Generic_GCC::CudaInstallationDetector::init(
         LibDeviceMap["sm_35"] = FilePath;
         LibDeviceMap["sm_37"] = FilePath;
       } else if (GpuArch == "compute_50") {
-        // NVCC does not use compute_50 libdevice at all at the moment.
-        // The version that's shipped with CUDA-7.5 is a copy of compute_30.
+        if (Version >= CudaVersion::CUDA_80) {
+          LibDeviceMap["sm_50"] = FilePath;
+          LibDeviceMap["sm_52"] = FilePath;
+          LibDeviceMap["sm_53"] = FilePath;
+        }
       }
-    }
-
-    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> VersionFile =
-        FS.getBufferForFile(InstallPath + "/version.txt");
-    if (!VersionFile) {
-      // CUDA 7.0 doesn't have a version.txt, so guess that's our version if
-      // version.txt isn't present.
-      Version = CudaVersion::CUDA_70;
-    } else {
-      Version = ParseCudaVersionFile((*VersionFile)->getBuffer());
     }
 
     IsValid = true;
@@ -2972,7 +3015,7 @@ std::string HexagonToolChain::getHexagonTargetDir(
   if (getVFS().exists(InstallRelDir = InstalledDir + "/../target"))
     return InstallRelDir;
 
-  return InstallRelDir;
+  return InstalledDir;
 }
 
 Optional<unsigned> HexagonToolChain::getSmallDataThreshold(
@@ -3844,9 +3887,9 @@ static bool IsUbuntu(enum Distro Distro) {
   return Distro >= UbuntuHardy && Distro <= UbuntuYakkety;
 }
 
-static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
+static Distro DetectDistro(vfs::FileSystem &VFS) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> File =
-      llvm::MemoryBuffer::getFile("/etc/lsb-release");
+      VFS.getBufferForFile("/etc/lsb-release");
   if (File) {
     StringRef Data = File.get()->getBuffer();
     SmallVector<StringRef, 16> Lines;
@@ -3878,7 +3921,7 @@ static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
       return Version;
   }
 
-  File = llvm::MemoryBuffer::getFile("/etc/redhat-release");
+  File = VFS.getBufferForFile("/etc/redhat-release");
   if (File) {
     StringRef Data = File.get()->getBuffer();
     if (Data.startswith("Fedora release"))
@@ -3896,29 +3939,59 @@ static Distro DetectDistro(const Driver &D, llvm::Triple::ArchType Arch) {
     return UnknownDistro;
   }
 
-  File = llvm::MemoryBuffer::getFile("/etc/debian_version");
+  File = VFS.getBufferForFile("/etc/debian_version");
   if (File) {
     StringRef Data = File.get()->getBuffer();
-    if (Data[0] == '5')
-      return DebianLenny;
-    else if (Data.startswith("squeeze/sid") || Data[0] == '6')
-      return DebianSqueeze;
-    else if (Data.startswith("wheezy/sid") || Data[0] == '7')
-      return DebianWheezy;
-    else if (Data.startswith("jessie/sid") || Data[0] == '8')
-      return DebianJessie;
-    else if (Data.startswith("stretch/sid") || Data[0] == '9')
-      return DebianStretch;
+    // Contents: < major.minor > or < codename/sid >
+    int MajorVersion;
+    if (!Data.split('.').first.getAsInteger(10, MajorVersion)) {
+      switch (MajorVersion) {
+      case 5:
+        return DebianLenny;
+      case 6:
+        return DebianSqueeze;
+      case 7:
+        return DebianWheezy;
+      case 8:
+        return DebianJessie;
+      case 9:
+        return DebianStretch;
+      default:
+        return UnknownDistro;
+      }
+    }
+    return llvm::StringSwitch<Distro>(Data.split("\n").first)
+        .Case("squeeze/sid", DebianSqueeze)
+        .Case("wheezy/sid", DebianWheezy)
+        .Case("jessie/sid", DebianJessie)
+        .Case("stretch/sid", DebianStretch)
+        .Default(UnknownDistro);
+  }
+
+  File = VFS.getBufferForFile("/etc/SuSE-release");
+  if (File) {
+    StringRef Data = File.get()->getBuffer();
+    SmallVector<StringRef, 8> Lines;
+    Data.split(Lines, "\n");
+    for (const StringRef& Line : Lines) {
+      if (!Line.trim().startswith("VERSION"))
+        continue;
+      std::pair<StringRef, StringRef> SplitLine = Line.split('=');
+      int Version;
+      // OpenSUSE/SLES 10 and older are not supported and not compatible
+      // with our rules, so just treat them as UnknownDistro.
+      if (!SplitLine.second.trim().getAsInteger(10, Version) &&
+          Version > 10)
+        return OpenSUSE;
+      return UnknownDistro;
+    }
     return UnknownDistro;
   }
 
-  if (D.getVFS().exists("/etc/SuSE-release"))
-    return OpenSUSE;
-
-  if (D.getVFS().exists("/etc/exherbo-release"))
+  if (VFS.exists("/etc/exherbo-release"))
     return Exherbo;
 
-  if (D.getVFS().exists("/etc/arch-release"))
+  if (VFS.exists("/etc/arch-release"))
     return ArchLinux;
 
   return UnknownDistro;
@@ -4103,7 +4176,7 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
                          GCCInstallation.getTriple().str() + "/bin")
                        .str());
 
-  Distro Distro = DetectDistro(D, Arch);
+  Distro Distro = DetectDistro(D.getVFS());
 
   if (IsOpenSUSE(Distro) || IsUbuntu(Distro)) {
     ExtraOpts.push_back("-z");
@@ -4307,7 +4380,7 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   const llvm::Triple::ArchType Arch = getArch();
   const llvm::Triple &Triple = getTriple();
 
-  const enum Distro Distro = DetectDistro(getDriver(), Arch);
+  const enum Distro Distro = DetectDistro(getDriver().getVFS());
 
   if (Triple.isAndroid())
     return Triple.isArch64Bit() ? "/system/bin/linker64" : "/system/bin/linker";
@@ -4696,6 +4769,15 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 
 void Linux::AddCudaIncludeArgs(const ArgList &DriverArgs,
                                ArgStringList &CC1Args) const {
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    // Add cuda_wrappers/* to our system include path.  This lets us wrap
+    // standard library headers.
+    SmallString<128> P(getDriver().ResourceDir);
+    llvm::sys::path::append(P, "include");
+    llvm::sys::path::append(P, "cuda_wrappers");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+
   if (DriverArgs.hasArg(options::OPT_nocudainc))
     return;
 
@@ -4761,6 +4843,108 @@ void Linux::addProfileRTLibs(const llvm::opt::ArgList &Args,
     CmdArgs.push_back(Args.MakeArgString(
         Twine("-u", llvm::getInstrProfRuntimeHookVarName())));
   ToolChain::addProfileRTLibs(Args, CmdArgs);
+}
+
+/// Fuchsia - Fuchsia tool chain which can call as(1) and ld(1) directly.
+
+Fuchsia::Fuchsia(const Driver &D, const llvm::Triple &Triple,
+                 const ArgList &Args)
+    : Generic_ELF(D, Triple, Args) {
+
+  getFilePaths().push_back(D.SysRoot + "/lib");
+  getFilePaths().push_back(D.ResourceDir + "/lib/fuchsia");
+
+  // Use LLD by default.
+  DefaultLinker = "lld";
+}
+
+Tool *Fuchsia::buildAssembler() const {
+  return new tools::gnutools::Assembler(*this);
+}
+
+Tool *Fuchsia::buildLinker() const {
+  return new tools::fuchsia::Linker(*this);
+}
+
+ToolChain::RuntimeLibType Fuchsia::GetRuntimeLibType(
+    const ArgList &Args) const {
+  if (Arg *A = Args.getLastArg(options::OPT_rtlib_EQ)) {
+    StringRef Value = A->getValue();
+    if (Value != "compiler-rt")
+      getDriver().Diag(diag::err_drv_invalid_rtlib_name)
+        << A->getAsString(Args);
+  }
+
+  return ToolChain::RLT_CompilerRT;
+}
+
+ToolChain::CXXStdlibType
+Fuchsia::GetCXXStdlibType(const ArgList &Args) const {
+  if (Arg *A = Args.getLastArg(options::OPT_stdlib_EQ)) {
+    StringRef Value = A->getValue();
+    if (Value != "libc++")
+      getDriver().Diag(diag::err_drv_invalid_stdlib_name)
+        << A->getAsString(Args);
+  }
+
+  return ToolChain::CST_Libcxx;
+}
+
+void Fuchsia::addClangTargetOptions(const ArgList &DriverArgs,
+                                    ArgStringList &CC1Args) const {
+  if (DriverArgs.hasFlag(options::OPT_fuse_init_array,
+                         options::OPT_fno_use_init_array, true))
+    CC1Args.push_back("-fuse-init-array");
+}
+
+void Fuchsia::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+                                        ArgStringList &CC1Args) const {
+  const Driver &D = getDriver();
+
+  if (DriverArgs.hasArg(options::OPT_nostdinc))
+    return;
+
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    SmallString<128> P(D.ResourceDir);
+    llvm::sys::path::append(P, "include");
+    addSystemInclude(DriverArgs, CC1Args, P);
+  }
+
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc))
+    return;
+
+  // Check for configure-time C include directories.
+  StringRef CIncludeDirs(C_INCLUDE_DIRS);
+  if (CIncludeDirs != "") {
+    SmallVector<StringRef, 5> dirs;
+    CIncludeDirs.split(dirs, ":");
+    for (StringRef dir : dirs) {
+      StringRef Prefix =
+          llvm::sys::path::is_absolute(dir) ? StringRef(D.SysRoot) : "";
+      addExternCSystemInclude(DriverArgs, CC1Args, Prefix + dir);
+    }
+    return;
+  }
+
+  addExternCSystemInclude(DriverArgs, CC1Args, D.SysRoot + "/include");
+}
+
+void Fuchsia::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+                                           ArgStringList &CC1Args) const {
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc) ||
+      DriverArgs.hasArg(options::OPT_nostdincxx))
+    return;
+
+  addSystemInclude(DriverArgs, CC1Args,
+                   getDriver().SysRoot + "/include/c++/v1");
+}
+
+void Fuchsia::AddCXXStdlibLibArgs(const ArgList &Args,
+                                  ArgStringList &CmdArgs) const {
+  (void) GetCXXStdlibType(Args);
+  CmdArgs.push_back("-lc++");
+  CmdArgs.push_back("-lc++abi");
+  CmdArgs.push_back("-lunwind");
 }
 
 /// DragonFly - DragonFly tool chain which can call as(1) and ld(1) directly.
@@ -4848,14 +5032,14 @@ void CudaToolChain::AddCudaIncludeArgs(const ArgList &DriverArgs,
 
 llvm::opt::DerivedArgList *
 CudaToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
-                             const char *BoundArch) const {
+                             StringRef BoundArch) const {
   DerivedArgList *DAL = new DerivedArgList(Args.getBaseArgs());
   const OptTable &Opts = getDriver().getOpts();
 
   for (Arg *A : Args) {
     if (A->getOption().matches(options::OPT_Xarch__)) {
       // Skip this argument unless the architecture matches BoundArch
-      if (!BoundArch || A->getValue(0) != StringRef(BoundArch))
+      if (BoundArch.empty() || A->getValue(0) != BoundArch)
         continue;
 
       unsigned Index = Args.getBaseArgs().MakeIndex(A->getValue(1));
@@ -4886,7 +5070,7 @@ CudaToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
     DAL->append(A);
   }
 
-  if (BoundArch) {
+  if (!BoundArch.empty()) {
     DAL->eraseArg(options::OPT_march_EQ);
     DAL->AddJoinedArg(nullptr, Opts.getOption(options::OPT_march_EQ), BoundArch);
   }
@@ -4985,18 +5169,13 @@ MyriadToolChain::MyriadToolChain(const Driver &D, const llvm::Triple &Triple,
   }
 
   if (GCCInstallation.isValid()) {
-    // The contents of LibDir are independent of the version of gcc.
-    // This contains libc, libg, libm, libstdc++, libssp.
-    // The 'ma1x00' and 'nofpu' variants are irrelevant.
-    SmallString<128> LibDir(GCCInstallation.getParentLibPath());
-    llvm::sys::path::append(LibDir, "../sparc-myriad-elf/lib");
-    addPathIfExists(D, LibDir, getFilePaths());
-
     // This directory contains crt{i,n,begin,end}.o as well as libgcc.
     // These files are tied to a particular version of gcc.
     SmallString<128> CompilerSupportDir(GCCInstallation.getInstallPath());
     addPathIfExists(D, CompilerSupportDir, getFilePaths());
   }
+  // libstd++ and libc++ must both be found in this one place.
+  addPathIfExists(D, D.Dir + "/../sparc-myriad-elf/lib", getFilePaths());
 }
 
 MyriadToolChain::~MyriadToolChain() {}
@@ -5013,15 +5192,19 @@ void MyriadToolChain::AddClangCXXStdlibIncludeArgs(
       DriverArgs.hasArg(options::OPT_nostdincxx))
     return;
 
-  // Only libstdc++, for now.
-  StringRef LibDir = GCCInstallation.getParentLibPath();
-  const GCCVersion &Version = GCCInstallation.getVersion();
-  StringRef TripleStr = GCCInstallation.getTriple().str();
-  const Multilib &Multilib = GCCInstallation.getMultilib();
-
-  addLibStdCXXIncludePaths(
-      LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
-      "", TripleStr, "", "", Multilib.includeSuffix(), DriverArgs, CC1Args);
+  if (GetCXXStdlibType(DriverArgs) == ToolChain::CST_Libcxx) {
+    std::string Path(getDriver().getInstalledDir());
+    Path += "/../include/c++/v1";
+    addSystemInclude(DriverArgs, CC1Args, Path);
+  } else {
+    StringRef LibDir = GCCInstallation.getParentLibPath();
+    const GCCVersion &Version = GCCInstallation.getVersion();
+    StringRef TripleStr = GCCInstallation.getTriple().str();
+    const Multilib &Multilib = GCCInstallation.getMultilib();
+    addLibStdCXXIncludePaths(
+        LibDir.str() + "/../" + TripleStr.str() + "/include/c++/" + Version.Text,
+        "", TripleStr, "", "", Multilib.includeSuffix(), DriverArgs, CC1Args);
+  }
 }
 
 // MyriadToolChain handles several triples:
@@ -5194,5 +5377,16 @@ SanitizerMask PS4CPU::getSupportedSanitizers() const {
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
   Res |= SanitizerKind::Address;
   Res |= SanitizerKind::Vptr;
+  return Res;
+}
+
+Contiki::Contiki(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
+    : Generic_ELF(D, Triple, Args) {}
+
+SanitizerMask Contiki::getSupportedSanitizers() const {
+  const bool IsX86 = getTriple().getArch() == llvm::Triple::x86;
+  SanitizerMask Res = ToolChain::getSupportedSanitizers();
+  if (IsX86)
+    Res |= SanitizerKind::SafeStack;
   return Res;
 }

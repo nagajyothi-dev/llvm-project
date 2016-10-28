@@ -30,27 +30,15 @@ using namespace llvm::support::endian;
 
 static ExitOnError ExitOnErr;
 
-const int BlockSize = 4096;
-
-void coff::createPDB(StringRef Path) {
-  // Create the superblock.
-  msf::SuperBlock SB;
-  memcpy(SB.MagicBytes, msf::Magic, sizeof(msf::Magic));
-  SB.BlockSize = 4096;
-  SB.FreeBlockMapBlock = 2;
-  SB.NumBlocks = 10;
-  SB.NumDirectoryBytes = 0;
-  SB.Unknown1 = 0;
-  SB.BlockMapAddr = 9;
-
+void coff::createPDB(StringRef Path, ArrayRef<uint8_t> SectionTable) {
   BumpPtrAllocator Alloc;
   pdb::PDBFileBuilder Builder(Alloc);
-  ExitOnErr(Builder.initialize(SB));
-  ExitOnErr(Builder.getMsfBuilder().setDirectoryBlocksHint({8}));
+  ExitOnErr(Builder.initialize(4096)); // 4096 is blocksize
 
-  ExitOnErr(Builder.getMsfBuilder().addStream(1, {4}));
-  ExitOnErr(Builder.getMsfBuilder().addStream(1, {5}));
-  ExitOnErr(Builder.getMsfBuilder().addStream(1, {6}));
+  // Create streams in MSF for predefined streams, namely
+  // PDB, TPI, DBI and IPI.
+  for (int I = 0; I < (int)pdb::kSpecialStreamCount; ++I)
+    ExitOnErr(Builder.getMsfBuilder().addStream(0));
 
   // Add an Info stream.
   auto &InfoBuilder = Builder.getInfoBuilder();
@@ -61,19 +49,24 @@ void coff::createPDB(StringRef Path) {
 
   // Should be the current time, but set 0 for reproducibilty.
   InfoBuilder.setSignature(0);
-
   InfoBuilder.setVersion(pdb::PdbRaw_ImplVer::PdbImplVC70);
+
+  // Add an empty DPI stream.
+  auto &DbiBuilder = Builder.getDbiBuilder();
+  DbiBuilder.setVersionHeader(pdb::PdbDbiV110);
 
   // Add an empty TPI stream.
   auto &TpiBuilder = Builder.getTpiBuilder();
   TpiBuilder.setVersionHeader(pdb::PdbTpiV80);
 
+  // Add an empty IPI stream.
+  auto &IpiBuilder = Builder.getIpiBuilder();
+  IpiBuilder.setVersionHeader(pdb::PdbTpiV80);
+
+  // Add COFF section header stream.
+  ExitOnErr(
+      DbiBuilder.addDbgStream(pdb::DbgHeaderType::SectionHdr, SectionTable));
+
   // Write to a file.
-  size_t FileSize = BlockSize * 10;
-  auto BufferOrErr = FileOutputBuffer::create(Path, FileSize);
-  if (auto EC = BufferOrErr.getError())
-    fatal(EC, "failed to open " + Path);
-  auto FileByteStream =
-      llvm::make_unique<msf::FileBufferByteStream>(std::move(*BufferOrErr));
-  ExitOnErr(Builder.commit(*FileByteStream));
+  ExitOnErr(Builder.commit(Path));
 }

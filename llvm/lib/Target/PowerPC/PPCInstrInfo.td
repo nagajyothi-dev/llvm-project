@@ -23,6 +23,15 @@ def SDT_PPCstfiwx : SDTypeProfile<0, 2, [ // stfiwx
 def SDT_PPClfiwx : SDTypeProfile<1, 1, [ // lfiw[az]x
   SDTCisVT<0, f64>, SDTCisPtrTy<1>
 ]>;
+def SDT_PPCLxsizx : SDTypeProfile<1, 2, [
+  SDTCisVT<0, f64>, SDTCisPtrTy<1>, SDTCisPtrTy<2>
+]>;
+def SDT_PPCstxsix : SDTypeProfile<0, 3, [
+  SDTCisVT<0, f64>, SDTCisPtrTy<1>, SDTCisPtrTy<2>
+]>;
+def SDT_PPCVexts  : SDTypeProfile<1, 2, [
+  SDTCisVT<0, f64>, SDTCisVT<1, f64>, SDTCisPtrTy<2>
+]>;
 
 def SDT_PPCCallSeqStart : SDCallSeqStart<[ SDTCisVT<0, i32> ]>;
 def SDT_PPCCallSeqEnd   : SDCallSeqEnd<[ SDTCisVT<0, i32>,
@@ -108,6 +117,11 @@ def PPClfiwax : SDNode<"PPCISD::LFIWAX", SDT_PPClfiwx,
                        [SDNPHasChain, SDNPMayLoad]>;
 def PPClfiwzx : SDNode<"PPCISD::LFIWZX", SDT_PPClfiwx,
                        [SDNPHasChain, SDNPMayLoad]>;
+def PPClxsizx : SDNode<"PPCISD::LXSIZX", SDT_PPCLxsizx,
+                       [SDNPHasChain, SDNPMayLoad]>;
+def PPCstxsix : SDNode<"PPCISD::STXSIX", SDT_PPCstxsix,
+                       [SDNPHasChain, SDNPMayStore]>;
+def PPCVexts  : SDNode<"PPCISD::VEXTS", SDT_PPCVexts, []>;
 
 // Extract FPSCR (not modeled at the DAG level).
 def PPCmffs   : SDNode<"PPCISD::MFFS",
@@ -445,6 +459,12 @@ def PPCRegVRRCAsmOperand : AsmOperandClass {
 def vrrc : RegisterOperand<VRRC> {
   let ParserMatchClass = PPCRegVRRCAsmOperand;
 }
+def PPCRegVFRCAsmOperand : AsmOperandClass {
+  let Name = "RegVFRC"; let PredicateMethod = "isRegNumber";
+}
+def vfrc : RegisterOperand<VFRC> {
+  let ParserMatchClass = PPCRegVFRCAsmOperand;
+}
 def PPCRegCRBITRCAsmOperand : AsmOperandClass {
   let Name = "RegCRBITRC"; let PredicateMethod = "isCRBitNumber";
 }
@@ -601,6 +621,9 @@ def s17imm  : Operand<i32> {
   let ParserMatchClass = PPCS17ImmAsmOperand;
   let DecoderMethod = "decodeSImmOperand<16>";
 }
+
+def fpimm0 : PatLeaf<(fpimm), [{ return N->isExactlyValue(+0.0); }]>;
+
 def PPCDirectBrAsmOperand : AsmOperandClass {
   let Name = "DirectBr"; let PredicateMethod = "isDirectBr";
   let RenderMethod = "addBranchTargetOperands";

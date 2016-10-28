@@ -113,6 +113,24 @@ TEST_F(ChangeNamespaceTest, SimpleMoveIntoAnotherNestedNamespace) {
   EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
 }
 
+TEST_F(ChangeNamespaceTest, MoveIntoAnotherNestedNamespaceWithRef) {
+  NewNamespace = "na::nc";
+  std::string Code = "namespace na {\n"
+                     "class A {};\n"
+                     "namespace nb {\n"
+                     "class X { A a; };\n"
+                     "} // namespace nb\n"
+                     "} // namespace na\n";
+  std::string Expected = "namespace na {\n"
+                         "class A {};\n"
+                         "\n"
+                         "namespace nc {\n"
+                         "class X { A a; };\n"
+                         "} // namespace nc\n"
+                         "} // namespace na\n";
+  EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
+}
+
 TEST_F(ChangeNamespaceTest, SimpleMoveNestedNamespace) {
   NewNamespace = "na::x::y";
   std::string Code = "namespace na {\n"
@@ -444,6 +462,125 @@ TEST_F(ChangeNamespaceTest, FixFunctionNameSpecifiers) {
       "void g() { f(); na::A::g(); }\n"
       "}  // namespace y\n"
       "}  // namespace x\n";
+  EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
+}
+
+TEST_F(ChangeNamespaceTest, MoveAndFixGlobalVariables) {
+  std::string Code = "namespace na {\n"
+                     "int GlobA;\n"
+                     "static int GlobAStatic = 0;\n"
+                     "namespace nc { int GlobC; }\n"
+                     "namespace nb {\n"
+                     "int GlobB;\n"
+                     "void f() {\n"
+                     "  int a = GlobA;\n"
+                     "  int b = GlobAStatic;\n"
+                     "  int c = nc::GlobC;\n"
+                     "}\n"
+                     "} // namespace nb\n"
+                     "} // namespace na\n";
+
+  std::string Expected = "namespace na {\n"
+                         "int GlobA;\n"
+                         "static int GlobAStatic = 0;\n"
+                         "namespace nc { int GlobC; }\n"
+                         "\n"
+                         "} // namespace na\n"
+                         "namespace x {\n"
+                         "namespace y {\n"
+                         "int GlobB;\n"
+                         "void f() {\n"
+                         "  int a = na::GlobA;\n"
+                         "  int b = na::GlobAStatic;\n"
+                         "  int c = na::nc::GlobC;\n"
+                         "}\n"
+                         "}  // namespace y\n"
+                         "}  // namespace x\n";
+
+  EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
+}
+
+TEST_F(ChangeNamespaceTest, DoNotFixStaticVariableOfClass) {
+  std::string Code = "namespace na {\n"
+                     "class A {\n"
+                     "public:\n"
+                     "static int A1;\n"
+                     "static int A2;\n"
+                     "}\n"
+                     "static int A::A1 = 0;\n"
+                     "namespace nb {\n"
+                     "void f() { int a = A::A1; int b = A::A2; }"
+                     "} // namespace nb\n"
+                     "} // namespace na\n";
+
+  std::string Expected = "namespace na {\n"
+                         "class A {\n"
+                         "public:\n"
+                         "static int A1;\n"
+                         "static int A2;\n"
+                         "}\n"
+                         "static int A::A1 = 0;\n"
+                         "\n"
+                         "} // namespace na\n"
+                         "namespace x {\n"
+                         "namespace y {\n"
+                         "void f() { int a = na::A::A1; int b = na::A::A2; }"
+                         "}  // namespace y\n"
+                         "}  // namespace x\n";
+
+  EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
+}
+
+TEST_F(ChangeNamespaceTest, NoMisplaceAtEOF) {
+  std::string Code = "namespace na {\n"
+                     "namespace nb {\n"
+                     "class A;\n"
+                     "class B {};\n"
+                     "}"
+                     "}";
+  std::string Expected = "namespace na {\n"
+                         "namespace nb {\n"
+                         "class A;\n"
+                         "}\n"
+                         "}\n"
+                         "namespace x {\n"
+                         "namespace y {\n"
+                         "\n"
+                         "class B {};\n"
+                         "} // namespace y\n"
+                         "} // namespace x\n";
+  EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
+}
+
+TEST_F(ChangeNamespaceTest, CommentsBeforeMovedClass) {
+  std::string Code = "namespace na {\n"
+                     "namespace nb {\n"
+                     "\n\n"
+                     "// Wild comments.\n"
+                     "\n"
+                     "// Comments.\n"
+                     "// More comments.\n"
+                     "class B {\n"
+                     "  // Private comments.\n"
+                     "  int a;\n"
+                     "};\n"
+                     "}\n"
+                     "}";
+  std::string Expected = "\n"
+                         "\n"
+                         "namespace x {\n"
+                         "namespace y {\n"
+                         "\n\n"
+                         "// Wild comments.\n"
+                         "\n"
+                         "// Comments.\n"
+                         "// More comments.\n"
+                         "class B {\n"
+                         "  // Private comments.\n"
+                         "  int a;\n"
+                         "};\n"
+                         "} // namespace y\n"
+                         "} // namespace x\n";
   EXPECT_EQ(format(Expected), runChangeNamespaceOnCode(Code));
 }
 
