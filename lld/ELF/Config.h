@@ -10,6 +10,7 @@
 #ifndef LLD_ELF_CONFIG_H
 #define LLD_ELF_CONFIG_H
 
+#include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ELF.h"
@@ -70,6 +71,8 @@ struct VersionDefinition {
 // Most fields are initialized by the driver.
 struct Configuration {
   InputFile *FirstElf = nullptr;
+  uint8_t OSABI = 0;
+  llvm::DenseMap<llvm::CachedHashStringRef, unsigned> SymbolOrderingFile;
   llvm::StringMap<uint64_t> SectionStartMap;
   llvm::StringRef DynamicLinker;
   llvm::StringRef Entry;
@@ -104,6 +107,7 @@ struct Configuration {
   bool GnuHash = false;
   bool ICF;
   bool Mips64EL = false;
+  bool MipsN32Abi = false;
   bool NoGnuUnique;
   bool NoUndefinedVersion;
   bool Nostdlib;

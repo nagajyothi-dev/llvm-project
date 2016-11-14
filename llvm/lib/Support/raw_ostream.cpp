@@ -114,27 +114,27 @@ void raw_ostream::SetBufferAndMode(char *BufferStart, size_t Size,
 }
 
 raw_ostream &raw_ostream::operator<<(unsigned long N) {
-  write_ulong(*this, N, 0);
+  write_integer(*this, static_cast<uint64_t>(N), IntegerStyle::Integer);
   return *this;
 }
 
 raw_ostream &raw_ostream::operator<<(long N) {
-  write_long(*this, N, 0);
+  write_integer(*this, static_cast<int64_t>(N), IntegerStyle::Integer);
   return *this;
 }
 
 raw_ostream &raw_ostream::operator<<(unsigned long long N) {
-  write_ulonglong(*this, N, 0);
+  write_integer(*this, static_cast<uint64_t>(N), IntegerStyle::Integer);
   return *this;
 }
 
 raw_ostream &raw_ostream::operator<<(long long N) {
-  write_longlong(*this, N, 0);
+  write_integer(*this, static_cast<int64_t>(N), IntegerStyle::Integer);
   return *this;
 }
 
 raw_ostream &raw_ostream::write_hex(unsigned long long N) {
-  llvm::write_hex(*this, N, 0, false, false);
+  llvm::write_hex(*this, N, HexPrintStyle::Lower);
   return *this;
 }
 
@@ -179,12 +179,12 @@ raw_ostream &raw_ostream::write_escaped(StringRef Str,
 }
 
 raw_ostream &raw_ostream::operator<<(const void *P) {
-  llvm::write_hex(*this, (uintptr_t)P, 0, false, true);
+  llvm::write_hex(*this, (uintptr_t)P, HexPrintStyle::PrefixLower);
   return *this;
 }
 
 raw_ostream &raw_ostream::operator<<(double N) {
-  llvm::write_double(*this, N, 0, 0, FloatStyle::Exponent);
+  llvm::write_double(*this, N, FloatStyle::Exponent);
   return *this;
 }
 
@@ -331,9 +331,78 @@ raw_ostream &raw_ostream::operator<<(const FormattedString &FS) {
 
 raw_ostream &raw_ostream::operator<<(const FormattedNumber &FN) {
   if (FN.Hex) {
-    llvm::write_hex(*this, FN.HexValue, FN.Width, FN.Upper, FN.HexPrefix);
+    HexPrintStyle Style;
+    if (FN.Upper && FN.HexPrefix)
+      Style = HexPrintStyle::PrefixUpper;
+    else if (FN.Upper && !FN.HexPrefix)
+      Style = HexPrintStyle::Upper;
+    else if (!FN.Upper && FN.HexPrefix)
+      Style = HexPrintStyle::PrefixLower;
+    else
+      Style = HexPrintStyle::Lower;
+    llvm::write_hex(*this, FN.HexValue, Style, FN.Width);
   } else {
-    llvm::write_longlong(*this, FN.DecValue, FN.Width);
+    llvm::SmallString<16> Buffer;
+    llvm::raw_svector_ostream Stream(Buffer);
+    llvm::write_integer(Stream, FN.DecValue, IntegerStyle::Integer);
+    if (Buffer.size() < FN.Width)
+      indent(FN.Width - Buffer.size());
+    (*this) << Buffer;
+  }
+  return *this;
+}
+
+raw_ostream &raw_ostream::operator<<(const FormattedHexBytes &FB) {
+  size_t LineIndex = 0;
+  const size_t Size = FB.Bytes.size();
+  HexPrintStyle OffsetStyle =
+      FB.Upper ? HexPrintStyle::PrefixUpper : HexPrintStyle::PrefixLower;
+  HexPrintStyle ByteStyle =
+      FB.Upper ? HexPrintStyle::Upper : HexPrintStyle::Lower;
+  while (LineIndex < Size) {
+    if (FB.FirstByteOffset.hasValue()) {
+      uint64_t Offset = FB.FirstByteOffset.getValue();
+      llvm::write_hex(*this, Offset + LineIndex, OffsetStyle,
+                      sizeof(Offset) * 2 + 2);
+      *this << ": ";
+    }
+    // Print the hex bytes for this line
+    uint32_t I = 0;
+    for (I = 0; I < FB.NumPerLine; ++I) {
+      size_t Index = LineIndex + I;
+      if (Index >= Size)
+        break;
+      if (I && (I % FB.ByteGroupSize) == 0)
+        *this << " ";
+      llvm::write_hex(*this, FB.Bytes[Index], ByteStyle, 2);
+    }
+    uint32_t BytesDisplayed = I;
+    if (FB.ASCII) {
+      // Print any spaces needed for any bytes that we didn't print on this
+      // line so that the ASCII bytes are correctly aligned.
+      for (; I < FB.NumPerLine; ++I) {
+        if (I && (I % FB.ByteGroupSize) == 0)
+          indent(3);
+        else
+          indent(2);
+      }
+      *this << "  |";
+      // Print the ASCII char values for each byte on this line
+      for (I = 0; I < FB.NumPerLine; ++I) {
+        size_t Index = LineIndex + I;
+        if (Index >= Size)
+          break;
+        char ch = (char)FB.Bytes[Index];
+        if (isprint(ch))
+          *this << ch;
+        else
+          *this << '.';
+      }
+      *this << '|';
+    }
+    LineIndex += BytesDisplayed;
+    if (LineIndex < Size)
+      *this << '\n';
   }
   return *this;
 }

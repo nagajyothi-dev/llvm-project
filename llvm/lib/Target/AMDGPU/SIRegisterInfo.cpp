@@ -491,7 +491,6 @@ void SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI,
   // SubReg carries the "Kill" flag when SubReg == SuperReg.
   unsigned SubKillState = getKillRegState((NumSubRegs == 1) && IsKill);
   for (unsigned i = 0, e = NumSubRegs; i < e; ++i) {
-    unsigned TmpReg = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
     unsigned SubReg = NumSubRegs == 1 ?
       SuperReg : getSubReg(SuperReg, getSubRegFromChannel(i));
 
@@ -522,6 +521,10 @@ void SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI,
     } else {
       // Spill SGPR to a frame index.
       // FIXME we should use S_STORE_DWORD here for VI.
+
+      // TODO: Should VI try to spill to VGPR and then spill to SMEM?
+      unsigned TmpReg = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
+
       MachineInstrBuilder Mov
         = BuildMI(*MBB, MI, DL, TII->get(AMDGPU::V_MOV_B32_e32), TmpReg)
         .addReg(SubReg, SubKillState);
@@ -582,7 +585,6 @@ void SIRegisterInfo::restoreSGPR(MachineBasicBlock::iterator MI,
   }
 
   for (unsigned i = 0, e = NumSubRegs; i < e; ++i) {
-    unsigned TmpReg = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
     unsigned SubReg = NumSubRegs == 1 ?
       SuperReg : getSubReg(SuperReg, getSubRegFromChannel(i));
 
@@ -600,6 +602,7 @@ void SIRegisterInfo::restoreSGPR(MachineBasicBlock::iterator MI,
       // Restore SGPR from a stack slot.
       // FIXME: We should use S_LOAD_DWORD here for VI.
 
+      unsigned TmpReg = MRI.createVirtualRegister(&AMDGPU::VGPR_32RegClass);
       unsigned Align = FrameInfo.getObjectAlignment(Index);
       unsigned Size = FrameInfo.getObjectSize(Index);
 
@@ -1059,8 +1062,19 @@ unsigned SIRegisterInfo::getMaxNumSGPRs(const MachineFunction &MF) const {
       F, "amdgpu-num-sgpr", MaxNumSGPRs);
 
     // Make sure requested value does not violate subtarget's specifications.
-    if (Requested && Requested <= getNumReservedSGPRs(ST))
+    if (Requested && (Requested <= getNumReservedSGPRs(ST)))
       Requested = 0;
+
+    // If more SGPRs are required to support the input user/system SGPRs,
+    // increase to accomodate them.
+    //
+    // FIXME: This really ends up using the requested number of SGPRs + number
+    // of reserved special registers in total. Theoretically you could re-use
+    // the last input registers for these special registers, but this would
+    // require a lot of complexity to deal with the weird aliasing.
+    unsigned NumInputSGPRs = MFI.getNumPreloadedSGPRs();
+    if (Requested && Requested < NumInputSGPRs)
+      Requested = NumInputSGPRs;
 
     // Make sure requested value is compatible with values implied by
     // default/requested minimum/maximum number of waves per execution unit.
@@ -1153,4 +1167,107 @@ unsigned SIRegisterInfo::getMaxNumVGPRs(const MachineFunction &MF) const {
   }
 
   return MaxNumVGPRs - getNumDebuggerReservedVGPRs(ST);
+}
+
+ArrayRef<int16_t> SIRegisterInfo::getRegSplitParts(const TargetRegisterClass *RC,
+                                                   unsigned EltSize) const {
+  if (EltSize == 4) {
+    static const int16_t Sub0_15[] = {
+      AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2, AMDGPU::sub3,
+      AMDGPU::sub4, AMDGPU::sub5, AMDGPU::sub6, AMDGPU::sub7,
+      AMDGPU::sub8, AMDGPU::sub9, AMDGPU::sub10, AMDGPU::sub11,
+      AMDGPU::sub12, AMDGPU::sub13, AMDGPU::sub14, AMDGPU::sub15,
+    };
+
+    static const int16_t Sub0_7[] = {
+      AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2, AMDGPU::sub3,
+      AMDGPU::sub4, AMDGPU::sub5, AMDGPU::sub6, AMDGPU::sub7,
+    };
+
+    static const int16_t Sub0_3[] = {
+      AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2, AMDGPU::sub3,
+    };
+
+    static const int16_t Sub0_2[] = {
+      AMDGPU::sub0, AMDGPU::sub1, AMDGPU::sub2,
+    };
+
+    static const int16_t Sub0_1[] = {
+      AMDGPU::sub0, AMDGPU::sub1,
+    };
+
+    switch (AMDGPU::getRegBitWidth(*RC->MC)) {
+    case 32:
+      return {};
+    case 64:
+      return makeArrayRef(Sub0_1);
+    case 96:
+      return makeArrayRef(Sub0_2);
+    case 128:
+      return makeArrayRef(Sub0_3);
+    case 256:
+      return makeArrayRef(Sub0_7);
+    case 512:
+      return makeArrayRef(Sub0_15);
+    default:
+      llvm_unreachable("unhandled register size");
+    }
+  }
+
+  if (EltSize == 8) {
+    static const int16_t Sub0_15_64[] = {
+      AMDGPU::sub0_sub1, AMDGPU::sub2_sub3,
+      AMDGPU::sub4_sub5, AMDGPU::sub6_sub7,
+      AMDGPU::sub8_sub9, AMDGPU::sub10_sub11,
+      AMDGPU::sub12_sub13, AMDGPU::sub14_sub15
+    };
+
+    static const int16_t Sub0_7_64[] = {
+      AMDGPU::sub0_sub1, AMDGPU::sub2_sub3,
+      AMDGPU::sub4_sub5, AMDGPU::sub6_sub7
+    };
+
+
+    static const int16_t Sub0_3_64[] = {
+      AMDGPU::sub0_sub1, AMDGPU::sub2_sub3
+    };
+
+    switch (AMDGPU::getRegBitWidth(*RC->MC)) {
+    case 64:
+      return {};
+    case 128:
+      return makeArrayRef(Sub0_3_64);
+    case 256:
+      return makeArrayRef(Sub0_7_64);
+    case 512:
+      return makeArrayRef(Sub0_15_64);
+    default:
+      llvm_unreachable("unhandled register size");
+    }
+  }
+
+  assert(EltSize == 16 && "unhandled register spill split size");
+
+  static const int16_t Sub0_15_128[] = {
+    AMDGPU::sub0_sub1_sub2_sub3,
+    AMDGPU::sub4_sub5_sub6_sub7,
+    AMDGPU::sub8_sub9_sub10_sub11,
+    AMDGPU::sub12_sub13_sub14_sub15
+  };
+
+  static const int16_t Sub0_7_128[] = {
+    AMDGPU::sub0_sub1_sub2_sub3,
+    AMDGPU::sub4_sub5_sub6_sub7
+  };
+
+  switch (AMDGPU::getRegBitWidth(*RC->MC)) {
+  case 128:
+    return {};
+  case 256:
+    return makeArrayRef(Sub0_7_128);
+  case 512:
+    return makeArrayRef(Sub0_15_128);
+  default:
+    llvm_unreachable("unhandled register size");
+  }
 }

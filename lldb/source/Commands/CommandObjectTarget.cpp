@@ -9,11 +9,6 @@
 
 #include "CommandObjectTarget.h"
 
-// C Includes
-// C++ Includes
-#include <cerrno>
-
-// Other libraries and framework includes
 // Project includes
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/IOHandler.h"
@@ -26,6 +21,7 @@
 #include "lldb/DataFormatters/ValueObjectPrinter.h"
 #include "lldb/Host/StringConvert.h"
 #include "lldb/Host/Symbols.h"
+#include "lldb/Host/TimeValue.h"
 #include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
@@ -54,6 +50,10 @@
 #include "lldb/Target/StackFrame.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadSpec.h"
+
+// C Includes
+// C++ Includes
+#include <cerrno>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -107,10 +107,11 @@ static void DumpTargetInfo(uint32_t target_idx, Target *target,
     const uint32_t start_frame = 0;
     const uint32_t num_frames = 1;
     const uint32_t num_frames_with_source = 1;
+    const bool     stop_format = false;
     process_sp->GetStatus(strm);
     process_sp->GetThreadStatus(strm, only_threads_with_stop_reason,
                                 start_frame, num_frames,
-                                num_frames_with_source);
+                                num_frames_with_source, stop_format);
   }
 }
 
@@ -1279,7 +1280,7 @@ static void DumpModuleArchitecture(Stream &strm, Module *module,
     if (width)
       strm.Printf("%-*s", width, arch_str.c_str());
     else
-      strm.PutCString(arch_str.c_str());
+      strm.PutCString(arch_str);
   }
 }
 
@@ -3107,7 +3108,7 @@ protected:
       } break;
 
       case 'm':
-        module->GetModificationTime().Dump(&strm, width);
+        DumpTimePoint(module->GetModificationTime(), strm, width);
         break;
 
       case 'p':

@@ -271,7 +271,7 @@ public:
       return nullptr;
     // Load the object from the cache filename
     ErrorOr<std::unique_ptr<MemoryBuffer>> IRObjectBuffer =
-        MemoryBuffer::getFile(CacheName.c_str(), -1, false);
+        MemoryBuffer::getFile(CacheName, -1, false);
     // If the file isn't there, that's OK.
     if (!IRObjectBuffer)
       return nullptr;
@@ -403,7 +403,11 @@ int main(int argc, char **argv, char * const *envp) {
         return 1;
       }
     }
-    return runOrcLazyJIT(std::move(Ms), argc, argv);
+    std::vector<std::string> Args;
+    Args.push_back(InputFile);
+    for (auto &Arg : InputArgv)
+      Args.push_back(Arg);
+    return runOrcLazyJIT(std::move(Ms), Args);
   }
 
   if (EnableCacheManager) {
@@ -414,11 +418,10 @@ int main(int argc, char **argv, char * const *envp) {
 
   // If not jitting lazily, load the whole bitcode file eagerly too.
   if (NoLazyCompilation) {
-    if (std::error_code EC = Mod->materializeAll()) {
-      errs() << argv[0] << ": bitcode didn't read correctly.\n";
-      errs() << "Reason: " << EC.message() << "\n";
-      exit(1);
-    }
+    // Use *argv instead of argv[0] to work around a wrong GCC warning.
+    ExitOnError ExitOnErr(std::string(*argv) +
+                          ": bitcode didn't read correctly: ");
+    ExitOnErr(Mod->materializeAll());
   }
 
   std::string ErrorMsg;

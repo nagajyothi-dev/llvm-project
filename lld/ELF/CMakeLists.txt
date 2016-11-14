@@ -6,7 +6,6 @@ add_lld_library(lldELF
   Driver.cpp
   DriverUtils.cpp
   EhFrame.cpp
-  ELFCreator.cpp
   Error.cpp
   GdbIndex.cpp
   ICF.cpp
@@ -15,6 +14,7 @@ add_lld_library(lldELF
   LTO.cpp
   LinkerScript.cpp
   MarkLive.cpp
+  Memory.cpp
   Mips.cpp
   OutputSections.cpp
   Relocations.cpp
@@ -23,6 +23,7 @@ add_lld_library(lldELF
   SymbolListFile.cpp
   SymbolTable.cpp
   Symbols.cpp
+  SyntheticSections.cpp
   Target.cpp
   Thunks.cpp
   Writer.cpp

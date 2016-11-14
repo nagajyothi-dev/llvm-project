@@ -14,6 +14,7 @@
 #include "InputFiles.h"
 #include "InputSection.h"
 #include "LinkerScript.h"
+#include "Memory.h"
 #include "Strings.h"
 #include "SymbolListFile.h"
 #include "SymbolTable.h"
@@ -53,15 +54,18 @@ bool elf::link(ArrayRef<const char *> Args, bool CanExitEarly,
   ScriptConfig = &SC;
 
   Driver->main(Args, CanExitEarly);
-  InputFile::freePool();
+  freeArena();
   return !HasError;
 }
 
 // Parses a linker -m option.
-static std::pair<ELFKind, uint16_t> parseEmulation(StringRef Emul) {
+static std::tuple<ELFKind, uint16_t, uint8_t> parseEmulation(StringRef Emul) {
+  uint8_t OSABI = 0;
   StringRef S = Emul;
-  if (S.endswith("_fbsd"))
+  if (S.endswith("_fbsd")) {
     S = S.drop_back(5);
+    OSABI = ELFOSABI_FREEBSD;
+  }
 
   std::pair<ELFKind, uint16_t> Ret =
       StringSwitch<std::pair<ELFKind, uint16_t>>(S)
@@ -70,6 +74,8 @@ static std::pair<ELFKind, uint16_t> parseEmulation(StringRef Emul) {
           .Case("elf32_x86_64", {ELF32LEKind, EM_X86_64})
           .Case("elf32btsmip", {ELF32BEKind, EM_MIPS})
           .Case("elf32ltsmip", {ELF32LEKind, EM_MIPS})
+          .Case("elf32btsmipn32", {ELF32BEKind, EM_MIPS})
+          .Case("elf32ltsmipn32", {ELF32LEKind, EM_MIPS})
           .Case("elf32ppc", {ELF32BEKind, EM_PPC})
           .Case("elf64btsmip", {ELF64BEKind, EM_MIPS})
           .Case("elf64ltsmip", {ELF64LEKind, EM_MIPS})
@@ -85,7 +91,7 @@ static std::pair<ELFKind, uint16_t> parseEmulation(StringRef Emul) {
     else
       error("unknown emulation: " + Emul);
   }
-  return Ret;
+  return std::make_tuple(Ret.first, Ret.second, OSABI);
 }
 
 // Returns slices of MB by parsing MB as an archive file.
@@ -127,7 +133,7 @@ void LinkerDriver::addFile(StringRef Path) {
   MemoryBufferRef MBRef = *Buffer;
 
   if (InBinary) {
-    Files.push_back(new BinaryFile(MBRef));
+    Files.push_back(make<BinaryFile>(MBRef));
     return;
   }
 
@@ -138,23 +144,23 @@ void LinkerDriver::addFile(StringRef Path) {
   case file_magic::archive:
     if (InWholeArchive) {
       for (MemoryBufferRef MB : getArchiveMembers(MBRef))
-        Files.push_back(createObjectFile(Alloc, MB, Path));
+        Files.push_back(createObjectFile(MB, Path));
       return;
     }
-    Files.push_back(new ArchiveFile(MBRef));
+    Files.push_back(make<ArchiveFile>(MBRef));
     return;
   case file_magic::elf_shared_object:
     if (Config->Relocatable) {
       error("attempted static link of dynamic object " + Path);
       return;
     }
-    Files.push_back(createSharedFile(Alloc, MBRef));
+    Files.push_back(createSharedFile(MBRef));
     return;
   default:
     if (InLib)
-      Files.push_back(new LazyObjectFile(MBRef));
+      Files.push_back(make<LazyObjectFile>(MBRef));
     else
-      Files.push_back(createObjectFile(Alloc, MBRef));
+      Files.push_back(createObjectFile(MBRef));
   }
 }
 
@@ -441,6 +447,18 @@ static SortSectionPolicy getSortKind(opt::InputArgList &Args) {
   return SortSectionPolicy::Default;
 }
 
+// Parse the --symbol-ordering-file argument. File has form:
+// symbolName1
+// [...]
+// symbolNameN
+static void parseSymbolOrderingList(MemoryBufferRef MB) {
+  unsigned I = 0;
+  SmallVector<StringRef, 0> Arr;
+  MB.getBuffer().split(Arr, '\n');
+  for (StringRef S : Arr)
+    Config->SymbolOrderingFile.insert({CachedHashStringRef(S.trim()), I++});
+}
+
 // Initializes Config members by the command line options.
 void LinkerDriver::readConfigs(opt::InputArgList &Args) {
   for (auto *Arg : Args.filtered(OPT_L))
@@ -455,7 +473,9 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
   if (auto *Arg = Args.getLastArg(OPT_m)) {
     // Parse ELF{32,64}{LE,BE} and CPU type.
     StringRef S = Arg->getValue();
-    std::tie(Config->EKind, Config->EMachine) = parseEmulation(S);
+    std::tie(Config->EKind, Config->EMachine, Config->OSABI) =
+        parseEmulation(S);
+    Config->MipsN32Abi = (S == "elf32btsmipn32" || S == "elf32ltsmipn32");
     Config->Emulation = S;
   }
 
@@ -572,6 +592,10 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
     if (Optional<MemoryBufferRef> Buffer = readFile(Arg->getValue()))
       parseDynamicList(*Buffer);
 
+  if (auto *Arg = Args.getLastArg(OPT_symbol_ordering_file))
+    if (Optional<MemoryBufferRef> Buffer = readFile(Arg->getValue()))
+      parseSymbolOrderingList(*Buffer);
+
   for (auto *Arg : Args.filtered(OPT_export_dynamic_symbol))
     Config->DynamicList.push_back(Arg->getValue());
 
@@ -649,6 +673,8 @@ void LinkerDriver::inferMachineType() {
       continue;
     Config->EKind = F->EKind;
     Config->EMachine = F->EMachine;
+    Config->OSABI = F->OSABI;
+    Config->MipsN32Abi = Config->EMachine == EM_MIPS && isMipsN32Abi(F);
     return;
   }
   error("target emulation unknown: -m or at least one .o file required");
@@ -685,7 +711,8 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
   LinkerScript<ELFT> LS;
   ScriptBase = Script<ELFT>::X = &LS;
 
-  Config->Rela = ELFT::Is64Bits || Config->EMachine == EM_X86_64;
+  Config->Rela =
+      ELFT::Is64Bits || Config->EMachine == EM_X86_64 || Config->MipsN32Abi;
   Config->Mips64EL =
       (Config->EMachine == EM_MIPS && Config->EKind == ELF64LEKind);
   Config->ImageBase = getImageBase(Args);
@@ -744,6 +771,17 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
   for (auto *Arg : Args.filtered(OPT_wrap))
     Symtab.wrap(Arg->getValue());
 
+  // Now that we have a complete list of input files.
+  // Beyond this point, no new files are added.
+  // Aggregate all input sections into one place.
+  for (elf::ObjectFile<ELFT> *F : Symtab.getObjectFiles())
+    for (InputSectionBase<ELFT> *S : F->getSections())
+      if (S && S != &InputSection<ELFT>::Discarded)
+        Symtab.Sections.push_back(S);
+  for (BinaryFile *F : Symtab.getBinaryFiles())
+    for (InputSectionData *S : F->getSections())
+      Symtab.Sections.push_back(cast<InputSection<ELFT>>(S));
+
   // Do size optimizations: garbage collection and identical code folding.
   if (Config->GcSections)
     markLive<ELFT>();
@@ -752,15 +790,13 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &Args) {
 
   // MergeInputSection::splitIntoPieces needs to be called before
   // any call of MergeInputSection::getOffset. Do that.
-  for (elf::ObjectFile<ELFT> *F : Symtab.getObjectFiles()) {
-    for (InputSectionBase<ELFT> *S : F->getSections()) {
-      if (!S || S == &InputSection<ELFT>::Discarded || !S->Live)
-        continue;
-      if (S->Compressed)
-        S->uncompress();
-      if (auto *MS = dyn_cast<MergeInputSection<ELFT>>(S))
-        MS->splitIntoPieces();
-    }
+  for (InputSectionBase<ELFT> *S : Symtab.Sections) {
+    if (!S->Live)
+      continue;
+    if (S->Compressed)
+      S->uncompress();
+    if (auto *MS = dyn_cast<MergeInputSection<ELFT>>(S))
+      MS->splitIntoPieces();
   }
 
   // Write the result to the file.

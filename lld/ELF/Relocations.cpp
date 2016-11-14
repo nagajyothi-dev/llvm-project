@@ -286,6 +286,10 @@ template <class ELFT> static bool isAbsolute(const SymbolBody &Body) {
   return false;
 }
 
+template <class ELFT> static bool isAbsoluteValue(const SymbolBody &Body) {
+  return isAbsolute<ELFT>(Body) || Body.isTls();
+}
+
 static bool needsPlt(RelExpr Expr) {
   return Expr == R_PLT_PC || Expr == R_PPC_PLT_OPD || Expr == R_PLT ||
          Expr == R_PLT_PAGE_PC || Expr == R_THUNK_PLT_PC;
@@ -322,7 +326,7 @@ static bool isStaticLinkTimeConstant(RelExpr E, uint32_t Type,
   if (!Config->Pic)
     return true;
 
-  bool AbsVal = isAbsolute<ELFT>(Body) || Body.isTls();
+  bool AbsVal = isAbsoluteValue<ELFT>(Body);
   bool RelE = isRelExpr(E);
   if (AbsVal && !RelE)
     return true;
@@ -390,15 +394,15 @@ template <class ELFT> static void addCopyRelSymbol(SharedSymbol<ELFT> *SS) {
     fatal("cannot create a copy relocation for symbol " + SS->getName());
 
   uintX_t Alignment = getAlignment(SS);
-  uintX_t Off = alignTo(Out<ELFT>::Bss->getSize(), Alignment);
-  Out<ELFT>::Bss->setSize(Off + SymSize);
+  uintX_t Off = alignTo(Out<ELFT>::Bss->Size, Alignment);
+  Out<ELFT>::Bss->Size = Off + SymSize;
   Out<ELFT>::Bss->updateAlignment(Alignment);
   uintX_t Shndx = SS->Sym.st_shndx;
   uintX_t Value = SS->Sym.st_value;
   // Look through the DSO's dynamic symbol table for aliases and create a
   // dynamic symbol for each one. This causes the copy relocation to correctly
   // interpose any aliases.
-  for (const Elf_Sym &S : SS->file()->getElfSymbols(true)) {
+  for (const Elf_Sym &S : SS->file()->getGlobalSymbols()) {
     if (S.st_shndx != Shndx || S.st_value != Value)
       continue;
     auto *Alias = dyn_cast_or_null<SharedSymbol<ELFT>>(
@@ -414,16 +418,6 @@ template <class ELFT> static void addCopyRelSymbol(SharedSymbol<ELFT> *SS) {
 }
 
 template <class ELFT>
-static StringRef getSymbolName(const elf::ObjectFile<ELFT> &File,
-                               SymbolBody &Body) {
-  if (Body.isLocal() && Body.getNameOffset())
-    return File.getStringTable().data() + Body.getNameOffset();
-  if (!Body.isLocal())
-    return Body.getName();
-  return "";
-}
-
-template <class ELFT>
 static RelExpr adjustExpr(const elf::ObjectFile<ELFT> &File, SymbolBody &Body,
                           bool IsWrite, RelExpr Expr, uint32_t Type,
                           const uint8_t *Data) {
@@ -433,7 +427,7 @@ static RelExpr adjustExpr(const elf::ObjectFile<ELFT> &File, SymbolBody &Body,
   } else if (!Preemptible) {
     if (needsPlt(Expr))
       Expr = fromPlt(Expr);
-    if (Expr == R_GOT_PC)
+    if (Expr == R_GOT_PC && !isAbsoluteValue<ELFT>(Body))
       Expr = Target->adjustRelaxExpr(Type, Data, Expr);
   }
   Expr = Target->getThunkExpr(Expr, Type, File, Body);
@@ -445,7 +439,7 @@ static RelExpr adjustExpr(const elf::ObjectFile<ELFT> &File, SymbolBody &Body,
   // only memory. We can hack around it if we are producing an executable and
   // the refered symbol can be preemepted to refer to the executable.
   if (Config->Shared || (Config->Pic && !isRelExpr(Expr))) {
-    StringRef Name = getSymbolName(File, Body);
+    StringRef Name = getSymbolName(File.getStringTable(), Body);
     error("can't create dynamic relocation " + getRelName(Type) + " against " +
           (Name.empty() ? "readonly segment" : "symbol " + Name));
     return Expr;
@@ -514,7 +508,7 @@ static typename ELFT::uint computeAddend(const elf::ObjectFile<ELFT> &File,
     if (Expr == R_GOTREL) {
       Addend -= MipsGPOffset;
       if (Body.isLocal())
-        Addend += File.getMipsGp0();
+        Addend += File.MipsGp0;
     }
   }
   if (Config->Pic && Config->EMachine == EM_PPC64 && Type == R_PPC64_TOC)
@@ -535,25 +529,25 @@ static DefinedRegular<ELFT> *getSymbolAt(InputSectionBase<ELFT> *S,
 }
 
 template <class ELFT>
-static std::string getLocation(SymbolBody &Sym, InputSectionBase<ELFT> &S,
-                               typename ELFT::uint Offset) {
+std::string getLocation(InputSectionBase<ELFT> &S, typename ELFT::uint Offset) {
   ObjectFile<ELFT> *File = S.getFile();
 
   // First check if we can get desired values from debugging information.
-  std::string LineInfo = File->getDIHelper()->getLineInfo(Offset);
+  std::string LineInfo = File->getLineInfo(&S, Offset);
   if (!LineInfo.empty())
     return LineInfo;
 
-  // If don't have STT_FILE typed symbol in object file then
-  // use object file name.
+  // File->SourceFile contains STT_FILE symbol contents which is a
+  // filename. Compilers usually create STT_FILE symbols. If it's
+  // missing, we use an actual filename.
   std::string SrcFile = File->SourceFile;
   if (SrcFile.empty())
-    SrcFile = Sym.File ? getFilename(Sym.File) : getFilename(File);
+    SrcFile = getFilename(File);
 
   // Find a symbol at a given location.
   DefinedRegular<ELFT> *Encl = getSymbolAt(&S, Offset);
   if (Encl && Encl->Type == STT_FUNC) {
-    StringRef Func = getSymbolName(*File, *Encl);
+    StringRef Func = getSymbolName(File->getStringTable(), *Encl);
     return SrcFile + " (function " + maybeDemangle(Func) + ")";
   }
 
@@ -572,13 +566,29 @@ static void reportUndefined(SymbolBody &Sym, InputSectionBase<ELFT> &S,
       Config->UnresolvedSymbols != UnresolvedPolicy::NoUndef)
     return;
 
-  std::string Msg = getLocation(Sym, S, Offset) + ": undefined symbol '" +
+  std::string Msg = getLocation(S, Offset) + ": undefined symbol '" +
                     maybeDemangle(Sym.getName()) + "'";
 
   if (Config->UnresolvedSymbols == UnresolvedPolicy::Warn)
     warn(Msg);
   else
     error(Msg);
+}
+
+template <class RelTy>
+static std::pair<uint32_t, uint32_t>
+mergeMipsN32RelTypes(uint32_t Type, uint32_t Offset, RelTy *I, RelTy *E) {
+  // MIPS N32 ABI treats series of successive relocations with the same offset
+  // as a single relocation. The similar approach used by N64 ABI, but this ABI
+  // packs all relocations into the single relocation record. Here we emulate
+  // this for the N32 ABI. Iterate over relocation with the same offset and put
+  // theirs types into the single bit-set.
+  uint32_t Processed = 0;
+  for (; I != E && Offset == I->r_offset; ++I) {
+    ++Processed;
+    Type |= I->getType(Config->Mips64EL) << (8 * Processed);
+  }
+  return std::make_pair(Type, Processed);
 }
 
 // The reason we have to do this early scan is as follows
@@ -619,6 +629,13 @@ static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
     const RelTy &RI = *I;
     SymbolBody &Body = File.getRelocTargetSym(RI);
     uint32_t Type = RI.getType(Config->Mips64EL);
+
+    if (Config->MipsN32Abi) {
+      uint32_t Processed;
+      std::tie(Type, Processed) =
+          mergeMipsN32RelTypes(Type, RI.r_offset, I + 1, E);
+      I += Processed;
+    }
 
     // We only report undefined symbols if they are referenced somewhere in the
     // code.
@@ -772,11 +789,11 @@ static void scanRelocs(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
 template <class ELFT>
 void scanRelocations(InputSectionBase<ELFT> &S,
                      const typename ELFT::Shdr &RelSec) {
-  ELFFile<ELFT> &EObj = S.getFile()->getObj();
+  ELFFile<ELFT> EObj = S.getFile()->getObj();
   if (RelSec.sh_type == SHT_RELA)
-    scanRelocs(S, EObj.relas(&RelSec));
+    scanRelocs(S, check(EObj.relas(&RelSec)));
   else
-    scanRelocs(S, EObj.rels(&RelSec));
+    scanRelocs(S, check(EObj.rels(&RelSec)));
 }
 
 template <class ELFT, class RelTy>
@@ -802,11 +819,11 @@ static void createThunks(InputSectionBase<ELFT> &C, ArrayRef<RelTy> Rels) {
 template <class ELFT>
 void createThunks(InputSectionBase<ELFT> &S,
                   const typename ELFT::Shdr &RelSec) {
-  ELFFile<ELFT> &EObj = S.getFile()->getObj();
+  ELFFile<ELFT> EObj = S.getFile()->getObj();
   if (RelSec.sh_type == SHT_RELA)
-    createThunks(S, EObj.relas(&RelSec));
+    createThunks(S, check(EObj.relas(&RelSec)));
   else
-    createThunks(S, EObj.rels(&RelSec));
+    createThunks(S, check(EObj.rels(&RelSec)));
 }
 
 template void scanRelocations<ELF32LE>(InputSectionBase<ELF32LE> &,
@@ -826,5 +843,14 @@ template void createThunks<ELF64LE>(InputSectionBase<ELF64LE> &,
                                     const ELF64LE::Shdr &);
 template void createThunks<ELF64BE>(InputSectionBase<ELF64BE> &,
                                     const ELF64BE::Shdr &);
+
+template std::string getLocation<ELF32LE>(InputSectionBase<ELF32LE> &S,
+                                          uint32_t Offset);
+template std::string getLocation<ELF32BE>(InputSectionBase<ELF32BE> &S,
+                                          uint32_t Offset);
+template std::string getLocation<ELF64LE>(InputSectionBase<ELF64LE> &S,
+                                          uint64_t Offset);
+template std::string getLocation<ELF64BE>(InputSectionBase<ELF64BE> &S,
+                                          uint64_t Offset);
 }
 }

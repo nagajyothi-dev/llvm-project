@@ -355,12 +355,11 @@ main_body:
 ; CHECK: s_wqm_b64 exec, exec
 ; CHECK-DAG: v_mov_b32_e32 [[CTR:v[0-9]+]], 0
 ; CHECK-DAG: v_mov_b32_e32 [[SEVEN:v[0-9]+]], 0x40e00000
-; CHECK: s_branch [[LOOPHDR:BB[0-9]+_[0-9]+]]
 
+; CHECK: [[LOOPHDR:BB[0-9]+_[0-9]+]]: ; %body
 ; CHECK: v_add_f32_e32 [[CTR]], 2.0, [[CTR]]
-; CHECK: [[LOOPHDR]]: ; %loop
 ; CHECK: v_cmp_lt_f32_e32 vcc, [[SEVEN]], [[CTR]]
-; CHECK: s_cbranch_vccz
+; CHECK: s_cbranch_vccz [[LOOPHDR]]
 ; CHECK: ; %break
 
 ; CHECK: ; return
@@ -459,7 +458,7 @@ entry:
   br i1 %cc, label %if, label %else
 
 if:
-  store volatile <4 x float> %dtex, <4 x float>* undef
+  store volatile <4 x float> %dtex, <4 x float> addrspace(1)* undef
   unreachable
 
 else:

@@ -30,6 +30,7 @@
 #include "OutputSections.h"
 #include "Symbols.h"
 #include "Thunks.h"
+#include "Writer.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Object/ELF.h"
@@ -47,6 +48,7 @@ namespace elf {
 TargetInfo *Target;
 
 static void or32le(uint8_t *P, int32_t V) { write32le(P, read32le(P) | V); }
+static void or32be(uint8_t *P, int32_t V) { write32be(P, read32be(P) | V); }
 
 StringRef getRelName(uint32_t Type) {
   return getELFRelocationTypeName(Config->EMachine, Type);
@@ -353,7 +355,7 @@ RelExpr X86TargetInfo::adjustRelaxExpr(uint32_t Type, const uint8_t *Data,
 }
 
 void X86TargetInfo::writeGotPltHeader(uint8_t *Buf) const {
-  write32le(Buf, Out<ELF32LE>::Dynamic->getVA());
+  write32le(Buf, Out<ELF32LE>::Dynamic->Addr);
 }
 
 void X86TargetInfo::writeGotPlt(uint8_t *Buf, const SymbolBody &S) const {
@@ -401,7 +403,7 @@ void X86TargetInfo::writePltHeader(uint8_t *Buf) const {
       0x90, 0x90, 0x90, 0x90              // nop; nop; nop; nop
   };
   memcpy(Buf, PltData, sizeof(PltData));
-  uint32_t Got = Out<ELF32LE>::GotPlt->getVA();
+  uint32_t Got = Out<ELF32LE>::GotPlt->Addr;
   write32le(Buf + 2, Got + 4);
   write32le(Buf + 8, Got + 8);
 }
@@ -418,7 +420,7 @@ void X86TargetInfo::writePlt(uint8_t *Buf, uint64_t GotEntryAddr,
 
   // jmp *foo@GOT(%ebx) or jmp *foo_in_GOT
   Buf[1] = Config->Pic ? 0xa3 : 0x25;
-  uint32_t Got = Out<ELF32LE>::GotPlt->getVA();
+  uint32_t Got = Out<ELF32LE>::GotPlt->Addr;
   write32le(Buf + 2, Config->Shared ? GotEntryAddr - Got : GotEntryAddr);
   write32le(Buf + 7, RelOff);
   write32le(Buf + 12, -Index * PltEntrySize - PltHeaderSize - 16);
@@ -593,7 +595,7 @@ void X86_64TargetInfo<ELFT>::writeGotPltHeader(uint8_t *Buf) const {
   // required, but it is documented in the psabi and the glibc dynamic linker
   // seems to use it (note that this is relevant for linking ld.so, not any
   // other program).
-  write64le(Buf, Out<ELFT>::Dynamic->getVA());
+  write64le(Buf, Out<ELFT>::Dynamic->Addr);
 }
 
 template <class ELFT>
@@ -611,8 +613,8 @@ void X86_64TargetInfo<ELFT>::writePltHeader(uint8_t *Buf) const {
       0x0f, 0x1f, 0x40, 0x00              // nopl 0x0(rax)
   };
   memcpy(Buf, PltData, sizeof(PltData));
-  uint64_t Got = Out<ELFT>::GotPlt->getVA();
-  uint64_t Plt = Out<ELFT>::Plt->getVA();
+  uint64_t Got = Out<ELFT>::GotPlt->Addr;
+  uint64_t Plt = Out<ELFT>::Plt->Addr;
   write32le(Buf + 2, Got - Plt + 2); // GOT+8
   write32le(Buf + 8, Got - Plt + 4); // GOT+16
 }
@@ -965,13 +967,26 @@ void PPCTargetInfo::relocateOne(uint8_t *Loc, uint32_t Type,
   case R_PPC_ADDR16_LO:
     write16be(Loc, applyPPCLo(Val));
     break;
+  case R_PPC_ADDR32:
+  case R_PPC_REL32:
+    write32be(Loc, Val);
+    break;
+  case R_PPC_REL24:
+    or32be(Loc, Val & 0x3FFFFFC);
+    break;
   default:
     fatal("unrecognized reloc " + Twine(Type));
   }
 }
 
 RelExpr PPCTargetInfo::getRelExpr(uint32_t Type, const SymbolBody &S) const {
-  return R_ABS;
+  switch (Type) {
+  case R_PPC_REL24:
+  case R_PPC_REL32:
+    return R_PC;
+  default:
+    return R_ABS;
+  }
 }
 
 PPC64TargetInfo::PPC64TargetInfo() {
@@ -1004,7 +1019,7 @@ uint64_t getPPC64TocBase() {
   // TOC starts where the first of these sections starts. We always create a
   // .got when we see a relocation that uses it, so for us the start is always
   // the .got.
-  uint64_t TocVA = Out<ELF64BE>::Got->getVA();
+  uint64_t TocVA = Out<ELF64BE>::Got->Addr;
 
   // Per the ppc64-elf-linux ABI, The TOC base is TOC value plus 0x8000
   // thus permitting a full 64 Kbytes segment. Note that the glibc startup
@@ -1239,7 +1254,7 @@ uint32_t AArch64TargetInfo::getDynRel(uint32_t Type) const {
 }
 
 void AArch64TargetInfo::writeGotPlt(uint8_t *Buf, const SymbolBody &) const {
-  write64le(Buf, Out<ELF64LE>::Plt->getVA());
+  write64le(Buf, Out<ELF64LE>::Plt->Addr);
 }
 
 static uint64_t getAArch64Page(uint64_t Expr) {
@@ -1259,8 +1274,8 @@ void AArch64TargetInfo::writePltHeader(uint8_t *Buf) const {
   };
   memcpy(Buf, PltData, sizeof(PltData));
 
-  uint64_t Got = Out<ELF64LE>::GotPlt->getVA();
-  uint64_t Plt = Out<ELF64LE>::Plt->getVA();
+  uint64_t Got = Out<ELF64LE>::GotPlt->Addr;
+  uint64_t Plt = Out<ELF64LE>::Plt->Addr;
   relocateOne(Buf + 4, R_AARCH64_ADR_PREL_PG_HI21,
               getAArch64Page(Got + 16) - getAArch64Page(Plt + 4));
   relocateOne(Buf + 8, R_AARCH64_LDST64_ABS_LO12_NC, Got + 16);
@@ -1601,7 +1616,7 @@ uint32_t ARMTargetInfo::getDynRel(uint32_t Type) const {
 }
 
 void ARMTargetInfo::writeGotPlt(uint8_t *Buf, const SymbolBody &) const {
-  write32le(Buf, Out<ELF32LE>::Plt->getVA());
+  write32le(Buf, Out<ELF32LE>::Plt->Addr);
 }
 
 void ARMTargetInfo::writePltHeader(uint8_t *Buf) const {
@@ -1613,8 +1628,8 @@ void ARMTargetInfo::writePltHeader(uint8_t *Buf) const {
       0x00, 0x00, 0x00, 0x00, // L2: .word   &(.got.plt) - L1 - 8
   };
   memcpy(Buf, PltData, sizeof(PltData));
-  uint64_t GotPlt = Out<ELF32LE>::GotPlt->getVA();
-  uint64_t L1 = Out<ELF32LE>::Plt->getVA() + 8;
+  uint64_t GotPlt = Out<ELF32LE>::GotPlt->Addr;
+  uint64_t L1 = Out<ELF32LE>::Plt->Addr + 8;
   write32le(Buf + 16, GotPlt - L1 - 8);
 }
 
@@ -1638,6 +1653,9 @@ void ARMTargetInfo::writePlt(uint8_t *Buf, uint64_t GotEntryAddr,
 RelExpr ARMTargetInfo::getThunkExpr(RelExpr Expr, uint32_t RelocType,
                                     const InputFile &File,
                                     const SymbolBody &S) const {
+  // If S is an undefined weak symbol we don't need a Thunk
+  if (S.isUndefined())
+    return Expr;
   // A state change from ARM to Thumb and vice versa must go through an
   // interworking thunk if the relocation type is not R_ARM_CALL or
   // R_ARM_THM_CALL.
@@ -1904,8 +1922,8 @@ template <class ELFT> MipsTargetInfo<ELFT>::MipsTargetInfo() {
 template <class ELFT>
 RelExpr MipsTargetInfo<ELFT>::getRelExpr(uint32_t Type,
                                          const SymbolBody &S) const {
-  if (ELFT::Is64Bits)
-    // See comment in the calculateMips64RelChain.
+  // See comment in the calculateMipsRelChain.
+  if (ELFT::Is64Bits || Config->MipsN32Abi)
     Type &= 0xff;
   switch (Type) {
   default:
@@ -1978,7 +1996,7 @@ bool MipsTargetInfo<ELFT>::isTlsGlobalDynamicRel(uint32_t Type) const {
 
 template <class ELFT>
 void MipsTargetInfo<ELFT>::writeGotPlt(uint8_t *Buf, const SymbolBody &) const {
-  write32<ELFT::TargetEndianness>(Buf, Out<ELFT>::Plt->getVA());
+  write32<ELFT::TargetEndianness>(Buf, Out<ELFT>::Plt->Addr);
 }
 
 template <endianness E, uint8_t BSIZE, uint8_t SHIFT>
@@ -2030,15 +2048,22 @@ template <class ELFT> static bool isMipsR6() {
 template <class ELFT>
 void MipsTargetInfo<ELFT>::writePltHeader(uint8_t *Buf) const {
   const endianness E = ELFT::TargetEndianness;
-  write32<E>(Buf, 0x3c1c0000);      // lui   $28, %hi(&GOTPLT[0])
-  write32<E>(Buf + 4, 0x8f990000);  // lw    $25, %lo(&GOTPLT[0])($28)
-  write32<E>(Buf + 8, 0x279c0000);  // addiu $28, $28, %lo(&GOTPLT[0])
-  write32<E>(Buf + 12, 0x031cc023); // subu  $24, $24, $28
+  if (Config->MipsN32Abi) {
+    write32<E>(Buf, 0x3c0e0000);      // lui   $14, %hi(&GOTPLT[0])
+    write32<E>(Buf + 4, 0x8dd90000);  // lw    $25, %lo(&GOTPLT[0])($14)
+    write32<E>(Buf + 8, 0x25ce0000);  // addiu $14, $14, %lo(&GOTPLT[0])
+    write32<E>(Buf + 12, 0x030ec023); // subu  $24, $24, $14
+  } else {
+    write32<E>(Buf, 0x3c1c0000);      // lui   $28, %hi(&GOTPLT[0])
+    write32<E>(Buf + 4, 0x8f990000);  // lw    $25, %lo(&GOTPLT[0])($28)
+    write32<E>(Buf + 8, 0x279c0000);  // addiu $28, $28, %lo(&GOTPLT[0])
+    write32<E>(Buf + 12, 0x031cc023); // subu  $24, $24, $28
+  }
   write32<E>(Buf + 16, 0x03e07825); // move  $15, $31
   write32<E>(Buf + 20, 0x0018c082); // srl   $24, $24, 2
   write32<E>(Buf + 24, 0x0320f809); // jalr  $25
   write32<E>(Buf + 28, 0x2718fffe); // subu  $24, $24, 2
-  uint64_t Got = Out<ELFT>::GotPlt->getVA();
+  uint64_t Got = Out<ELFT>::GotPlt->Addr;
   writeMipsHi16<E>(Buf, Got);
   writeMipsLo16<E>(Buf + 4, Got);
   writeMipsLo16<E>(Buf + 8, Got);
@@ -2120,8 +2145,8 @@ uint64_t MipsTargetInfo<ELFT>::getImplicitAddend(const uint8_t *Buf,
   }
 }
 
-static std::pair<uint32_t, uint64_t> calculateMips64RelChain(uint32_t Type,
-                                                             uint64_t Val) {
+static std::pair<uint32_t, uint64_t> calculateMipsRelChain(uint32_t Type,
+                                                           uint64_t Val) {
   // MIPS N64 ABI packs multiple relocations into the single relocation
   // record. In general, all up to three relocations can have arbitrary
   // types. In fact, Clang and GCC uses only a few combinations. For now,
@@ -2158,8 +2183,8 @@ void MipsTargetInfo<ELFT>::relocateOne(uint8_t *Loc, uint32_t Type,
   else if (Type == R_MIPS_TLS_TPREL_HI16 || Type == R_MIPS_TLS_TPREL_LO16 ||
            Type == R_MIPS_TLS_TPREL32 || Type == R_MIPS_TLS_TPREL64)
     Val -= 0x7000;
-  if (ELFT::Is64Bits)
-    std::tie(Type, Val) = calculateMips64RelChain(Type, Val);
+  if (ELFT::Is64Bits || Config->MipsN32Abi)
+    std::tie(Type, Val) = calculateMipsRelChain(Type, Val);
   switch (Type) {
   case R_MIPS_32:
   case R_MIPS_GPREL32:

@@ -12,6 +12,7 @@
 #include "InputFiles.h"
 #include "InputSection.h"
 #include "OutputSections.h"
+#include "SyntheticSections.h"
 #include "Target.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -32,12 +33,12 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
   switch (Body.kind()) {
   case SymbolBody::DefinedSyntheticKind: {
     auto &D = cast<DefinedSynthetic<ELFT>>(Body);
-    const OutputSectionBase<ELFT> *Sec = D.Section;
+    const OutputSectionBase *Sec = D.Section;
     if (!Sec)
       return D.Value;
     if (D.Value == DefinedSynthetic<ELFT>::SectionEnd)
-      return Sec->getVA() + Sec->getSize();
-    return Sec->getVA() + D.Value;
+      return Sec->Addr + Sec->Size;
+    return Sec->Addr + D.Value;
   }
   case SymbolBody::DefinedRegularKind: {
     auto &D = cast<DefinedRegular<ELFT>>(Body);
@@ -59,7 +60,7 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
       Offset += Addend;
       Addend = 0;
     }
-    uintX_t VA = (SC->OutSec ? SC->OutSec->getVA() : 0) + SC->getOffset(Offset);
+    uintX_t VA = (SC->OutSec ? SC->OutSec->Addr : 0) + SC->getOffset(Offset);
     if (D.isTls() && !Config->Relocatable) {
       if (!Out<ELFT>::TlsPhdr)
         fatal(getFilename(D.File) +
@@ -69,8 +70,7 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
     return VA;
   }
   case SymbolBody::DefinedCommonKind:
-    return InputSection<ELFT>::CommonInputSection->OutSec->getVA() +
-           InputSection<ELFT>::CommonInputSection->OutSecOff +
+    return In<ELFT>::Common->OutSec->Addr + In<ELFT>::Common->OutSecOff +
            cast<DefinedCommon>(Body).Offset;
   case SymbolBody::SharedKind: {
     auto &SS = cast<SharedSymbol<ELFT>>(Body);
@@ -78,7 +78,7 @@ static typename ELFT::uint getSymVA(const SymbolBody &Body,
       return 0;
     if (SS.isFunc())
       return Body.getPltVA<ELFT>();
-    return Out<ELFT>::Bss->getVA() + SS.OffsetInBss;
+    return Out<ELFT>::Bss->Addr + SS.OffsetInBss;
   }
   case SymbolBody::UndefinedKind:
     return 0;
@@ -151,7 +151,7 @@ typename ELFT::uint SymbolBody::getVA(typename ELFT::uint Addend) const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotVA() const {
-  return Out<ELFT>::Got->getVA() + getGotOffset<ELFT>();
+  return Out<ELFT>::Got->Addr + getGotOffset<ELFT>();
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotOffset() const {
@@ -159,7 +159,7 @@ template <class ELFT> typename ELFT::uint SymbolBody::getGotOffset() const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotPltVA() const {
-  return Out<ELFT>::GotPlt->getVA() + getGotPltOffset<ELFT>();
+  return Out<ELFT>::GotPlt->Addr + getGotPltOffset<ELFT>();
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotPltOffset() const {
@@ -167,7 +167,7 @@ template <class ELFT> typename ELFT::uint SymbolBody::getGotPltOffset() const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getPltVA() const {
-  return Out<ELFT>::Plt->getVA() + Target->PltHeaderSize +
+  return Out<ELFT>::Plt->Addr + Target->PltHeaderSize +
          PltIndex * Target->PltEntrySize;
 }
 
@@ -216,7 +216,7 @@ Undefined::Undefined(uint32_t NameOffset, uint8_t StOther, uint8_t Type,
 
 template <typename ELFT>
 DefinedSynthetic<ELFT>::DefinedSynthetic(StringRef N, uintX_t Value,
-                                         OutputSectionBase<ELFT> *Section)
+                                         OutputSectionBase *Section)
     : Defined(SymbolBody::DefinedSyntheticKind, N, STV_HIDDEN, 0 /* Type */),
       Value(Value), Section(Section) {}
 
@@ -227,10 +227,10 @@ DefinedCommon::DefinedCommon(StringRef N, uint64_t Size, uint64_t Alignment,
   this->File = File;
 }
 
-InputFile *Lazy::fetch(BumpPtrAllocator &Alloc) {
+InputFile *Lazy::fetch() {
   if (auto *S = dyn_cast<LazyArchive>(this))
-    return S->fetch(Alloc);
-  return cast<LazyObject>(this)->fetch(Alloc);
+    return S->fetch();
+  return cast<LazyObject>(this)->fetch();
 }
 
 LazyArchive::LazyArchive(ArchiveFile &File,
@@ -244,22 +244,21 @@ LazyObject::LazyObject(StringRef Name, LazyObjectFile &File, uint8_t Type)
   this->File = &File;
 }
 
-InputFile *LazyArchive::fetch(BumpPtrAllocator &Alloc) {
+InputFile *LazyArchive::fetch() {
   std::pair<MemoryBufferRef, uint64_t> MBInfo = file()->getMember(&Sym);
 
   // getMember returns an empty buffer if the member was already
   // read from the library.
   if (MBInfo.first.getBuffer().empty())
     return nullptr;
-  return createObjectFile(Alloc, MBInfo.first, file()->getName(),
-                          MBInfo.second);
+  return createObjectFile(MBInfo.first, file()->getName(), MBInfo.second);
 }
 
-InputFile *LazyObject::fetch(BumpPtrAllocator &Alloc) {
+InputFile *LazyObject::fetch() {
   MemoryBufferRef MBRef = file()->getBuffer();
   if (MBRef.getBuffer().empty())
     return nullptr;
-  return createObjectFile(Alloc, MBRef);
+  return createObjectFile(MBRef);
 }
 
 bool Symbol::includeInDynsym() const {
@@ -281,6 +280,14 @@ void elf::printTraceSymbol(Symbol *Sym) {
   else
     outs() << ": definition of ";
   outs() << B->getName() << "\n";
+}
+
+StringRef elf::getSymbolName(StringRef SymTab, SymbolBody &Body) {
+  if (Body.isLocal() && Body.getNameOffset())
+    return SymTab.data() + Body.getNameOffset();
+  if (!Body.isLocal())
+    return Body.getName();
+  return "";
 }
 
 template bool SymbolBody::hasThunk<ELF32LE>() const;

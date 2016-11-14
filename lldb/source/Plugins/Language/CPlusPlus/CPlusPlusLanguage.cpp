@@ -918,6 +918,23 @@ static void LoadSystemFormatters(lldb::TypeCategoryImplSP cpp_category_sp) {
 #endif
 }
 
+std::unique_ptr<Language::TypeScavenger> CPlusPlusLanguage::GetTypeScavenger() {
+  class CPlusPlusTypeScavenger : public Language::ImageListTypeScavenger {
+  public:
+    virtual CompilerType AdjustForInclusion(CompilerType &candidate) override {
+      LanguageType lang_type(candidate.GetMinimumLanguage());
+      if (!Language::LanguageIsC(lang_type) &&
+          !Language::LanguageIsCPlusPlus(lang_type))
+        return CompilerType();
+      if (candidate.IsTypedefType())
+        return candidate.GetTypedefedType();
+      return candidate;
+    }
+  };
+  
+  return std::unique_ptr<TypeScavenger>(new CPlusPlusTypeScavenger());
+}
+
 lldb::TypeCategoryImplSP CPlusPlusLanguage::GetFormatters() {
   static std::once_flag g_initialize;
   static TypeCategoryImplSP g_category;

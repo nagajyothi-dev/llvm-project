@@ -337,6 +337,7 @@ Failure values are constructed using ``make_error<T>``, where ``T`` is any class
 that inherits from the ErrorInfo utility, E.g.:
 
 .. code-block:: c++
+
   class BadFileFormat : public ErrorInfo<BadFileFormat> {
   public:
     static char ID;
@@ -455,9 +456,9 @@ been activated:
 .. code-block:: c++
 
   handleErrors(
-    processFormattedFile(…),
+    processFormattedFile(...),
     [](const BadFileFormat &BFF) {
-      report(“Unable to process “ + BFF.Path + “: bad format”);
+      report("Unable to process " + BFF.Path + ": bad format");
     },
     [](const FileNotFound &FNF) {
       report("File not found " + FNF.Path);
@@ -468,8 +469,8 @@ a variadic list of "handlers", each of which must be a callable type (a
 function, lambda, or class with a call operator) with one argument. The
 ``handleErrors`` function will visit each handler in the sequence and check its
 argument type against the dynamic type of the error, running the first handler
-that matches. This is the same process that is used for catch clauses in C++
-exceptions.
+that matches. This is the same decision process that is used decide which catch
+clause to run for a C++ exception.
 
 Since the list of handlers passed to ``handleErrors`` may not cover every error
 type that can occur, the ``handleErrors`` function also returns an Error value
@@ -483,7 +484,7 @@ handleErrors. Idiomatic use of ``handleErrors`` thus looks like:
         handleErrors(
           processFormattedFile(...),
           [](const BadFileFormat &BFF) {
-            report(“Unable to process “ + BFF.Path + “: bad format”);
+            report("Unable to process " + BFF.Path + ": bad format");
           },
           [](const FileNotFound &FNF) {
             report("File not found " + FNF.Path);
@@ -498,6 +499,11 @@ function should generally be avoided: the introduction of a new error type
 elsewhere in the program can easily turn a formerly exhaustive list of errors
 into a non-exhaustive list, risking unexpected program termination. Where
 possible, use handleErrors and propagate unknown errors up the stack instead.
+
+For tool code, where errors can be handled by printing an error message then
+exiting with an error code, the :ref:`ExitOnError <err_exitonerr>` utility
+may be a better choice than handleErrors, as it simplifies control flow when
+calling fallible functions.
 
 StringError
 """""""""""
@@ -537,7 +543,7 @@ rather than an ``Error``). The infectious nature of error types means that an
 attempt to change one of these functions to return ``Error`` or ``Expected<T>``
 instead often results in an avalanche of changes to callers, callers of callers,
 and so on. (The first such attempt, returning an ``Error`` from
-MachOObjectFile’s constructor, was abandoned after the diff reached 3000 lines,
+MachOObjectFile's constructor, was abandoned after the diff reached 3000 lines,
 impacted half a dozen libraries, and was still growing).
 
 To solve this problem, the ``Error``/``std::error_code`` interoperability requirement was
@@ -579,6 +585,8 @@ actually recognises three different forms of handler signature:
 Any error returned from a handler will be returned from the ``handleErrors``
 function so that it can be handled itself, or propagated up the stack.
 
+.. _err_exitonerr:
+
 Using ExitOnError to simplify tool code
 """""""""""""""""""""""""""""""""""""""
 
@@ -610,15 +618,15 @@ turning them into non-failing calls:
     int X = ExitOnErr(mayFail2());
   }
 
-On failure, the error’s log message will be written to ``stderr``, optionally
-preceded by a string “banner” that can be set by calling the setBanner method. A
+On failure, the error's log message will be written to ``stderr``, optionally
+preceded by a string "banner" that can be set by calling the setBanner method. A
 mapping can also be supplied from ``Error`` values to exit codes using the
 ``setExitCodeMapper`` method:
 
 .. code-block:: c++
 
   int main(int argc, char *argv[]) {
-    ExitOnErr.setBanner(std::string(argv[0]) + “ error:”);
+    ExitOnErr.setBanner(std::string(argv[0]) + " error:");
     ExitOnErr.setExitCodeMapper(
       [](const Error &Err) {
         if (Err.isA<BadFileFormat>())
@@ -633,9 +641,9 @@ Fallible constructors
 """""""""""""""""""""
 
 Some classes require resource acquisition or other complex initialization that
-can fail during construction. Unfortunately constructors can’t return errors,
-and having clients test objects after they’re constructed to ensure that they’re
-valid is error prone as it’s all too easy to forget the test. To work around
+can fail during construction. Unfortunately constructors can't return errors,
+and having clients test objects after they're constructed to ensure that they're
+valid is error prone as it's all too easy to forget the test. To work around
 this, use the named constructor idiom and return an ``Expected<T>``:
 
 .. code-block:: c++
@@ -753,10 +761,10 @@ cleaner iteration idiom:
 
   Error Err;
   for (auto &Child : Ar->children(Err)) {
-    // Use Child - we only enter the loop when it’s valid
+    // Use Child - we only enter the loop when it's valid
     ...
   }
-  // Check Err after the loop to ensure it didn’t break due to an error.
+  // Check Err after the loop to ensure it didn't break due to an error.
   if (Err)
     return Err;
 
