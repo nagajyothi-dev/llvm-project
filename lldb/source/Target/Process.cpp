@@ -388,10 +388,10 @@ void ProcessInstanceInfo::DumpAsTableRow(Stream &s, Platform *platform,
       else
         s.Printf("%-10u ", m_egid);
 
-      s.Printf("%-24s ", arch_strm.GetString().c_str());
+      s.Printf("%-24s ", arch_strm.GetData());
     } else {
       s.Printf("%-10s %-24s ", platform->GetUserName(m_euid),
-               arch_strm.GetString().c_str());
+               arch_strm.GetData());
     }
 
     if (verbose || show_args) {
@@ -412,11 +412,10 @@ void ProcessInstanceInfo::DumpAsTableRow(Stream &s, Platform *platform,
 }
 
 Error ProcessLaunchCommandOptions::SetOptionValue(
-    uint32_t option_idx, const char *option_arg,
+    uint32_t option_idx, llvm::StringRef option_arg,
     ExecutionContext *execution_context) {
   Error error;
   const int short_option = m_getopt_table[option_idx].val;
-  auto option_strref = llvm::StringRef::withNullAsEmpty(option_arg);
 
   switch (short_option) {
   case 's': // Stop at program entry point
@@ -485,40 +484,38 @@ Error ProcessLaunchCommandOptions::SetOptionValue(
   {
     bool success;
     const bool disable_aslr_arg =
-        Args::StringToBoolean(option_strref, true, &success);
+        Args::StringToBoolean(option_arg, true, &success);
     if (success)
       disable_aslr = disable_aslr_arg ? eLazyBoolYes : eLazyBoolNo;
     else
       error.SetErrorStringWithFormat(
           "Invalid boolean value for disable-aslr option: '%s'",
-          option_arg ? option_arg : "<null>");
+          option_arg.empty() ? "<null>" : option_arg.str().c_str());
     break;
   }
 
   case 'X': // shell expand args.
   {
     bool success;
-    const bool expand_args =
-        Args::StringToBoolean(option_strref, true, &success);
+    const bool expand_args = Args::StringToBoolean(option_arg, true, &success);
     if (success)
       launch_info.SetShellExpandArguments(expand_args);
     else
       error.SetErrorStringWithFormat(
           "Invalid boolean value for shell-expand-args option: '%s'",
-          option_arg ? option_arg : "<null>");
+          option_arg.empty() ? "<null>" : option_arg.str().c_str());
     break;
   }
 
   case 'c':
-    if (option_arg && option_arg[0])
+    if (!option_arg.empty())
       launch_info.SetShell(FileSpec(option_arg, false));
     else
       launch_info.SetShell(HostInfo::GetDefaultShell());
     break;
 
   case 'v':
-    launch_info.GetEnvironmentEntries().AppendArgument(
-        llvm::StringRef::withNullAsEmpty(option_arg));
+    launch_info.GetEnvironmentEntries().AppendArgument(option_arg);
     break;
 
   default:
@@ -665,14 +662,15 @@ void ProcessInstanceInfoMatch::Clear() {
   m_match_all_users = false;
 }
 
-ProcessSP Process::FindPlugin(lldb::TargetSP target_sp, const char *plugin_name,
+ProcessSP Process::FindPlugin(lldb::TargetSP target_sp,
+                              llvm::StringRef plugin_name,
                               ListenerSP listener_sp,
                               const FileSpec *crash_file_path) {
   static uint32_t g_process_unique_id = 0;
 
   ProcessSP process_sp;
   ProcessCreateInstance create_callback = nullptr;
-  if (plugin_name) {
+  if (!plugin_name.empty()) {
     ConstString const_plugin_name(plugin_name);
     create_callback =
         PluginManager::GetProcessCreateCallbackForPluginName(const_plugin_name);
@@ -3248,13 +3246,12 @@ void Process::CompleteAttach() {
   m_stop_info_override_callback = process_arch.GetStopInfoOverrideCallback();
 }
 
-Error Process::ConnectRemote(Stream *strm, const char *remote_url) {
+Error Process::ConnectRemote(Stream *strm, llvm::StringRef remote_url) {
   m_abi_sp.reset();
   m_process_input_reader.reset();
 
   // Find the process and its architecture.  Make sure it matches the
-  // architecture
-  // of the current Target, and if not adjust it.
+  // architecture of the current Target, and if not adjust it.
 
   Error error(DoConnectRemote(strm, remote_url));
   if (error.Success()) {
@@ -4580,8 +4577,7 @@ public:
   IOHandlerProcessSTDIO(Process *process, int write_fd)
       : IOHandler(process->GetTarget().GetDebugger(),
                   IOHandler::Type::ProcessIO),
-        m_process(process), m_read_file(), m_write_file(write_fd, false),
-        m_pipe() {
+        m_process(process), m_write_file(write_fd, false) {
     m_pipe.CreateNew(false);
     m_read_file.SetDescriptor(GetInputFD(), false);
   }
@@ -4713,7 +4709,7 @@ protected:
   File m_write_file; // Write to this file (usually the master pty for getting
                      // io to debuggee)
   Pipe m_pipe;
-  std::atomic<bool> m_is_running;
+  std::atomic<bool> m_is_running{false};
 };
 
 void Process::SetSTDIOFileDescriptor(int fd) {
@@ -4818,29 +4814,29 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
   std::lock_guard<std::mutex> run_thread_plan_locker(m_run_thread_plan_lock);
 
   if (!thread_plan_sp) {
-    diagnostic_manager.PutCString(
+    diagnostic_manager.PutString(
         eDiagnosticSeverityError,
         "RunThreadPlan called with empty thread plan.");
     return eExpressionSetupError;
   }
 
   if (!thread_plan_sp->ValidatePlan(nullptr)) {
-    diagnostic_manager.PutCString(
+    diagnostic_manager.PutString(
         eDiagnosticSeverityError,
         "RunThreadPlan called with an invalid thread plan.");
     return eExpressionSetupError;
   }
 
   if (exe_ctx.GetProcessPtr() != this) {
-    diagnostic_manager.PutCString(eDiagnosticSeverityError,
-                                  "RunThreadPlan called on wrong process.");
+    diagnostic_manager.PutString(eDiagnosticSeverityError,
+                                 "RunThreadPlan called on wrong process.");
     return eExpressionSetupError;
   }
 
   Thread *thread = exe_ctx.GetThreadPtr();
   if (thread == nullptr) {
-    diagnostic_manager.PutCString(eDiagnosticSeverityError,
-                                  "RunThreadPlan called with invalid thread.");
+    diagnostic_manager.PutString(eDiagnosticSeverityError,
+                                 "RunThreadPlan called with invalid thread.");
     return eExpressionSetupError;
   }
 
@@ -4867,7 +4863,7 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
   thread_plan_sp->SetOkayToDiscard(false);
 
   if (m_private_state.GetValue() != eStateStopped) {
-    diagnostic_manager.PutCString(
+    diagnostic_manager.PutString(
         eDiagnosticSeverityError,
         "RunThreadPlan called while the private state was not stopped.");
     return eExpressionSetupError;
@@ -5031,10 +5027,10 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
         uint64_t computed_one_thread_timeout;
         if (option_one_thread_timeout != 0) {
           if (timeout_usec < option_one_thread_timeout) {
-            diagnostic_manager.PutCString(eDiagnosticSeverityError,
-                                          "RunThreadPlan called without one "
-                                          "thread timeout greater than total "
-                                          "timeout");
+            diagnostic_manager.PutString(eDiagnosticSeverityError,
+                                         "RunThreadPlan called without one "
+                                         "thread timeout greater than total "
+                                         "timeout");
             return eExpressionSetupError;
           }
           computed_one_thread_timeout = option_one_thread_timeout;
@@ -5063,7 +5059,7 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
 
     Event *other_events = listener_sp->PeekAtNextEvent();
     if (other_events != nullptr) {
-      diagnostic_manager.PutCString(
+      diagnostic_manager.PutString(
           eDiagnosticSeverityError,
           "RunThreadPlan called with pending events on the queue.");
       return eExpressionSetupError;
@@ -5240,9 +5236,8 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
             const bool use_run_lock = false;
             Halt(clear_thread_plans, use_run_lock);
             return_value = eExpressionInterrupted;
-            diagnostic_manager.PutCString(
-                eDiagnosticSeverityRemark,
-                "execution halted by user interrupt.");
+            diagnostic_manager.PutString(eDiagnosticSeverityRemark,
+                                         "execution halted by user interrupt.");
             if (log)
               log->Printf("Process::RunThreadPlan(): Got  interrupted by "
                           "eBroadcastBitInterrupted, exiting.");
@@ -5353,7 +5348,7 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
               if (stop_state == eStateExited)
                 event_to_broadcast_sp = event_sp;
 
-              diagnostic_manager.PutCString(
+              diagnostic_manager.PutString(
                   eDiagnosticSeverityError,
                   "execution stopped with unexpected state.");
               return_value = eExpressionInterrupted;
@@ -5545,7 +5540,7 @@ Process::RunThreadPlan(ExecutionContext &exe_ctx,
       StreamString s;
       s.PutCString("Thread state after unsuccessful completion: \n");
       thread->GetStackFrameStatus(s, 0, UINT32_MAX, true, UINT32_MAX);
-      log->PutCString(s.GetData());
+      log->PutString(s.GetString());
     }
     // Restore the thread state if we are going to discard the plan execution.
     // There are three cases where this

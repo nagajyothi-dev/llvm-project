@@ -14,7 +14,7 @@
 #include "llvm/Object/IRObjectFile.h"
 #include "RecordStreamer.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Mangler.h"
@@ -54,8 +54,7 @@ void IRObjectFile::CollectAsmUndefinedRefs(
 
   std::string Err;
   const Target *T = TargetRegistry::lookupTarget(TT.str(), Err);
-  if (!T)
-    return;
+  assert(T && T->hasMCAsmParser());
 
   std::unique_ptr<MCRegisterInfo> MRI(T->createMCRegInfo(TT.str()));
   if (!MRI)
@@ -77,14 +76,14 @@ void IRObjectFile::CollectAsmUndefinedRefs(
   MCObjectFileInfo MOFI;
   MCContext MCCtx(MAI.get(), MRI.get(), &MOFI);
   MOFI.InitMCObjectFileInfo(TT, /*PIC*/ false, CodeModel::Default, MCCtx);
-  std::unique_ptr<RecordStreamer> Streamer(new RecordStreamer(MCCtx));
-  T->createNullTargetStreamer(*Streamer);
+  RecordStreamer Streamer(MCCtx);
+  T->createNullTargetStreamer(Streamer);
 
   std::unique_ptr<MemoryBuffer> Buffer(MemoryBuffer::getMemBuffer(InlineAsm));
   SourceMgr SrcMgr;
   SrcMgr.AddNewSourceBuffer(std::move(Buffer), SMLoc());
   std::unique_ptr<MCAsmParser> Parser(
-      createMCAsmParser(SrcMgr, MCCtx, *Streamer, *MAI));
+      createMCAsmParser(SrcMgr, MCCtx, Streamer, *MAI));
 
   MCTargetOptions MCOptions;
   std::unique_ptr<MCTargetAsmParser> TAP(
@@ -96,7 +95,7 @@ void IRObjectFile::CollectAsmUndefinedRefs(
   if (Parser->Run(false))
     return;
 
-  for (auto &KV : *Streamer) {
+  for (auto &KV : Streamer) {
     StringRef Key = KV.first();
     RecordStreamer::State Value = KV.second;
     uint32_t Res = BasicSymbolRef::SF_None;
@@ -310,18 +309,18 @@ ErrorOr<MemoryBufferRef> IRObjectFile::findBitcodeInMemBuffer(MemoryBufferRef Ob
   }
 }
 
-ErrorOr<std::unique_ptr<IRObjectFile>>
+Expected<std::unique_ptr<IRObjectFile>>
 llvm::object::IRObjectFile::create(MemoryBufferRef Object,
                                    LLVMContext &Context) {
   ErrorOr<MemoryBufferRef> BCOrErr = findBitcodeInMemBuffer(Object);
   if (!BCOrErr)
-    return BCOrErr.getError();
+    return errorCodeToError(BCOrErr.getError());
 
-  ErrorOr<std::unique_ptr<Module>> MOrErr =
+  Expected<std::unique_ptr<Module>> MOrErr =
       getLazyBitcodeModule(*BCOrErr, Context,
                            /*ShouldLazyLoadMetadata*/ true);
-  if (std::error_code EC = MOrErr.getError())
-    return EC;
+  if (!MOrErr)
+    return MOrErr.takeError();
 
   std::unique_ptr<Module> &M = MOrErr.get();
   return llvm::make_unique<IRObjectFile>(BCOrErr.get(), std::move(M));

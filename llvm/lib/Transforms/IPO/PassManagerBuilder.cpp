@@ -647,6 +647,10 @@ void PassManagerBuilder::populateModulePassManager(
   if (MergeFunctions)
     MPM.add(createMergeFunctionsPass());
 
+  // LoopSink pass sinks instructions hoisted by LICM, which serves as a
+  // canonicalization pass that enables other optimizations. As a result,
+  // LoopSink pass needs to be a very late IR pass to avoid undoing LICM
+  // result too early.
   MPM.add(createLoopSinkPass());
   // Get rid of LCSSA nodes.
   MPM.add(createInstructionSimplifierPass());
@@ -687,6 +691,11 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
   // required for virtual constant propagation.
   PM.add(createPostOrderFunctionAttrsLegacyPass());
   PM.add(createReversePostOrderFunctionAttrsPass());
+
+  // Split globals using inrange annotations on GEP indices. This can help
+  // improve the quality of generated code when virtual constant propagation or
+  // control flow integrity are enabled.
+  PM.add(createGlobalSplitPass());
 
   // Apply whole-program devirtualization and virtual constant propagation.
   PM.add(createWholeProgramDevirtPass());

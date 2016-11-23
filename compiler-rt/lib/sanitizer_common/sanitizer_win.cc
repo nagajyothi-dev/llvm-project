@@ -18,12 +18,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
 #include <windows.h>
-#include <dbghelp.h>
 #include <io.h>
 #include <psapi.h>
 #include <stdlib.h>
 
 #include "sanitizer_common.h"
+#include "sanitizer_dbghelp.h"
 #include "sanitizer_libc.h"
 #include "sanitizer_mutex.h"
 #include "sanitizer_placement_new.h"
@@ -425,8 +425,6 @@ u64 NanoTime() {
 }
 
 void Abort() {
-  if (::IsDebuggerPresent())
-    __debugbreak();
   internal__exit(3);
 }
 
@@ -657,7 +655,11 @@ uptr internal_sched_yield() {
 
 void internal__exit(int exitcode) {
   // ExitProcess runs some finalizers, so use TerminateProcess to avoid that.
-  TerminateProcess(GetCurrentProcess(), 3);
+  // The debugger doesn't stop on TerminateProcess like it does on ExitProcess,
+  // so add our own breakpoint here.
+  if (::IsDebuggerPresent())
+    __debugbreak();
+  TerminateProcess(GetCurrentProcess(), exitcode);
 }
 
 uptr internal_ftruncate(fd_t fd, uptr size) {
@@ -779,8 +781,8 @@ void BufferedStackTrace::SlowUnwindStackWithContext(uptr pc, void *context,
   stack_frame.AddrFrame.Mode = AddrModeFlat;
   stack_frame.AddrStack.Mode = AddrModeFlat;
   while (StackWalk64(machine_type, GetCurrentProcess(), GetCurrentThread(),
-                     &stack_frame, &ctx, NULL, &SymFunctionTableAccess64,
-                     &SymGetModuleBase64, NULL) &&
+                     &stack_frame, &ctx, NULL, SymFunctionTableAccess64,
+                     SymGetModuleBase64, NULL) &&
          size < Min(max_depth, kStackTraceMax)) {
     trace_buffer[size++] = (uptr)stack_frame.AddrPC.Offset;
   }

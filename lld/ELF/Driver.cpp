@@ -16,7 +16,6 @@
 #include "LinkerScript.h"
 #include "Memory.h"
 #include "Strings.h"
-#include "SymbolListFile.h"
 #include "SymbolTable.h"
 #include "Target.h"
 #include "Writer.h"
@@ -24,6 +23,7 @@
 #include "lld/Driver/Driver.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib>
@@ -99,21 +99,24 @@ static std::tuple<ELFKind, uint16_t, uint8_t> parseEmulation(StringRef Emul) {
 std::vector<MemoryBufferRef>
 LinkerDriver::getArchiveMembers(MemoryBufferRef MB) {
   std::unique_ptr<Archive> File =
-      check(Archive::create(MB), "failed to parse archive");
+      check(Archive::create(MB),
+            MB.getBufferIdentifier() + ": failed to parse archive");
 
   std::vector<MemoryBufferRef> V;
-  Error Err;
+  Error Err = Error::success();
   for (const ErrorOr<Archive::Child> &COrErr : File->children(Err)) {
-    Archive::Child C = check(COrErr, "could not get the child of the archive " +
-                                         File->getFileName());
+    Archive::Child C =
+        check(COrErr, MB.getBufferIdentifier() +
+                          ": could not get the child of the archive");
     MemoryBufferRef MBRef =
         check(C.getMemoryBufferRef(),
-              "could not get the buffer for a child of the archive " +
-                  File->getFileName());
+              MB.getBufferIdentifier() +
+                  ": could not get the buffer for a child of the archive");
     V.push_back(MBRef);
   }
   if (Err)
-    Error(Err);
+    fatal(MB.getBufferIdentifier() + ": Archive::children failed: " +
+          toString(std::move(Err)));
 
   // Take ownership of memory buffers created for members of thin archives.
   for (std::unique_ptr<MemoryBuffer> &MB : File->takeThinBuffers())
@@ -185,11 +188,10 @@ Optional<MemoryBufferRef> LinkerDriver::readFile(StringRef Path) {
 
 // Add a given library by searching it from input search paths.
 void LinkerDriver::addLibrary(StringRef Name) {
-  std::string Path = searchLibrary(Name);
-  if (Path.empty())
-    error("unable to find library -l" + Name);
+  if (Optional<std::string> Path = searchLibrary(Name))
+    addFile(*Path);
   else
-    addFile(Path);
+    error("unable to find library -l" + Name);
 }
 
 // This function is called on startup. We need this for LTO since
@@ -201,12 +203,6 @@ static void initLLVM(opt::InputArgList &Args) {
   InitializeAllTargetMCs();
   InitializeAllAsmPrinters();
   InitializeAllAsmParsers();
-
-  // This is a flag to discard all but GlobalValue names.
-  // We want to enable it by default because it saves memory.
-  // Disable it only when a developer option (-save-temps) is given.
-  Driver->Context.setDiscardValueNames(!Config->SaveTemps);
-  Driver->Context.enableDebugTypeODRUniquing();
 
   // Parse and evaluate -mllvm options.
   std::vector<const char *> V;
@@ -295,8 +291,15 @@ void LinkerDriver::main(ArrayRef<const char *> ArgsArr, bool CanExitEarly) {
     printHelp(ArgsArr[0]);
     return;
   }
-  if (Args.hasArg(OPT_version))
+
+  // GNU linkers disagree here. Though both -version and -v are mentioned
+  // in help to print the version information, GNU ld just normally exits,
+  // while gold can continue linking. We are compatible with ld.bfd here.
+  if (Args.hasArg(OPT_version) || Args.hasArg(OPT_v))
     outs() << getLLDVersion() << "\n";
+  if (Args.hasArg(OPT_version))
+    return;
+
   Config->ExitEarly = CanExitEarly && !Args.hasArg(OPT_full_shutdown);
 
   if (const char *Path = getReproduceOption(Args)) {
@@ -501,7 +504,7 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
   Config->SaveTemps = Args.hasArg(OPT_save_temps);
   Config->Shared = Args.hasArg(OPT_shared);
   Config->Target1Rel = getArg(Args, OPT_target1_rel, OPT_target1_abs, false);
-  Config->Threads = Args.hasArg(OPT_threads);
+  Config->Threads = getArg(Args, OPT_threads, OPT_no_threads, true);
   Config->Trace = Args.hasArg(OPT_trace);
   Config->Verbose = Args.hasArg(OPT_verbose);
   Config->WarnCommon = Args.hasArg(OPT_warn_common);
@@ -566,7 +569,7 @@ void LinkerDriver::readConfigs(opt::InputArgList &Args) {
     StringRef S = Arg->getValue();
     if (S == "md5") {
       Config->BuildId = BuildIdKind::Md5;
-    } else if (S == "sha1") {
+    } else if (S == "sha1" || S == "tree") {
       Config->BuildId = BuildIdKind::Sha1;
     } else if (S == "uuid") {
       Config->BuildId = BuildIdKind::Uuid;

@@ -214,12 +214,7 @@ public:
     return (m_plugin_name.empty() ? nullptr : m_plugin_name.c_str());
   }
 
-  void SetProcessPluginName(const char *plugin) {
-    if (plugin && plugin[0])
-      m_plugin_name.assign(plugin);
-    else
-      m_plugin_name.clear();
-  }
+  void SetProcessPluginName(llvm::StringRef plugin) { m_plugin_name = plugin; }
 
   void Clear() {
     ProcessInstanceInfo::Clear();
@@ -285,7 +280,7 @@ public:
 
   ~ProcessLaunchCommandOptions() override = default;
 
-  Error SetOptionValue(uint32_t option_idx, const char *option_arg,
+  Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
                        ExecutionContext *execution_context) override;
 
   void OptionParsingStarting(ExecutionContext *execution_context) override {
@@ -696,7 +691,7 @@ public:
   /// @see Process::CanDebug ()
   //------------------------------------------------------------------
   static lldb::ProcessSP FindPlugin(lldb::TargetSP target_sp,
-                                    const char *plugin_name,
+                                    llvm::StringRef plugin_name,
                                     lldb::ListenerSP listener_sp,
                                     const FileSpec *crash_file_path);
 
@@ -887,7 +882,7 @@ public:
   /// @return
   ///     Returns an error object.
   //------------------------------------------------------------------
-  virtual Error ConnectRemote(Stream *strm, const char *remote_url);
+  virtual Error ConnectRemote(Stream *strm, llvm::StringRef remote_url);
 
   bool GetShouldDetach() const { return m_should_detach; }
 
@@ -1112,7 +1107,7 @@ public:
   /// @return
   ///     Returns an error object.
   //------------------------------------------------------------------
-  virtual Error DoConnectRemote(Stream *strm, const char *remote_url) {
+  virtual Error DoConnectRemote(Stream *strm, llvm::StringRef remote_url) {
     Error error;
     error.SetErrorString("remote connections are not supported");
     return error;
@@ -1923,6 +1918,7 @@ public:
   /// @return
   ///     The number of bytes that were actually written.
   //------------------------------------------------------------------
+  // TODO: change this to take an ArrayRef<uint8_t>
   size_t WriteMemory(lldb::addr_t vm_addr, const void *buf, size_t size,
                      Error &error);
 
