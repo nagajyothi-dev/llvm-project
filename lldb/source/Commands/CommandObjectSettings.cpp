@@ -101,7 +101,7 @@ insert-before or insert-after.");
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, const char *option_arg,
+    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
                          ExecutionContext *execution_context) override {
       Error error;
       const int short_option = m_getopt_table[option_idx].val;
@@ -1011,7 +1011,7 @@ protected:
     }
 
     Error error(m_interpreter.GetDebugger().SetPropertyValue(
-        &m_exe_ctx, eVarSetOperationClear, var_name, nullptr));
+        &m_exe_ctx, eVarSetOperationClear, var_name, llvm::StringRef()));
     if (error.Fail()) {
       result.AppendError(error.AsCString());
       result.SetStatus(eReturnStatusFailed);

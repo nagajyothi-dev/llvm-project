@@ -13,7 +13,9 @@
 #include "Error.h"
 #include "InputFiles.h"
 #include "LinkerScript.h"
+#include "Memory.h"
 #include "OutputSections.h"
+#include "SyntheticSections.h"
 #include "Target.h"
 #include "Thunks.h"
 
@@ -55,6 +57,9 @@ InputSectionBase<ELFT>::InputSectionBase(elf::ObjectFile<ELFT> *File,
                        !Config->GcSections || !(Flags & SHF_ALLOC)),
       File(File), Flags(Flags), Entsize(Entsize), Type(Type), Link(Link),
       Info(Info), Repl(this) {
+  NumRelocations = 0;
+  AreRelocsRela = false;
+
   // The ELF spec states that a value of 0 means the section has
   // no alignment constraits.
   uint64_t V = std::max<uint64_t>(Addralign, 1);
@@ -80,9 +85,13 @@ InputSectionBase<ELFT>::InputSectionBase(elf::ObjectFile<ELFT> *File,
 }
 
 template <class ELFT> size_t InputSectionBase<ELFT>::getSize() const {
+  if (auto *S = dyn_cast<SyntheticSection<ELFT>>(this))
+    return S->getSize();
+
   if (auto *D = dyn_cast<InputSection<ELFT>>(this))
     if (D->getThunksSize() > 0)
       return D->getThunkOff() + D->getThunksSize();
+
   return Data.size();
 }
 
@@ -96,6 +105,11 @@ typename ELFT::uint InputSectionBase<ELFT>::getOffset(uintX_t Offset) const {
   switch (kind()) {
   case Regular:
     return cast<InputSection<ELFT>>(this)->OutSecOff + Offset;
+  case Synthetic:
+    // For synthetic sections we treat offset -1 as the end of the section.
+    // The same approach is used for synthetic symbols (DefinedSynthetic).
+    return cast<InputSection<ELFT>>(this)->OutSecOff +
+           (Offset == uintX_t(-1) ? getSize() : Offset);
   case EHFrame:
     // The file crtbeginT.o has relocations pointing to the start of an empty
     // .eh_frame that is known to be the first in the link. It does that to
@@ -158,11 +172,10 @@ template <class ELFT> void InputSectionBase<ELFT>::uncompress() {
     std::tie(Buf, Size) = getRawCompressedData(Data);
 
   // Uncompress Buf.
-  UncompressedData.reset(new uint8_t[Size]);
-  if (zlib::uncompress(toStringRef(Buf), (char *)UncompressedData.get(),
-                       Size) != zlib::StatusOK)
+  char *OutputBuf = BAlloc.Allocate<char>(Size);
+  if (zlib::uncompress(toStringRef(Buf), OutputBuf, Size) != zlib::StatusOK)
     fatal(getName(this) + ": error while uncompressing section");
-  Data = ArrayRef<uint8_t>(UncompressedData.get(), Size);
+  Data = ArrayRef<uint8_t>((uint8_t *)OutputBuf, Size);
 }
 
 template <class ELFT>
@@ -184,10 +197,10 @@ InputSection<ELFT>::InputSection() : InputSectionBase<ELFT>() {}
 template <class ELFT>
 InputSection<ELFT>::InputSection(uintX_t Flags, uint32_t Type,
                                  uintX_t Addralign, ArrayRef<uint8_t> Data,
-                                 StringRef Name)
+                                 StringRef Name, Kind K)
     : InputSectionBase<ELFT>(nullptr, Flags, Type,
                              /*Entsize*/ 0, /*Link*/ 0, /*Info*/ 0, Addralign,
-                             Data, Name, Base::Regular) {}
+                             Data, Name, K) {}
 
 template <class ELFT>
 InputSection<ELFT>::InputSection(elf::ObjectFile<ELFT> *F,
@@ -196,7 +209,7 @@ InputSection<ELFT>::InputSection(elf::ObjectFile<ELFT> *F,
 
 template <class ELFT>
 bool InputSection<ELFT>::classof(const InputSectionData *S) {
-  return S->kind() == Base::Regular;
+  return S->kind() == Base::Regular || S->kind() == Base::Synthetic;
 }
 
 template <class ELFT>
@@ -250,8 +263,7 @@ static uint64_t getAArch64Page(uint64_t Expr) {
   return Expr & (~static_cast<uint64_t>(0xFFF));
 }
 
-static uint32_t getARMUndefinedRelativeWeakVA(uint32_t Type,
-                                              uint32_t A,
+static uint32_t getARMUndefinedRelativeWeakVA(uint32_t Type, uint32_t A,
                                               uint32_t P) {
   switch (Type) {
   case R_ARM_THM_JUMP11:
@@ -272,8 +284,7 @@ static uint32_t getARMUndefinedRelativeWeakVA(uint32_t Type,
   }
 }
 
-static uint64_t getAArch64UndefinedRelativeWeakVA(uint64_t Type,
-                                                  uint64_t A,
+static uint64_t getAArch64UndefinedRelativeWeakVA(uint64_t Type, uint64_t A,
                                                   uint64_t P) {
   switch (Type) {
   case R_AARCH64_CALL26:
@@ -295,9 +306,9 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
   case R_TLSDESC_CALL:
     llvm_unreachable("cannot relocate hint relocs");
   case R_TLSLD:
-    return Out<ELFT>::Got->getTlsIndexOff() + A - Out<ELFT>::Got->Size;
+    return In<ELFT>::Got->getTlsIndexOff() + A - In<ELFT>::Got->getSize();
   case R_TLSLD_PC:
-    return Out<ELFT>::Got->getTlsIndexVA() + A - P;
+    return In<ELFT>::Got->getTlsIndexVA() + A - P;
   case R_THUNK_ABS:
     return Body.getThunkVA<ELFT>() + A;
   case R_THUNK_PC:
@@ -306,13 +317,14 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
   case R_PPC_TOC:
     return getPPC64TocBase() + A;
   case R_TLSGD:
-    return Out<ELFT>::Got->getGlobalDynOffset(Body) + A - Out<ELFT>::Got->Size;
+    return In<ELFT>::Got->getGlobalDynOffset(Body) + A -
+           In<ELFT>::Got->getSize();
   case R_TLSGD_PC:
-    return Out<ELFT>::Got->getGlobalDynAddr(Body) + A - P;
+    return In<ELFT>::Got->getGlobalDynAddr(Body) + A - P;
   case R_TLSDESC:
-    return Out<ELFT>::Got->getGlobalDynAddr(Body) + A;
+    return In<ELFT>::Got->getGlobalDynAddr(Body) + A;
   case R_TLSDESC_PAGE:
-    return getAArch64Page(Out<ELFT>::Got->getGlobalDynAddr(Body) + A) -
+    return getAArch64Page(In<ELFT>::Got->getGlobalDynAddr(Body) + A) -
            getAArch64Page(P);
   case R_PLT:
     return Body.getPltVA<ELFT>() + A;
@@ -322,12 +334,13 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
   case R_SIZE:
     return Body.getSize<ELFT>() + A;
   case R_GOTREL:
-    return Body.getVA<ELFT>(A) - Out<ELFT>::Got->Addr;
+    return Body.getVA<ELFT>(A) - In<ELFT>::Got->getVA();
   case R_GOTREL_FROM_END:
-    return Body.getVA<ELFT>(A) - Out<ELFT>::Got->Addr - Out<ELFT>::Got->Size;
+    return Body.getVA<ELFT>(A) - In<ELFT>::Got->getVA() -
+           In<ELFT>::Got->getSize();
   case R_RELAX_TLS_GD_TO_IE_END:
   case R_GOT_FROM_END:
-    return Body.getGotOffset<ELFT>() + A - Out<ELFT>::Got->Size;
+    return Body.getGotOffset<ELFT>() + A - In<ELFT>::Got->getSize();
   case R_RELAX_TLS_GD_TO_IE_ABS:
   case R_GOT:
     return Body.getGotVA<ELFT>() + A;
@@ -338,9 +351,9 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
   case R_GOT_PC:
     return Body.getGotVA<ELFT>() + A - P;
   case R_GOTONLY_PC:
-    return Out<ELFT>::Got->Addr + A - P;
+    return In<ELFT>::Got->getVA() + A - P;
   case R_GOTONLY_PC_FROM_END:
-    return Out<ELFT>::Got->Addr + A - P + Out<ELFT>::Got->Size;
+    return In<ELFT>::Got->getVA() + A - P + In<ELFT>::Got->getSize();
   case R_RELAX_TLS_LD_TO_LE:
   case R_RELAX_TLS_IE_TO_LE:
   case R_RELAX_TLS_GD_TO_LE:
@@ -369,19 +382,21 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
     // If relocation against MIPS local symbol requires GOT entry, this entry
     // should be initialized by 'page address'. This address is high 16-bits
     // of sum the symbol's value and the addend.
-    return Out<ELFT>::Got->getMipsLocalPageOffset(Body.getVA<ELFT>(A));
+    return In<ELFT>::MipsGot->getPageEntryOffset(Body.getVA<ELFT>(A));
   case R_MIPS_GOT_OFF:
   case R_MIPS_GOT_OFF32:
     // In case of MIPS if a GOT relocation has non-zero addend this addend
     // should be applied to the GOT entry content not to the GOT entry offset.
     // That is why we use separate expression type.
-    return Out<ELFT>::Got->getMipsGotOffset(Body, A);
+    return In<ELFT>::MipsGot->getBodyEntryOffset(Body, A);
+  case R_MIPS_GOTREL:
+    return Body.getVA<ELFT>(A) - In<ELFT>::MipsGot->getVA() - MipsGPOffset;
   case R_MIPS_TLSGD:
-    return Out<ELFT>::Got->getGlobalDynOffset(Body) +
-           Out<ELFT>::Got->getMipsTlsOffset() - MipsGPOffset;
+    return In<ELFT>::MipsGot->getGlobalDynOffset(Body) +
+           In<ELFT>::MipsGot->getTlsOffset() - MipsGPOffset;
   case R_MIPS_TLSLD:
-    return Out<ELFT>::Got->getTlsIndexOff() +
-           Out<ELFT>::Got->getMipsTlsOffset() - MipsGPOffset;
+    return In<ELFT>::MipsGot->getTlsIndexOff() +
+           In<ELFT>::MipsGot->getTlsOffset() - MipsGPOffset;
   case R_PPC_OPD: {
     uint64_t SymVA = Body.getVA<ELFT>(A);
     // If we have an undefined weak symbol, we might get here with a symbol
@@ -460,12 +475,10 @@ void InputSectionBase<ELFT>::relocate(uint8_t *Buf, uint8_t *BufEnd) {
   // we handle relocations directly here.
   auto *IS = dyn_cast<InputSection<ELFT>>(this);
   if (IS && !(IS->Flags & SHF_ALLOC)) {
-    for (const Elf_Shdr *RelSec : IS->RelocSections) {
-      if (RelSec->sh_type == SHT_RELA)
-        IS->relocateNonAlloc(Buf, check(IS->getObj().relas(RelSec)));
-      else
-        IS->relocateNonAlloc(Buf, check(IS->getObj().rels(RelSec)));
-    }
+    if (IS->AreRelocsRela)
+      IS->relocateNonAlloc(Buf, IS->relas());
+    else
+      IS->relocateNonAlloc(Buf, IS->rels());
     return;
   }
 
@@ -517,6 +530,11 @@ void InputSectionBase<ELFT>::relocate(uint8_t *Buf, uint8_t *BufEnd) {
 template <class ELFT> void InputSection<ELFT>::writeTo(uint8_t *Buf) {
   if (this->Type == SHT_NOBITS)
     return;
+
+  if (auto *S = dyn_cast<SyntheticSection<ELFT>>(this)) {
+    S->writeTo(Buf);
+    return;
+  }
 
   // If -r is given, then an InputSection may be a relocation section.
   if (this->Type == SHT_RELA) {
@@ -598,12 +616,11 @@ template <class ELFT> void EhInputSection<ELFT>::split() {
   if (!this->Pieces.empty())
     return;
 
-  if (RelocSection) {
-    ELFFile<ELFT> Obj = this->getObj();
-    if (RelocSection->sh_type == SHT_RELA)
-      split(check(Obj.relas(RelocSection)));
+  if (this->NumRelocations) {
+    if (this->AreRelocsRela)
+      split(this->relas());
     else
-      split(check(Obj.rels(RelocSection)));
+      split(this->rels());
     return;
   }
   split(makeArrayRef<typename ELFT::Rela>(nullptr, nullptr));
@@ -660,12 +677,14 @@ MergeInputSection<ELFT>::splitStrings(ArrayRef<uint8_t> Data, size_t EntSize) {
   return V;
 }
 
+// Returns I'th piece's data.
 template <class ELFT>
-ArrayRef<uint8_t> MergeInputSection<ELFT>::getData(
-    std::vector<SectionPiece>::const_iterator I) const {
-  auto Next = I + 1;
-  size_t End = Next == Pieces.end() ? this->Data.size() : Next->InputOff;
-  return this->Data.slice(I->InputOff, End - I->InputOff);
+CachedHashStringRef MergeInputSection<ELFT>::getData(size_t I) const {
+  size_t End =
+      (Pieces.size() - 1 == I) ? this->Data.size() : Pieces[I + 1].InputOff;
+  const SectionPiece &P = Pieces[I];
+  StringRef S = toStringRef(this->Data.slice(P.InputOff, End - P.InputOff));
+  return {S, Hashes[I]};
 }
 
 // Split non-SHF_STRINGS section. Such section is a sequence of
@@ -749,6 +768,14 @@ MergeInputSection<ELFT>::getSectionPiece(uintX_t Offset) const {
 // it is not just an addition to a base output offset.
 template <class ELFT>
 typename ELFT::uint MergeInputSection<ELFT>::getOffset(uintX_t Offset) const {
+  // Initialize OffsetMap lazily.
+  std::call_once(InitOffsetMap, [&] {
+    OffsetMap.reserve(Pieces.size());
+    for (const SectionPiece &Piece : Pieces)
+      OffsetMap[Piece.InputOff] = Piece.OutputOff;
+  });
+
+  // Find a string starting at a given offset.
   auto It = OffsetMap.find(Offset);
   if (It != OffsetMap.end())
     return It->second;
@@ -764,29 +791,6 @@ typename ELFT::uint MergeInputSection<ELFT>::getOffset(uintX_t Offset) const {
 
   uintX_t Addend = Offset - Piece.InputOff;
   return Piece.OutputOff + Addend;
-}
-
-// Create a map from input offsets to output offsets for all section pieces.
-// It is called after finalize().
-template <class ELFT> void MergeInputSection<ELFT>::finalizePieces() {
-  OffsetMap.reserve(this->Pieces.size());
-  auto HashI = Hashes.begin();
-  for (auto I = Pieces.begin(), E = Pieces.end(); I != E; ++I) {
-    uint32_t Hash = *HashI;
-    ++HashI;
-    SectionPiece &Piece = *I;
-    if (!Piece.Live)
-      continue;
-    if (Piece.OutputOff == -1) {
-      // Offsets of tail-merged strings are computed lazily.
-      auto *OutSec = static_cast<MergeOutputSection<ELFT> *>(this->OutSec);
-      ArrayRef<uint8_t> D = this->getData(I);
-      StringRef S((const char *)D.data(), D.size());
-      CachedHashStringRef V(S, Hash);
-      Piece.OutputOff = OutSec->getOffset(V);
-    }
-    OffsetMap[Piece.InputOff] = Piece.OutputOff;
-  }
 }
 
 template class elf::InputSectionBase<ELF32LE>;

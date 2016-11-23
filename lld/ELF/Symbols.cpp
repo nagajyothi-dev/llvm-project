@@ -151,7 +151,7 @@ typename ELFT::uint SymbolBody::getVA(typename ELFT::uint Addend) const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotVA() const {
-  return Out<ELFT>::Got->Addr + getGotOffset<ELFT>();
+  return In<ELFT>::Got->getVA() + getGotOffset<ELFT>();
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotOffset() const {
@@ -159,7 +159,7 @@ template <class ELFT> typename ELFT::uint SymbolBody::getGotOffset() const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotPltVA() const {
-  return Out<ELFT>::GotPlt->Addr + getGotPltOffset<ELFT>();
+  return In<ELFT>::GotPlt->getVA() + getGotPltOffset<ELFT>();
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getGotPltOffset() const {
@@ -167,7 +167,7 @@ template <class ELFT> typename ELFT::uint SymbolBody::getGotPltOffset() const {
 }
 
 template <class ELFT> typename ELFT::uint SymbolBody::getPltVA() const {
-  return Out<ELFT>::Plt->Addr + Target->PltHeaderSize +
+  return In<ELFT>::Plt->getVA() + Target->PltHeaderSize +
          PltIndex * Target->PltEntrySize;
 }
 
@@ -216,7 +216,7 @@ Undefined::Undefined(uint32_t NameOffset, uint8_t StOther, uint8_t Type,
 
 template <typename ELFT>
 DefinedSynthetic<ELFT>::DefinedSynthetic(StringRef N, uintX_t Value,
-                                         OutputSectionBase *Section)
+                                         const OutputSectionBase *Section)
     : Defined(SymbolBody::DefinedSyntheticKind, N, STV_HIDDEN, 0 /* Type */),
       Value(Value), Section(Section) {}
 

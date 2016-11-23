@@ -349,13 +349,6 @@ static Instruction *getInstructionByName(Function &F, StringRef Name) {
   llvm_unreachable("Expected to find instruction!");
 }
 
-static Argument *getArgByName(Function &F, StringRef Name) {
-  for (auto &A : F.args())
-    if (A.getName() == Name)
-      return &A;
-  llvm_unreachable("Expected to find argument!");
-}
-
 TEST_F(ScalarEvolutionsTest, CommutativeExprOperandOrder) {
   LLVMContext C;
   SMDiagnostic Err;
@@ -472,86 +465,71 @@ TEST_F(ScalarEvolutionsTest, CommutativeExprOperandOrder) {
     });
 }
 
-TEST_F(ScalarEvolutionsTest, BadHoistingSCEVExpander_PR30942) {
-  LLVMContext C;
-  SMDiagnostic Err;
-  std::unique_ptr<Module> M = parseAssemblyString(
-      "target datalayout = \"e-m:e-p:32:32-f64:32:64-f80:32-n8:16:32-S128\" "
-      " "
-      "define void @f_1(i32 %x, i32 %y, i32 %n, i1* %cond_buf) "
-      "    local_unnamed_addr { "
-      "entry: "
-      "  %entrycond = icmp sgt i32 %n, 0 "
-      "  br i1 %entrycond, label %loop.ph, label %for.end "
-      " "
-      "loop.ph: "
-      "  br label %loop "
-      " "
-      "loop: "
-      "  %iv1 = phi i32 [ %iv1.inc, %right ], [ 0, %loop.ph ] "
-      "  %iv1.inc = add nuw nsw i32 %iv1, 1 "
-      "  %cond = load volatile i1, i1* %cond_buf  "
-      "  br i1 %cond, label %left, label %right  "
-      "  "
-      "left: "
-      "  %div = udiv i32 %x, %y  "
-      "  br label %right  "
-      "  "
-      "right: "
-      "  %exitcond = icmp eq i32 %iv1.inc, %n "
-      "  br i1 %exitcond, label %for.end.loopexit, label %loop "
-      " "
-      "for.end.loopexit: "
-      "  br label %for.end "
-      " "
-      "for.end: "
-      "  ret void "
-      "} ",
-      Err, C);
+TEST_F(ScalarEvolutionsTest, SCEVCompareComplexity) {
+  FunctionType *FTy =
+      FunctionType::get(Type::getVoidTy(Context), std::vector<Type *>(), false);
+  Function *F = cast<Function>(M.getOrInsertFunction("f", FTy));
+  BasicBlock *EntryBB = BasicBlock::Create(Context, "entry", F);
+  BasicBlock *LoopBB = BasicBlock::Create(Context, "bb1", F);
+  BranchInst::Create(LoopBB, EntryBB);
 
-  assert(M && "Could not parse module?");
-  assert(!verifyModule(*M) && "Must have been well formed!");
+  auto *Ty = Type::getInt32Ty(Context);
+  SmallVector<Instruction*, 8> Muls(8), Acc(8), NextAcc(8);
 
-  runWithFunctionAndSE(*M, "f_1", [&](Function &F, ScalarEvolution &SE) {
-    SCEVExpander Expander(SE, M->getDataLayout(), "unittests");
-    auto *DivInst = getInstructionByName(F, "div");
+  Acc[0] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[1] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[2] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[3] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[4] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[5] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[6] = PHINode::Create(Ty, 2, "", LoopBB);
+  Acc[7] = PHINode::Create(Ty, 2, "", LoopBB);
 
-    {
-      auto *DivSCEV = SE.getSCEV(DivInst);
-      auto *DivExpansion = Expander.expandCodeFor(
-          DivSCEV, DivSCEV->getType(), DivInst->getParent()->getTerminator());
-      auto *DivExpansionInst = dyn_cast<Instruction>(DivExpansion);
-      ASSERT_NE(DivExpansionInst, nullptr);
-      EXPECT_EQ(DivInst->getParent(), DivExpansionInst->getParent());
-    }
+  for (int i = 0; i < 20; i++) {
+    Muls[0] = BinaryOperator::CreateMul(Acc[0], Acc[0], "", LoopBB);
+    NextAcc[0] = BinaryOperator::CreateAdd(Muls[0], Acc[4], "", LoopBB);
+    Muls[1] = BinaryOperator::CreateMul(Acc[1], Acc[1], "", LoopBB);
+    NextAcc[1] = BinaryOperator::CreateAdd(Muls[1], Acc[5], "", LoopBB);
+    Muls[2] = BinaryOperator::CreateMul(Acc[2], Acc[2], "", LoopBB);
+    NextAcc[2] = BinaryOperator::CreateAdd(Muls[2], Acc[6], "", LoopBB);
+    Muls[3] = BinaryOperator::CreateMul(Acc[3], Acc[3], "", LoopBB);
+    NextAcc[3] = BinaryOperator::CreateAdd(Muls[3], Acc[7], "", LoopBB);
 
-    {
-      auto *ArgY = getArgByName(F, "y");
-      auto *DivFromScratchSCEV =
-          SE.getUDivExpr(SE.getOne(ArgY->getType()), SE.getSCEV(ArgY));
+    Muls[4] = BinaryOperator::CreateMul(Acc[4], Acc[4], "", LoopBB);
+    NextAcc[4] = BinaryOperator::CreateAdd(Muls[4], Acc[0], "", LoopBB);
+    Muls[5] = BinaryOperator::CreateMul(Acc[5], Acc[5], "", LoopBB);
+    NextAcc[5] = BinaryOperator::CreateAdd(Muls[5], Acc[1], "", LoopBB);
+    Muls[6] = BinaryOperator::CreateMul(Acc[6], Acc[6], "", LoopBB);
+    NextAcc[6] = BinaryOperator::CreateAdd(Muls[6], Acc[2], "", LoopBB);
+    Muls[7] = BinaryOperator::CreateMul(Acc[7], Acc[7], "", LoopBB);
+    NextAcc[7] = BinaryOperator::CreateAdd(Muls[7], Acc[3], "", LoopBB);
+    Acc = NextAcc;
+  }
 
-      auto *DivFromScratchExpansion = Expander.expandCodeFor(
-          DivFromScratchSCEV, DivFromScratchSCEV->getType(),
-          DivInst->getParent()->getTerminator());
-      auto *DivFromScratchExpansionInst =
-          dyn_cast<Instruction>(DivFromScratchExpansion);
-      ASSERT_NE(DivFromScratchExpansionInst, nullptr);
-      EXPECT_EQ(DivInst->getParent(), DivFromScratchExpansionInst->getParent());
-    }
+  auto II = LoopBB->begin();
+  for (int i = 0; i < 8; i++) {
+    PHINode *Phi = cast<PHINode>(&*II++);
+    Phi->addIncoming(Acc[i], LoopBB);
+    Phi->addIncoming(UndefValue::get(Ty), EntryBB);
+  }
 
-    {
-      auto *ArgY = getArgByName(F, "y");
-      auto *SafeDivSCEV =
-          SE.getUDivExpr(SE.getSCEV(ArgY), SE.getConstant(APInt(32, 19)));
+  BasicBlock *ExitBB = BasicBlock::Create(Context, "bb2", F);
+  BranchInst::Create(LoopBB, ExitBB, UndefValue::get(Type::getInt1Ty(Context)),
+                     LoopBB);
 
-      auto *SafeDivExpansion =
-          Expander.expandCodeFor(SafeDivSCEV, SafeDivSCEV->getType(),
-                                 DivInst->getParent()->getTerminator());
-      auto *SafeDivExpansionInst = dyn_cast<Instruction>(SafeDivExpansion);
-      ASSERT_NE(SafeDivExpansionInst, nullptr);
-      EXPECT_EQ("loop.ph", SafeDivExpansionInst->getParent()->getName());
-    }
-  });
+  Acc[0] = BinaryOperator::CreateAdd(Acc[0], Acc[1], "", ExitBB);
+  Acc[1] = BinaryOperator::CreateAdd(Acc[2], Acc[3], "", ExitBB);
+  Acc[2] = BinaryOperator::CreateAdd(Acc[4], Acc[5], "", ExitBB);
+  Acc[3] = BinaryOperator::CreateAdd(Acc[6], Acc[7], "", ExitBB);
+  Acc[0] = BinaryOperator::CreateAdd(Acc[0], Acc[1], "", ExitBB);
+  Acc[1] = BinaryOperator::CreateAdd(Acc[2], Acc[3], "", ExitBB);
+  Acc[0] = BinaryOperator::CreateAdd(Acc[0], Acc[1], "", ExitBB);
+
+  ReturnInst::Create(Context, nullptr, ExitBB);
+
+  ScalarEvolution SE = buildSE(*F);
+
+  EXPECT_NE(nullptr, SE.getSCEV(Acc[0]));
 }
 
 }  // end anonymous namespace

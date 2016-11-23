@@ -367,9 +367,8 @@ public:
   const char *ProcessEmbeddedScriptCommands(const char *arg);
 
   void UpdatePrompt(llvm::StringRef prompt);
-  void UpdatePrompt(const char *) = delete;
 
-  bool Confirm(const char *message, bool default_answer);
+  bool Confirm(llvm::StringRef message, bool default_answer);
 
   void LoadCommandDictionary();
 
@@ -408,7 +407,7 @@ public:
 
   bool GetSynchronous();
 
-  void FindCommandsForApropos(const char *word, StringList &commands_found,
+  void FindCommandsForApropos(llvm::StringRef word, StringList &commands_found,
                               StringList &commands_help,
                               bool search_builtin_commands,
                               bool search_user_commands,
@@ -518,7 +517,7 @@ private:
   CommandObject *ResolveCommandImpl(std::string &command_line,
                                     CommandReturnObject &result);
 
-  void FindCommandsForApropos(const char *word, StringList &commands_found,
+  void FindCommandsForApropos(llvm::StringRef word, StringList &commands_found,
                               StringList &commands_help,
                               CommandObject::CommandMap &command_map);
 

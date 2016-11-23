@@ -157,7 +157,7 @@ public:
         nullptr, idx, g_properties[idx].default_uint_value != 0);
   }
 
-  const char *GetAutoEnableOptions() const {
+  llvm::StringRef GetAutoEnableOptions() const {
     const uint32_t idx = ePropertyAutoEnableOptions;
     return m_collection_sp->GetPropertyAtIndexAsString(
         nullptr, idx, g_properties[idx].default_cstr_value);
@@ -523,12 +523,11 @@ public:
     m_filter_rules.clear();
   }
 
-  Error SetOptionValue(uint32_t option_idx, const char *option_arg,
+  Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
                        ExecutionContext *execution_context) override {
     Error error;
 
     const int short_option = m_getopt_table[option_idx].val;
-    auto option_strref = llvm::StringRef::withNullAsEmpty(option_arg);
     switch (short_option) {
     case 'a':
       m_include_any_process = true;
@@ -542,7 +541,7 @@ public:
       break;
 
     case 'b':
-      m_broadcast_events = Args::StringToBoolean(option_strref, true, nullptr);
+      m_broadcast_events = Args::StringToBoolean(option_arg, true, nullptr);
       break;
 
     case 'c':
@@ -558,23 +557,23 @@ public:
       break;
 
     case 'e':
-      m_echo_to_stderr = Args::StringToBoolean(option_strref, false, nullptr);
+      m_echo_to_stderr = Args::StringToBoolean(option_arg, false, nullptr);
       break;
 
     case 'f':
-      return ParseFilterRule(option_strref);
+      return ParseFilterRule(option_arg);
 
     case 'i':
       m_include_info_level = true;
       break;
 
     case 'l':
-      m_live_stream = Args::StringToBoolean(option_strref, false, nullptr);
+      m_live_stream = Args::StringToBoolean(option_arg, false, nullptr);
       break;
 
     case 'n':
       m_filter_fall_through_accepts =
-          Args::StringToBoolean(option_strref, true, nullptr);
+          Args::StringToBoolean(option_arg, true, nullptr);
       break;
 
     case 'r':
@@ -797,7 +796,7 @@ protected:
                   " the property and relaunch the target binary to have"
                   " these messages excluded.",
                   source_name, source_name);
-    result.AppendWarning(stream.GetString().c_str());
+    result.AppendWarning(stream.GetString());
   }
 
   bool DoExecute(Args &command, CommandReturnObject &result) override {
@@ -1101,14 +1100,14 @@ bool RunEnableCommand(CommandInterpreter &interpreter) {
 
   command_stream << "plugin structured-data darwin-log enable";
   auto enable_options = GetGlobalProperties()->GetAutoEnableOptions();
-  if (enable_options && (strlen(enable_options) > 0)) {
+  if (!enable_options.empty()) {
     command_stream << ' ';
     command_stream << enable_options;
   }
 
   // Run the command.
   CommandReturnObject return_object;
-  interpreter.HandleCommand(command_stream.GetString().c_str(), eLazyBoolNo,
+  interpreter.HandleCommand(command_stream.GetData(), eLazyBoolNo,
                             return_object);
   return return_object.Succeeded();
 }
@@ -1174,7 +1173,7 @@ void StructuredDataDarwinLog::HandleArrivalOfStructuredData(
     else
       json_stream.PutCString("<null>");
     log->Printf("StructuredDataDarwinLog::%s() called with json: %s",
-                __FUNCTION__, json_stream.GetString().c_str());
+                __FUNCTION__, json_stream.GetData());
   }
 
   // Ignore empty structured data.
@@ -1223,8 +1222,7 @@ static void SetErrorWithJSON(Error &error, const char *message,
   object.Dump(object_stream);
   object_stream.Flush();
 
-  error.SetErrorStringWithFormat("%s: %s", message,
-                                 object_stream.GetString().c_str());
+  error.SetErrorStringWithFormat("%s: %s", message, object_stream.GetData());
 }
 
 Error StructuredDataDarwinLog::GetDescription(
@@ -1863,10 +1861,9 @@ StructuredDataDarwinLog::DumpHeader(Stream &output_stream,
   }
   stream.PutCString("] ");
 
-  auto &result = stream.GetString();
-  output_stream.PutCString(result);
+  output_stream.PutCString(stream.GetString());
 
-  return result.size();
+  return stream.GetSize();
 }
 
 size_t StructuredDataDarwinLog::HandleDisplayOfEvent(

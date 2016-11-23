@@ -20,7 +20,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/IR/DataLayout.h"
@@ -101,7 +102,7 @@ public:
                      const clang::TargetOptions &TOpts,
                      const LangOptions &LOpts, Module *M)
       : Diags(_Diags), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts),
-        TheModule(M), CodeGenerationTime("Code Generation Time") {}
+        TheModule(M), CodeGenerationTime("codegen", "Code Generation Time") {}
 
   ~EmitAssemblyHelper() {
     if (CodeGenOpts.DisableFree)
@@ -724,14 +725,12 @@ static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
   // If we are performing a ThinLTO importing compile, load the function index
   // into memory and pass it into thinBackend, which will run the function
   // importer and invoke LTO passes.
-  ErrorOr<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
-      llvm::getModuleSummaryIndexForFile(
-          CGOpts.ThinLTOIndexFile,
-          [&](const DiagnosticInfo &DI) { M->getContext().diagnose(DI); });
-  if (std::error_code EC = IndexOrErr.getError()) {
-    std::string Error = EC.message();
-    errs() << "Error loading index file '" << CGOpts.ThinLTOIndexFile
-           << "': " << Error << "\n";
+  Expected<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
+      llvm::getModuleSummaryIndexForFile(CGOpts.ThinLTOIndexFile);
+  if (!IndexOrErr) {
+    logAllUnhandledErrors(IndexOrErr.takeError(), errs(),
+                          "Error loading index file '" +
+                              CGOpts.ThinLTOIndexFile + "': ");
     return;
   }
   std::unique_ptr<ModuleSummaryIndex> CombinedIndex = std::move(*IndexOrErr);

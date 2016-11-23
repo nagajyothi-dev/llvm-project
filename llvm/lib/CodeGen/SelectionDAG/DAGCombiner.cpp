@@ -4512,7 +4512,6 @@ SDValue DAGCombiner::visitSHL(SDNode *N) {
   unsigned OpSizeInBits = VT.getScalarSizeInBits();
 
   // fold vector ops
-  ConstantSDNode *N1C = dyn_cast<ConstantSDNode>(N1);
   if (VT.isVector()) {
     if (SDValue FoldedVOp = SimplifyVBinOp(N))
       return FoldedVOp;
@@ -4533,11 +4532,11 @@ SDValue DAGCombiner::visitSHL(SDNode *N) {
                                                      N01CV, N1CV))
             return DAG.getNode(ISD::AND, SDLoc(N), VT, N00, C);
         }
-      } else {
-        N1C = isConstOrConstSplat(N1);
       }
     }
   }
+
+  ConstantSDNode *N1C = isConstOrConstSplat(N1);
 
   // fold (shl c1, c2) -> c1<<c2
   ConstantSDNode *N0C = getAsNonOpaqueConstant(N0);
@@ -5282,7 +5281,7 @@ SDValue DAGCombiner::visitSELECT(SDNode *N) {
     // The code in this block deals with the following 2 equivalences:
     //    select(C0|C1, x, y) <=> select(C0, x, select(C1, x, y))
     //    select(C0&C1, x, y) <=> select(C0, select(C1, x, y), y)
-    // The target can specify its prefered form with the
+    // The target can specify its preferred form with the
     // shouldNormalizeToSelectSequence() callback. However we always transform
     // to the right anyway if we find the inner select exists in the DAG anyway
     // and we always transform to the left side if we know that we can further
@@ -6778,15 +6777,15 @@ SDValue DAGCombiner::visitANY_EXTEND(SDNode *N) {
       N0.getOperand(1).getOpcode() == ISD::Constant &&
       !TLI.isTruncateFree(N0.getOperand(0).getOperand(0).getValueType(),
                           N0.getValueType())) {
+    SDLoc DL(N);
     SDValue X = N0.getOperand(0).getOperand(0);
     if (X.getValueType().bitsLT(VT)) {
-      X = DAG.getNode(ISD::ANY_EXTEND, SDLoc(N), VT, X);
+      X = DAG.getNode(ISD::ANY_EXTEND, DL, VT, X);
     } else if (X.getValueType().bitsGT(VT)) {
-      X = DAG.getNode(ISD::TRUNCATE, SDLoc(N), VT, X);
+      X = DAG.getNode(ISD::TRUNCATE, DL, VT, X);
     }
     APInt Mask = cast<ConstantSDNode>(N0.getOperand(1))->getAPIntValue();
     Mask = Mask.zext(VT.getSizeInBits());
-    SDLoc DL(N);
     return DAG.getNode(ISD::AND, DL, VT,
                        X, DAG.getConstant(Mask, DL, VT));
   }
@@ -7305,7 +7304,7 @@ SDValue DAGCombiner::visitTRUNCATE(SDNode *N) {
   }
 
   // trunc (select c, a, b) -> select c, (trunc a), (trunc b)
-  if (N0.getOpcode() == ISD::SELECT) {
+  if (N0.getOpcode() == ISD::SELECT && N0.hasOneUse()) {
     EVT SrcVT = N0.getValueType();
     if ((!LegalOperations || TLI.isOperationLegal(ISD::SELECT, SrcVT)) &&
         TLI.isTruncateFree(SrcVT, VT)) {
@@ -10570,7 +10569,7 @@ struct LoadedSlice {
     assert(Inst && Origin && "Unable to replace a non-existing slice.");
     const SDValue &OldBaseAddr = Origin->getBasePtr();
     SDValue BaseAddr = OldBaseAddr;
-    // Get the offset in that chunk of bytes w.r.t. the endianess.
+    // Get the offset in that chunk of bytes w.r.t. the endianness.
     int64_t Offset = static_cast<int64_t>(getOffsetFromBase());
     assert(Offset >= 0 && "Offset too big to fit in int64_t!");
     if (Offset) {
@@ -14929,6 +14928,12 @@ SDValue DAGCombiner::BuildUDIV(SDNode *N) {
   return S;
 }
 
+/// Newton iteration for a function: F(X) is X_{i+1} = X_i - F(X_i)/F'(X_i)
+/// For the reciprocal, we need to find the zero of the function:
+///   F(X) = A X - 1 [which has a zero at X = 1/A]
+///     =>
+///   X_{i+1} = X_i (2 - A X_i) = X_i + X_i (1 - A X_i) [this second form
+///     does not require additional intermediate precision]
 SDValue DAGCombiner::BuildReciprocalEstimate(SDValue Op, SDNodeFlags *Flags) {
   if (Level >= AfterLegalizeDAG)
     return SDValue();
@@ -14948,18 +14953,12 @@ SDValue DAGCombiner::BuildReciprocalEstimate(SDValue Op, SDNodeFlags *Flags) {
   // refinement steps.
   int Iterations = TLI.getDivRefinementSteps(VT, MF);
   if (SDValue Est = TLI.getRecipEstimate(Op, DAG, Enabled, Iterations)) {
+    AddToWorklist(Est.getNode());
+
     if (Iterations) {
-      // Newton iteration for a function: F(X) is X_{i+1} = X_i - F(X_i)/F'(X_i)
-      // For the reciprocal, we need to find the zero of the function:
-      //   F(X) = A X - 1 [which has a zero at X = 1/A]
-      //     =>
-      //   X_{i+1} = X_i (2 - A X_i) = X_i + X_i (1 - A X_i) [this second form
-      //     does not require additional intermediate precision]
       EVT VT = Op.getValueType();
       SDLoc DL(Op);
       SDValue FPOne = DAG.getConstantFP(1.0, DL, VT);
-
-      AddToWorklist(Est.getNode());
 
       // Newton iterations: Est = Est + Est (1 - Arg * Est)
       for (int i = 0; i < Iterations; ++i) {
@@ -15101,12 +15100,30 @@ SDValue DAGCombiner::buildSqrtEstimateImpl(SDValue Op, SDNodeFlags *Flags,
 
   bool UseOneConstNR = false;
   if (SDValue Est =
-      TLI.getRsqrtEstimate(Op, DAG, Enabled, Iterations, UseOneConstNR)) {
+      TLI.getSqrtEstimate(Op, DAG, Enabled, Iterations, UseOneConstNR,
+                          Reciprocal)) {
     AddToWorklist(Est.getNode());
+
     if (Iterations) {
       Est = UseOneConstNR
-      ? buildSqrtNROneConst(Op, Est, Iterations, Flags, Reciprocal)
-      : buildSqrtNRTwoConst(Op, Est, Iterations, Flags, Reciprocal);
+            ? buildSqrtNROneConst(Op, Est, Iterations, Flags, Reciprocal)
+            : buildSqrtNRTwoConst(Op, Est, Iterations, Flags, Reciprocal);
+
+      if (!Reciprocal) {
+        // Unfortunately, Est is now NaN if the input was exactly 0.0.
+        // Select out this case and force the answer to 0.0.
+        EVT VT = Op.getValueType();
+        SDLoc DL(Op);
+
+        SDValue FPZero = DAG.getConstantFP(0.0, DL, VT);
+        EVT CCVT = getSetCCResultType(VT);
+        SDValue ZeroCmp = DAG.getSetCC(DL, CCVT, Op, FPZero, ISD::SETEQ);
+        AddToWorklist(ZeroCmp.getNode());
+
+        Est = DAG.getNode(VT.isVector() ? ISD::VSELECT : ISD::SELECT, DL, VT,
+                          ZeroCmp, FPZero, Est);
+        AddToWorklist(Est.getNode());
+      }
     }
     return Est;
   }
@@ -15119,23 +15136,7 @@ SDValue DAGCombiner::buildRsqrtEstimate(SDValue Op, SDNodeFlags *Flags) {
 }
 
 SDValue DAGCombiner::buildSqrtEstimate(SDValue Op, SDNodeFlags *Flags) {
-  SDValue Est = buildSqrtEstimateImpl(Op, Flags, false);
-  if (!Est)
-    return SDValue();
-
-  // Unfortunately, Est is now NaN if the input was exactly 0.
-  // Select out this case and force the answer to 0.
-  EVT VT = Est.getValueType();
-  SDLoc DL(Op);
-  SDValue Zero = DAG.getConstantFP(0.0, DL, VT);
-  EVT CCVT = getSetCCResultType(VT);
-  SDValue ZeroCmp = DAG.getSetCC(DL, CCVT, Op, Zero, ISD::SETEQ);
-  AddToWorklist(ZeroCmp.getNode());
-
-  Est = DAG.getNode(VT.isVector() ? ISD::VSELECT : ISD::SELECT, DL, VT, ZeroCmp,
-                    Zero, Est);
-  AddToWorklist(Est.getNode());
-  return Est;
+  return buildSqrtEstimateImpl(Op, Flags, false);
 }
 
 /// Return true if base is a frame index, which is known not to alias with

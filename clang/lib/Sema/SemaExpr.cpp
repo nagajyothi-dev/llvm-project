@@ -14079,7 +14079,8 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
         (SemaRef.CurContext != Var->getDeclContext() &&
          Var->getDeclContext()->isFunctionOrMethod() && Var->hasLocalStorage());
     if (RefersToEnclosingScope) {
-      if (LambdaScopeInfo *const LSI = SemaRef.getCurLambda()) {
+      if (LambdaScopeInfo *const LSI =
+              SemaRef.getCurLambda(/*IgnoreCapturedRegions=*/true)) {
         // If a variable could potentially be odr-used, defer marking it so
         // until we finish analyzing the full expression for any
         // lvalue-to-rvalue
@@ -14773,6 +14774,13 @@ namespace {
           << E->getSourceRange();
         return ExprError();
       }
+
+      if (isa<CallExpr>(E->getSubExpr())) {
+        S.Diag(E->getOperatorLoc(), diag::err_unknown_any_addrof_call)
+          << E->getSourceRange();
+        return ExprError();
+      }
+
       assert(E->getValueKind() == VK_RValue);
       assert(E->getObjectKind() == OK_Ordinary);
       E->setType(DestType);

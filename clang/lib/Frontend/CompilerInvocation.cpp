@@ -98,6 +98,9 @@ static unsigned getOptimizationLevel(ArgList &Args, InputKind IK,
     if (S == "s" || S == "z" || S.empty())
       return 2;
 
+    if (S == "g")
+      return 1;
+
     return getLastArgIntValue(Args, OPT_O, DefaultOpt, Diags);
   }
 
@@ -2354,6 +2357,7 @@ static void ParsePreprocessorOutputArgs(PreprocessorOutputOptions &Opts,
   Opts.ShowLineMarkers = !Args.hasArg(OPT_P);
   Opts.ShowMacroComments = Args.hasArg(OPT_CC);
   Opts.ShowMacros = Args.hasArg(OPT_dM) || Args.hasArg(OPT_dD);
+  Opts.ShowIncludeDirectives = Args.hasArg(OPT_dI);
   Opts.RewriteIncludes = Args.hasArg(OPT_frewrite_includes);
   Opts.UseLineDirectives = Args.hasArg(OPT_fuse_line_directives);
 }
