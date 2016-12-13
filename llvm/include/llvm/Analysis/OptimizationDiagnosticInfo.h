@@ -223,6 +223,7 @@ private:
 namespace ore {
 using NV = DiagnosticInfoOptimizationBase::Argument;
 using setIsVerbose = DiagnosticInfoOptimizationBase::setIsVerbose;
+using setExtraArgs = DiagnosticInfoOptimizationBase::setExtraArgs;
 }
 
 /// OptimizationRemarkEmitter legacy analysis pass
@@ -251,7 +252,7 @@ public:
 class OptimizationRemarkEmitterAnalysis
     : public AnalysisInfoMixin<OptimizationRemarkEmitterAnalysis> {
   friend AnalysisInfoMixin<OptimizationRemarkEmitterAnalysis>;
-  static char PassID;
+  static AnalysisKey Key;
 
 public:
   /// \brief Provide the result typedef for this analysis pass.

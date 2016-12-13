@@ -51,33 +51,28 @@ TargetInfo *Target;
 static void or32le(uint8_t *P, int32_t V) { write32le(P, read32le(P) | V); }
 static void or32be(uint8_t *P, int32_t V) { write32be(P, read32be(P) | V); }
 
-StringRef getRelName(uint32_t Type) {
+std::string toString(uint32_t Type) {
   return getELFRelocationTypeName(Config->EMachine, Type);
 }
 
 template <unsigned N> static void checkInt(int64_t V, uint32_t Type) {
   if (!isInt<N>(V))
-    error("relocation " + getRelName(Type) + " out of range");
+    error("relocation " + toString(Type) + " out of range");
 }
 
 template <unsigned N> static void checkUInt(uint64_t V, uint32_t Type) {
   if (!isUInt<N>(V))
-    error("relocation " + getRelName(Type) + " out of range");
+    error("relocation " + toString(Type) + " out of range");
 }
 
 template <unsigned N> static void checkIntUInt(uint64_t V, uint32_t Type) {
   if (!isInt<N>(V) && !isUInt<N>(V))
-    error("relocation " + getRelName(Type) + " out of range");
+    error("relocation " + toString(Type) + " out of range");
 }
 
 template <unsigned N> static void checkAlignment(uint64_t V, uint32_t Type) {
   if ((V & (N - 1)) != 0)
-    error("improper alignment for relocation " + getRelName(Type));
-}
-
-static void errorDynRel(uint32_t Type) {
-  error("relocation " + getRelName(Type) +
-        " cannot be used against shared object; recompile with -fPIC.");
+    error("improper alignment for relocation " + toString(Type));
 }
 
 namespace {
@@ -109,7 +104,7 @@ template <class ELFT> class X86_64TargetInfo final : public TargetInfo {
 public:
   X86_64TargetInfo();
   RelExpr getRelExpr(uint32_t Type, const SymbolBody &S) const override;
-  uint32_t getDynRel(uint32_t Type) const override;
+  bool isPicRel(uint32_t Type) const override;
   bool isTlsLocalDynamicRel(uint32_t Type) const override;
   bool isTlsGlobalDynamicRel(uint32_t Type) const override;
   bool isTlsInitialExecRel(uint32_t Type) const override;
@@ -153,7 +148,7 @@ class AArch64TargetInfo final : public TargetInfo {
 public:
   AArch64TargetInfo();
   RelExpr getRelExpr(uint32_t Type, const SymbolBody &S) const override;
-  uint32_t getDynRel(uint32_t Type) const override;
+  bool isPicRel(uint32_t Type) const override;
   bool isTlsInitialExecRel(uint32_t Type) const override;
   void writeGotPlt(uint8_t *Buf, const SymbolBody &S) const override;
   void writePltHeader(uint8_t *Buf) const override;
@@ -179,6 +174,7 @@ class ARMTargetInfo final : public TargetInfo {
 public:
   ARMTargetInfo();
   RelExpr getRelExpr(uint32_t Type, const SymbolBody &S) const override;
+  bool isPicRel(uint32_t Type) const override;
   uint32_t getDynRel(uint32_t Type) const override;
   uint64_t getImplicitAddend(const uint8_t *Buf, uint32_t Type) const override;
   bool isTlsLocalDynamicRel(uint32_t Type) const override;
@@ -198,6 +194,7 @@ public:
   MipsTargetInfo();
   RelExpr getRelExpr(uint32_t Type, const SymbolBody &S) const override;
   uint64_t getImplicitAddend(const uint8_t *Buf, uint32_t Type) const override;
+  bool isPicRel(uint32_t Type) const override;
   uint32_t getDynRel(uint32_t Type) const override;
   bool isTlsLocalDynamicRel(uint32_t Type) const override;
   bool isTlsGlobalDynamicRel(uint32_t Type) const override;
@@ -558,6 +555,9 @@ template <class ELFT> X86_64TargetInfo<ELFT>::X86_64TargetInfo() {
   PltEntrySize = 16;
   PltHeaderSize = 16;
   TlsGdRelaxSkip = 2;
+  // Align to the large page size (known as a superpage or huge page).
+  // FreeBSD automatically promotes large, superpage-aligned allocations.
+  DefaultImageBase = 0x200000;
 }
 
 template <class ELFT>
@@ -637,10 +637,8 @@ void X86_64TargetInfo<ELFT>::writePlt(uint8_t *Buf, uint64_t GotEntryAddr,
 }
 
 template <class ELFT>
-uint32_t X86_64TargetInfo<ELFT>::getDynRel(uint32_t Type) const {
-  if (Type == R_X86_64_PC32 || Type == R_X86_64_32)
-    errorDynRel(Type);
-  return Type;
+bool X86_64TargetInfo<ELFT>::isPicRel(uint32_t Type) const {
+  return Type != R_X86_64_PC32 && Type != R_X86_64_32;
 }
 
 template <class ELFT>
@@ -1246,12 +1244,8 @@ bool AArch64TargetInfo::isTlsInitialExecRel(uint32_t Type) const {
          Type == R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC;
 }
 
-uint32_t AArch64TargetInfo::getDynRel(uint32_t Type) const {
-  if (Type == R_AARCH64_ABS32 || Type == R_AARCH64_ABS64)
-    return Type;
-  // Keep it going with a dummy value so that we can find more reloc errors.
-  errorDynRel(Type);
-  return R_AARCH64_ABS32;
+bool AArch64TargetInfo::isPicRel(uint32_t Type) const {
+  return Type == R_AARCH64_ABS32 || Type == R_AARCH64_ABS64;
 }
 
 void AArch64TargetInfo::writeGotPlt(uint8_t *Buf, const SymbolBody &) const {
@@ -1606,13 +1600,17 @@ RelExpr ARMTargetInfo::getRelExpr(uint32_t Type, const SymbolBody &S) const {
   }
 }
 
+bool ARMTargetInfo::isPicRel(uint32_t Type) const {
+  return (Type == R_ARM_TARGET1 && !Config->Target1Rel) ||
+         (Type == R_ARM_ABS32);
+}
+
 uint32_t ARMTargetInfo::getDynRel(uint32_t Type) const {
   if (Type == R_ARM_TARGET1 && !Config->Target1Rel)
     return R_ARM_ABS32;
   if (Type == R_ARM_ABS32)
     return Type;
   // Keep it going with a dummy value so that we can find more reloc errors.
-  errorDynRel(Type);
   return R_ARM_ABS32;
 }
 
@@ -1976,13 +1974,13 @@ RelExpr MipsTargetInfo<ELFT>::getRelExpr(uint32_t Type,
   }
 }
 
+template <class ELFT> bool MipsTargetInfo<ELFT>::isPicRel(uint32_t Type) const {
+  return Type == R_MIPS_32 || Type == R_MIPS_64;
+}
+
 template <class ELFT>
 uint32_t MipsTargetInfo<ELFT>::getDynRel(uint32_t Type) const {
-  if (Type == R_MIPS_32 || Type == R_MIPS_64)
-    return RelativeRel;
-  // Keep it going with a dummy value so that we can find more reloc errors.
-  errorDynRel(Type);
-  return R_MIPS_32;
+  return RelativeRel;
 }
 
 template <class ELFT>
