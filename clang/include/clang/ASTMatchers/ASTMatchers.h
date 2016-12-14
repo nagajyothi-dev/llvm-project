@@ -75,18 +75,6 @@ public:
     return MyBoundNodes.getNodeAs<T>(ID);
   }
 
-  /// \brief Deprecated. Please use \c getNodeAs instead.
-  /// @{
-  template <typename T>
-  const T *getDeclAs(StringRef ID) const {
-    return getNodeAs<T>(ID);
-  }
-  template <typename T>
-  const T *getStmtAs(StringRef ID) const {
-    return getNodeAs<T>(ID);
-  }
-  /// @}
-
   /// \brief Type of mapping from binding identifiers to bound nodes. This type
   /// is an associative container with a key type of \c std::string and a value
   /// type of \c clang::ast_type_traits::DynTypedNode
@@ -5018,6 +5006,22 @@ AST_MATCHER_P(ElaboratedType, namesType, internal::Matcher<QualType>,
 ///
 /// \c substTemplateTypeParmType() matches the type of 't' but not '1'
 AST_TYPE_MATCHER(SubstTemplateTypeParmType, substTemplateTypeParmType);
+
+/// \brief Matches template type parameter substitutions that have a replacement
+/// type that matches the provided matcher.
+///
+/// Given
+/// \code
+///   template <typename T>
+///   double F(T t);
+///   int i;
+///   double j = F(i);
+/// \endcode
+///
+/// \c substTemplateTypeParmType(hasReplacementType(type())) matches int
+AST_TYPE_TRAVERSE_MATCHER(
+    hasReplacementType, getReplacementType,
+    AST_POLYMORPHIC_SUPPORTED_TYPES(SubstTemplateTypeParmType));
 
 /// \brief Matches template type parameter types.
 ///

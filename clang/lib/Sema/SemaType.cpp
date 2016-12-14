@@ -718,6 +718,7 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
       /*NumExceptions=*/0,
       /*NoexceptExpr=*/nullptr,
       /*ExceptionSpecTokens=*/nullptr,
+      /*DeclsInPrototype=*/None,
       loc, loc, declarator));
 
   // For consistency, make sure the state still has us as processing
@@ -1402,8 +1403,7 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
       Result = Context.DoubleTy;
 
     if (S.getLangOpts().OpenCL &&
-        !((S.getLangOpts().OpenCLVersion >= 120) ||
-          S.getOpenCLOptions().cl_khr_fp64)) {
+        !(S.getOpenCLOptions().cl_khr_fp64)) {
       S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
           << Result << "cl_khr_fp64";
       declarator.setInvalidType(true);
@@ -4469,7 +4469,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         if (FTI.getExceptionSpecType() == EST_Dynamic) {
           // FIXME: It's rather inefficient to have to split into two vectors
           // here.
-          unsigned N = FTI.NumExceptions;
+          unsigned N = FTI.getNumExceptions();
           DynamicExceptions.reserve(N);
           DynamicExceptionRanges.reserve(N);
           for (unsigned I = 0; I != N; ++I) {

@@ -398,8 +398,6 @@ def err_decomp_decl_not_alone : Error<
   "decomposition declaration must be the only declaration in its group">;
 def err_decomp_decl_requires_init : Error<
   "decomposition declaration %0 requires an initializer">;
-def err_decomp_decl_paren_init : Error<
-  "decomposition declaration %0 cannot have a parenthesized initializer">;
 def err_decomp_decl_wrong_number_bindings : Error<
   "type %0 decomposes into %2 elements, but %select{only |}3%1 "
   "names were provided">;
@@ -2652,7 +2650,8 @@ def warn_attribute_wrong_decl_type : Warning<
   "|variables, enums, fields and typedefs"
   "|functions, methods, enums, and classes"
   "|structs, classes, variables, functions, and inline namespaces"
-  "|variables, functions, methods, types, enumerations, enumerators, labels, and non-static data members}1">,
+  "|variables, functions, methods, types, enumerations, enumerators, labels, and non-static data members"
+  "|classes and enumerations}1">,
   InGroup<IgnoredAttributes>;
 def err_attribute_wrong_decl_type : Error<warn_attribute_wrong_decl_type.Text>;
 def warn_type_attribute_wrong_type : Warning<
@@ -4564,10 +4563,15 @@ def err_redefinition_different_typedef : Error<
   "%select{typedef|type alias|type alias template}0 "
   "redefinition with different types%diff{ ($ vs $)|}1,2">;
 def err_tag_reference_non_tag : Error<
-  "elaborated type refers to %select{a non-tag type|a typedef|a type alias|a template|a type alias template|a template template argument}0">;
+  "%select{non-struct type|non-class type|non-union type|non-enum "
+  "type|typedef|type alias|template|type alias template|template "
+  "template argument}1 %0 cannot be referenced with a "
+  "%select{struct|interface|union|class|enum}2 specifier">;
 def err_tag_reference_conflict : Error<
-  "implicit declaration introduced by elaborated type conflicts with "
-  "%select{a declaration|a typedef|a type alias|a template}0 of the same name">;
+  "implicit declaration introduced by elaborated type conflicts with a "
+  "%select{non-struct type|non-class type|non-union type|non-enum "
+  "type|typedef|type alias|template|type alias template|template "
+  "template argument}0 of the same name">;
 def err_dependent_tag_decl : Error<
   "%select{declaration|definition}0 of "
   "%select{struct|interface|union|class|enum}1 in a dependent scope">;
@@ -8073,8 +8077,9 @@ def err_static_kernel : Error<
   "kernel functions cannot be declared static">;
 def err_opencl_ptrptr_kernel_param : Error<
   "kernel parameter cannot be declared as a pointer to a pointer">;
-def err_opencl_private_ptr_kernel_param : Error<
-  "kernel parameter cannot be declared as a pointer to the __private address space">;
+def err_kernel_arg_address_space : Error<
+  "pointer arguments to kernel functions must reside in '__global', "
+  "'__constant' or '__local' address space">;
 def err_opencl_function_variable : Error<
   "%select{non-kernel function|function scope}0 variable cannot be declared in %1 address space">;
 def err_static_function_scope : Error<

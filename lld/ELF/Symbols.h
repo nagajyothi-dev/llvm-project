@@ -117,6 +117,12 @@ public:
   // True if this symbol is referenced by 32-bit GOT relocations.
   unsigned Is32BitMipsGot : 1;
 
+  // True if this symbol is in the Iplt sub-section of the Plt.
+  unsigned IsInIplt : 1;
+
+  // True if this symbol is in the Igot sub-section of the .got.plt or .got.
+  unsigned IsInIgot : 1;
+
   // The following fields have the same meaning as the ELF symbol attributes.
   uint8_t Type;    // symbol type
   uint8_t StOther; // st_other field value
@@ -398,6 +404,9 @@ struct Symbol {
 
   // True if this symbol is specified by --trace-symbol option.
   unsigned Traced : 1;
+
+  // This symbol version was found in a version script.
+  unsigned InVersionScript : 1;
 
   bool includeInDynsym() const;
   bool isWeak() const { return Binding == llvm::ELF::STB_WEAK; }

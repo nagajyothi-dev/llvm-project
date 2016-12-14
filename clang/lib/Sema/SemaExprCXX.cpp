@@ -520,17 +520,17 @@ getUuidAttrOfType(Sema &SemaRef, QualType QT,
   else if (QT->isArrayType())
     Ty = Ty->getBaseElementTypeUnsafe();
 
-  const auto *RD = Ty->getAsCXXRecordDecl();
-  if (!RD)
+  const auto *TD = Ty->getAsTagDecl();
+  if (!TD)
     return;
 
-  if (const auto *Uuid = RD->getMostRecentDecl()->getAttr<UuidAttr>()) {
+  if (const auto *Uuid = TD->getMostRecentDecl()->getAttr<UuidAttr>()) {
     UuidAttrs.insert(Uuid);
     return;
   }
 
   // __uuidof can grab UUIDs from template arguments.
-  if (const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
+  if (const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(TD)) {
     const TemplateArgumentList &TAL = CTSD->getTemplateArgs();
     for (const TemplateArgument &TA : TAL.asArray()) {
       const UuidAttr *UuidForTA = nullptr;
@@ -5411,13 +5411,19 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
     if (CompareReferenceRelationship(
             QuestionLoc, LTy, RTy, DerivedToBase,
             ObjCConversion, ObjCLifetimeConversion) == Ref_Compatible &&
-        !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion) {
+        !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion &&
+        // [...] subject to the constraint that the reference must bind
+        // directly [...]
+        !RHS.get()->refersToBitField() &&
+        !RHS.get()->refersToVectorElement()) {
       RHS = ImpCastExprToType(RHS.get(), LTy, CK_NoOp, RVK);
       RTy = RHS.get()->getType();
     } else if (CompareReferenceRelationship(
                    QuestionLoc, RTy, LTy, DerivedToBase,
                    ObjCConversion, ObjCLifetimeConversion) == Ref_Compatible &&
-               !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion) {
+               !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion &&
+               !LHS.get()->refersToBitField() &&
+               !LHS.get()->refersToVectorElement()) {
       LHS = ImpCastExprToType(LHS.get(), RTy, CK_NoOp, LVK);
       LTy = LHS.get()->getType();
     }
