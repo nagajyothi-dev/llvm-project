@@ -41,7 +41,7 @@ SourceLocation startLocationForType(TypeLoc TLoc) {
   return TLoc.getLocStart();
 }
 
-SourceLocation EndLocationForType(TypeLoc TLoc) {
+SourceLocation endLocationForType(TypeLoc TLoc) {
   // Dig past any namespace or keyword qualifications.
   while (TLoc.getTypeLocClass() == TypeLoc::Elaborated ||
          TLoc.getTypeLocClass() == TypeLoc::Qualified)
@@ -210,7 +210,8 @@ std::string wrapCodeInNamespace(StringRef NestedNs, std::string Code) {
   if (Code.back() != '\n')
     Code += "\n";
   llvm::SmallVector<StringRef, 4> NsSplitted;
-  NestedNs.split(NsSplitted, "::");
+  NestedNs.split(NsSplitted, "::", /*MaxSplit=*/-1,
+                 /*KeepEmpty=*/false);
   while (!NsSplitted.empty()) {
     // FIXME: consider code style for comments.
     Code = ("namespace " + NsSplitted.back() + " {\n" + Code +
@@ -249,7 +250,7 @@ ChangeNamespaceTool::ChangeNamespaceTool(
     llvm::StringRef FallbackStyle)
     : FallbackStyle(FallbackStyle), FileToReplacements(*FileToReplacements),
       OldNamespace(OldNs.ltrim(':')), NewNamespace(NewNs.ltrim(':')),
-      FilePattern(FilePattern) {
+      FilePattern(FilePattern), FilePatternRE(FilePattern) {
   FileToReplacements->clear();
   llvm::SmallVector<llvm::StringRef, 4> OldNsSplitted;
   llvm::SmallVector<llvm::StringRef, 4> NewNsSplitted;
@@ -272,7 +273,9 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
   // be "a::b". Declarations in this namespace will not be visible in the new
   // namespace. If DiffOldNamespace is empty, Prefix will be a invalid name "-".
   llvm::SmallVector<llvm::StringRef, 4> DiffOldNsSplitted;
-  llvm::StringRef(DiffOldNamespace).split(DiffOldNsSplitted, "::");
+  llvm::StringRef(DiffOldNamespace)
+      .split(DiffOldNsSplitted, "::", /*MaxSplit=*/-1,
+             /*KeepEmpty=*/false);
   std::string Prefix = "-";
   if (!DiffOldNsSplitted.empty())
     Prefix = (StringRef(FullOldNs).drop_back(DiffOldNamespace.size()) +
@@ -300,10 +303,18 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
           .bind("old_ns"),
       this);
 
-  // Match forward-declarations in the old namespace.
+  // Match class forward-declarations in the old namespace.
+  // Note that forward-declarations in classes are not matched.
+  Finder->addMatcher(cxxRecordDecl(unless(anyOf(isImplicit(), isDefinition())),
+                                   IsInMovedNs, hasParent(namespaceDecl()))
+                         .bind("class_fwd_decl"),
+                     this);
+
+  // Match template class forward-declarations in the old namespace.
   Finder->addMatcher(
-      cxxRecordDecl(unless(anyOf(isImplicit(), isDefinition())), IsInMovedNs)
-          .bind("fwd_decl"),
+      classTemplateDecl(unless(hasDescendant(cxxRecordDecl(isDefinition()))),
+                        IsInMovedNs, hasParent(namespaceDecl()))
+          .bind("template_class_fwd_decl"),
       this);
 
   // Match references to types that are not defined in the old namespace.
@@ -316,6 +327,12 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
           hasAncestor(cxxRecordDecl()),
           allOf(IsInMovedNs, unless(cxxRecordDecl(unless(isDefinition())))))));
 
+  // Using shadow declarations in classes always refers to base class, which
+  // does not need to be qualified since it can be inferred from inheritance.
+  // Note that this does not match using alias declarations.
+  auto UsingShadowDeclInClass =
+      usingDecl(hasAnyUsingShadowDecl(decl()), hasParent(cxxRecordDecl()));
+
   // Match TypeLocs on the declaration. Carefully match only the outermost
   // TypeLoc and template specialization arguments (which are not outermost)
   // that are directly linked to types matching `DeclMatcher`. Nested name
@@ -326,28 +343,36 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
               unless(anyOf(hasParent(typeLoc(loc(qualType(
                                allOf(hasDeclaration(DeclMatcher),
                                      unless(templateSpecializationType())))))),
-                           hasParent(nestedNameSpecifierLoc()))),
+                           hasParent(nestedNameSpecifierLoc()),
+                           hasAncestor(isImplicit()),
+                           hasAncestor(UsingShadowDeclInClass))),
               hasAncestor(decl().bind("dc")))
           .bind("type"),
       this);
 
   // Types in `UsingShadowDecl` is not matched by `typeLoc` above, so we need to
   // special case it.
-  Finder->addMatcher(usingDecl(IsInMovedNs, hasAnyUsingShadowDecl(decl()))
+  // Since using declarations inside classes must have the base class in the
+  // nested name specifier, we leave it to the nested name specifier matcher.
+  Finder->addMatcher(usingDecl(IsInMovedNs, hasAnyUsingShadowDecl(decl()),
+                               unless(UsingShadowDeclInClass))
                          .bind("using_with_shadow"),
                      this);
 
   // Handle types in nested name specifier. Specifiers that are in a TypeLoc
   // matched above are not matched, e.g. "A::" in "A::A" is not matched since
   // "A::A" would have already been fixed.
-  Finder->addMatcher(nestedNameSpecifierLoc(
-                         hasAncestor(decl(IsInMovedNs).bind("dc")),
-                         loc(nestedNameSpecifier(specifiesType(
-                             hasDeclaration(DeclMatcher.bind("from_decl"))))),
-                         unless(hasAncestor(typeLoc(loc(qualType(hasDeclaration(
-                             decl(equalsBoundNode("from_decl")))))))))
-                         .bind("nested_specifier_loc"),
-                     this);
+  Finder->addMatcher(
+      nestedNameSpecifierLoc(
+          hasAncestor(decl(IsInMovedNs).bind("dc")),
+          loc(nestedNameSpecifier(
+              specifiesType(hasDeclaration(DeclMatcher.bind("from_decl"))))),
+          unless(anyOf(hasAncestor(isImplicit()),
+                       hasAncestor(UsingShadowDeclInClass),
+                       hasAncestor(typeLoc(loc(qualType(hasDeclaration(
+                           decl(equalsBoundNode("from_decl"))))))))))
+          .bind("nested_specifier_loc"),
+      this);
 
   // Matches base class initializers in constructors. TypeLocs of base class
   // initializers do not need to be fixed. For example,
@@ -369,11 +394,13 @@ void ChangeNamespaceTool::registerMatchers(ast_matchers::MatchFinder *Finder) {
                                 hasAncestor(namespaceDecl(isAnonymous())),
                                 hasAncestor(cxxRecordDecl()))),
                    hasParent(namespaceDecl()));
-  Finder->addMatcher(
-      decl(forEachDescendant(callExpr(callee(FuncMatcher)).bind("call")),
-           IsInMovedNs, unless(isImplicit()))
-          .bind("dc"),
-      this);
+  Finder->addMatcher(decl(forEachDescendant(expr(anyOf(
+                              callExpr(callee(FuncMatcher)).bind("call"),
+                              declRefExpr(to(FuncMatcher.bind("func_decl")))
+                                  .bind("func_ref")))),
+                          IsInMovedNs, unless(isImplicit()))
+                         .bind("dc"),
+                     this);
 
   auto GlobalVarMatcher = varDecl(
       hasGlobalStorage(), hasParent(namespaceDecl()),
@@ -396,8 +423,12 @@ void ChangeNamespaceTool::run(
                  Result.Nodes.getNodeAs<NamespaceDecl>("old_ns")) {
     moveOldNamespace(Result, NsDecl);
   } else if (const auto *FwdDecl =
-                 Result.Nodes.getNodeAs<CXXRecordDecl>("fwd_decl")) {
-    moveClassForwardDeclaration(Result, FwdDecl);
+                 Result.Nodes.getNodeAs<CXXRecordDecl>("class_fwd_decl")) {
+    moveClassForwardDeclaration(Result, cast<NamedDecl>(FwdDecl));
+  } else if (const auto *TemplateFwdDecl =
+                 Result.Nodes.getNodeAs<ClassTemplateDecl>(
+                     "template_class_fwd_decl")) {
+    moveClassForwardDeclaration(Result, cast<NamedDecl>(TemplateFwdDecl));
   } else if (const auto *UsingWithShadow =
                  Result.Nodes.getNodeAs<UsingDecl>("using_with_shadow")) {
     fixUsingShadowDecl(Result, UsingWithShadow);
@@ -405,7 +436,7 @@ void ChangeNamespaceTool::run(
                  Result.Nodes.getNodeAs<NestedNameSpecifierLoc>(
                      "nested_specifier_loc")) {
     SourceLocation Start = Specifier->getBeginLoc();
-    SourceLocation End = EndLocationForType(Specifier->getTypeLoc());
+    SourceLocation End = endLocationForType(Specifier->getTypeLoc());
     fixTypeLoc(Result, Start, End, Specifier->getTypeLoc());
   } else if (const auto *BaseInitializer =
                  Result.Nodes.getNodeAs<CXXCtorInitializer>(
@@ -413,7 +444,7 @@ void ChangeNamespaceTool::run(
     BaseCtorInitializerTypeLocs.push_back(
         BaseInitializer->getTypeSourceInfo()->getTypeLoc());
   } else if (const auto *TLoc = Result.Nodes.getNodeAs<TypeLoc>("type")) {
-    fixTypeLoc(Result, startLocationForType(*TLoc), EndLocationForType(*TLoc),
+    fixTypeLoc(Result, startLocationForType(*TLoc), endLocationForType(*TLoc),
                *TLoc);
   } else if (const auto *VarRef =
                  Result.Nodes.getNodeAs<DeclRefExpr>("var_ref")) {
@@ -421,26 +452,32 @@ void ChangeNamespaceTool::run(
     assert(Var);
     if (Var->getCanonicalDecl()->isStaticDataMember())
       return;
-    const clang::Decl *Context = Result.Nodes.getNodeAs<clang::Decl>("dc");
+    const auto *Context = Result.Nodes.getNodeAs<Decl>("dc");
     assert(Context && "Empty decl context.");
-    clang::SourceRange VarRefRange = VarRef->getSourceRange();
-    replaceQualifiedSymbolInDeclContext(
-        Result, Context->getDeclContext(), VarRefRange.getBegin(),
-        VarRefRange.getEnd(), llvm::cast<NamedDecl>(Var));
+    fixDeclRefExpr(Result, Context->getDeclContext(),
+                   llvm::cast<NamedDecl>(Var), VarRef);
+  } else if (const auto *FuncRef =
+                 Result.Nodes.getNodeAs<DeclRefExpr>("func_ref")) {
+    const auto *Func = Result.Nodes.getNodeAs<FunctionDecl>("func_decl");
+    assert(Func);
+    const auto *Context = Result.Nodes.getNodeAs<Decl>("dc");
+    assert(Context && "Empty decl context.");
+    fixDeclRefExpr(Result, Context->getDeclContext(),
+                   llvm::cast<NamedDecl>(Func), FuncRef);
   } else {
-    const auto *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call");
+    const auto *Call = Result.Nodes.getNodeAs<CallExpr>("call");
     assert(Call != nullptr && "Expecting callback for CallExpr.");
-    const clang::FunctionDecl *Func = Call->getDirectCallee();
+    const FunctionDecl *Func = Call->getDirectCallee();
     assert(Func != nullptr);
     // Ignore out-of-line static methods since they will be handled by nested
     // name specifiers.
     if (Func->getCanonicalDecl()->getStorageClass() ==
-            clang::StorageClass::SC_Static &&
+            StorageClass::SC_Static &&
         Func->isOutOfLine())
       return;
-    const clang::Decl *Context = Result.Nodes.getNodeAs<clang::Decl>("dc");
+    const auto *Context = Result.Nodes.getNodeAs<Decl>("dc");
     assert(Context && "Empty decl context.");
-    clang::SourceRange CalleeRange = Call->getCallee()->getSourceRange();
+    SourceRange CalleeRange = Call->getCallee()->getSourceRange();
     replaceQualifiedSymbolInDeclContext(
         Result, Context->getDeclContext(), CalleeRange.getBegin(),
         CalleeRange.getEnd(), llvm::cast<NamedDecl>(Func));
@@ -528,7 +565,7 @@ void ChangeNamespaceTool::moveOldNamespace(
 //   }  // x
 void ChangeNamespaceTool::moveClassForwardDeclaration(
     const ast_matchers::MatchFinder::MatchResult &Result,
-    const CXXRecordDecl *FwdDecl) {
+    const NamedDecl *FwdDecl) {
   SourceLocation Start = FwdDecl->getLocStart();
   SourceLocation End = FwdDecl->getLocEnd();
   SourceLocation AfterSemi = Lexer::findLocationAfterToken(
@@ -626,6 +663,10 @@ void ChangeNamespaceTool::replaceQualifiedSymbolInDeclContext(
   // old namespace, we don't create replacement.
   if (NestedName == ReplaceName)
     return;
+  // If the reference need to be fully-qualified, add a leading "::" unless
+  // NewNamespace is the global namespace.
+  if (ReplaceName == FromDeclName && !NewNamespace.empty())
+    ReplaceName = "::" + ReplaceName;
   auto R = createReplacement(Start, End, ReplaceName, *Result.SourceManager);
   auto Err = FileToReplacements[R.getFilePath()].add(R);
   if (Err)
@@ -659,8 +700,7 @@ void ChangeNamespaceTool::fixTypeLoc(
         return false;
       llvm::StringRef Filename =
           Result.SourceManager->getFilename(ExpansionLoc);
-      llvm::Regex RE(FilePattern);
-      return RE.match(Filename);
+      return FilePatternRE.match(Filename);
     };
     // Don't fix the \p Type if it refers to a type alias decl in the moved
     // namespace since the alias decl will be moved along with the type
@@ -696,6 +736,15 @@ void ChangeNamespaceTool::fixUsingShadowDecl(
   auto Err = FileToReplacements[R.getFilePath()].add(R);
   if (Err)
     llvm_unreachable(llvm::toString(std::move(Err)).c_str());
+}
+
+void ChangeNamespaceTool::fixDeclRefExpr(
+    const ast_matchers::MatchFinder::MatchResult &Result,
+    const DeclContext *UseContext, const NamedDecl *From,
+    const DeclRefExpr *Ref) {
+  SourceRange RefRange = Ref->getSourceRange();
+  replaceQualifiedSymbolInDeclContext(Result, UseContext, RefRange.getBegin(),
+                                      RefRange.getEnd(), From);
 }
 
 void ChangeNamespaceTool::onEndOfTranslationUnit() {
@@ -762,6 +811,12 @@ void ChangeNamespaceTool::onEndOfTranslationUnit() {
     }
     FileToReplacements[FilePath] = *CleanReplacements;
   }
+
+  // Make sure we don't generate replacements for files that do not match
+  // FilePattern.
+  for (auto &Entry : FileToReplacements)
+    if (!FilePatternRE.match(Entry.first))
+      Entry.second.clear();
 }
 
 } // namespace change_namespace

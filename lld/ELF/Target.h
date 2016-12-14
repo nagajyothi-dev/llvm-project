@@ -63,7 +63,7 @@ public:
 
   unsigned TlsGdRelaxSkip = 1;
   unsigned PageSize = 4096;
-  unsigned MaxPageSize = 4096;
+  unsigned DefaultMaxPageSize = 4096;
 
   // On FreeBSD x86_64 the first page cannot be mmaped.
   // On Linux that is controled by vm.mmap_min_addr. At least on some x86_64
@@ -105,6 +105,7 @@ public:
 
 std::string toString(uint32_t RelType);
 uint64_t getPPC64TocBase();
+uint64_t getAArch64Page(uint64_t Expr);
 
 extern TargetInfo *Target;
 TargetInfo *createTarget();

@@ -80,15 +80,22 @@ InputSectionBase<ELFT>::InputSectionBase(elf::ObjectFile<ELFT> *File,
   if (V > UINT32_MAX)
     fatal(toString(File) + ": section sh_addralign is too large");
   Alignment = V;
+
+  // If it is not a mergeable section, overwrite the flag so that the flag
+  // is consistent with the class. This inconsistency could occur when
+  // string merging is disabled using -O0 flag.
+  if (!Config->Relocatable && !isa<MergeInputSection<ELFT>>(this))
+    this->Flags &= ~(SHF_MERGE | SHF_STRINGS);
 }
 
 template <class ELFT>
 InputSectionBase<ELFT>::InputSectionBase(elf::ObjectFile<ELFT> *File,
                                          const Elf_Shdr *Hdr, StringRef Name,
                                          Kind SectionKind)
-    : InputSectionBase(File, Hdr->sh_flags, Hdr->sh_type, Hdr->sh_entsize,
-                       Hdr->sh_link, Hdr->sh_info, Hdr->sh_addralign,
-                       getSectionContents(File, Hdr), Name, SectionKind) {
+    : InputSectionBase(File, Hdr->sh_flags & ~SHF_INFO_LINK, Hdr->sh_type,
+                       Hdr->sh_entsize, Hdr->sh_link, Hdr->sh_info,
+                       Hdr->sh_addralign, getSectionContents(File, Hdr), Name,
+                       SectionKind) {
   this->Offset = Hdr->sh_offset;
 }
 
@@ -296,13 +303,6 @@ void InputSection<ELFT>::copyRelocations(uint8_t *Buf, ArrayRef<RelTy> Rels) {
   }
 }
 
-// Page(Expr) is the page address of the expression Expr, defined
-// as (Expr & ~0xFFF). (This applies even if the machine page size
-// supported by the platform has a different value.)
-static uint64_t getAArch64Page(uint64_t Expr) {
-  return Expr & (~static_cast<uint64_t>(0xFFF));
-}
-
 static uint32_t getARMUndefinedRelativeWeakVA(uint32_t Type, uint32_t A,
                                               uint32_t P) {
   switch (Type) {
@@ -423,7 +423,7 @@ static typename ELFT::uint getSymVA(uint32_t Type, typename ELFT::uint A,
     // should be initialized by 'page address'. This address is high 16-bits
     // of sum the symbol's value and the addend.
     return In<ELFT>::MipsGot->getVA() +
-           In<ELFT>::MipsGot->getPageEntryOffset(Body.getVA<ELFT>(A)) -
+           In<ELFT>::MipsGot->getPageEntryOffset(Body, A) -
            In<ELFT>::MipsGot->getGp();
   case R_MIPS_GOT_OFF:
   case R_MIPS_GOT_OFF32:
@@ -615,7 +615,7 @@ template <class ELFT> void InputSection<ELFT>::writeTo(uint8_t *Buf) {
 
 template <class ELFT>
 void InputSection<ELFT>::replace(InputSection<ELFT> *Other) {
-  assert(Other->Alignment <= this->Alignment);
+  this->Alignment = std::max(this->Alignment, Other->Alignment);
   Other->Repl = this->Repl;
   Other->Live = false;
 }
@@ -717,16 +717,6 @@ void MergeInputSection<ELFT>::splitStrings(ArrayRef<uint8_t> Data,
     Data = Data.slice(Size);
     Off += Size;
   }
-}
-
-// Returns I'th piece's data.
-template <class ELFT>
-CachedHashStringRef MergeInputSection<ELFT>::getData(size_t I) const {
-  size_t End =
-      (Pieces.size() - 1 == I) ? this->Data.size() : Pieces[I + 1].InputOff;
-  const SectionPiece &P = Pieces[I];
-  StringRef S = toStringRef(this->Data.slice(P.InputOff, End - P.InputOff));
-  return {S, Hashes[I]};
 }
 
 // Split non-SHF_STRINGS section. Such section is a sequence of

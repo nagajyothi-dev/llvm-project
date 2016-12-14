@@ -50,13 +50,15 @@ public:
   ArrayRef<SharedFile<ELFT> *> getSharedFiles() const { return SharedFiles; }
 
   DefinedRegular<ELFT> *addAbsolute(StringRef Name,
-                                    uint8_t Visibility = llvm::ELF::STV_HIDDEN);
+                                    uint8_t Visibility = llvm::ELF::STV_HIDDEN,
+                                    uint8_t Type = llvm::ELF::STB_GLOBAL);
   DefinedRegular<ELFT> *addIgnored(StringRef Name,
                                    uint8_t Visibility = llvm::ELF::STV_HIDDEN);
 
   Symbol *addUndefined(StringRef Name);
-  Symbol *addUndefined(StringRef Name, uint8_t Binding, uint8_t StOther,
-                       uint8_t Type, bool CanOmitFromDynSym, InputFile *File);
+  Symbol *addUndefined(StringRef Name, bool IsLocal, uint8_t Binding,
+                       uint8_t StOther, uint8_t Type, bool CanOmitFromDynSym,
+                       InputFile *File);
 
   Symbol *addRegular(StringRef Name, uint8_t StOther, uint8_t Type,
                      uintX_t Value, uintX_t Size, uint8_t Binding,
