@@ -2914,7 +2914,7 @@ struct isl_basic_map *isl_basic_map_intersect_range(
 		goto error;
 	bmap = isl_basic_map_extend_space(bmap, isl_space_copy(bmap->dim),
 			bset->n_div, bset->n_eq, bset->n_ineq);
-	bmap_range = isl_basic_map_from_basic_set(bset, isl_space_copy(bset->dim));
+	bmap_range = bset_to_bmap(bset);
 	bmap = add_constraints(bmap, bmap_range, 0, 0);
 
 	bmap = isl_basic_map_simplify(bmap);
@@ -4553,7 +4553,7 @@ __isl_give isl_map *isl_map_lex_gt_map(__isl_take isl_map *map1,
 	return map;
 }
 
-__isl_give isl_basic_map *isl_basic_map_from_basic_set(
+static __isl_give isl_basic_map *basic_map_from_basic_set(
 	__isl_take isl_basic_set *bset, __isl_take isl_space *dim)
 {
 	struct isl_basic_map *bmap;
@@ -4562,7 +4562,8 @@ __isl_give isl_basic_map *isl_basic_map_from_basic_set(
 	if (!bset || !dim)
 		goto error;
 
-	isl_assert(bset->ctx, isl_space_compatible(bset->dim, dim), goto error);
+	isl_assert(bset->ctx, isl_space_compatible_internal(bset->dim, dim),
+		goto error);
 	isl_space_free(bset->dim);
 	bmap = bset_to_bmap(bset);
 	bmap->dim = dim;
@@ -4571,6 +4572,12 @@ error:
 	isl_basic_set_free(bset);
 	isl_space_free(dim);
 	return NULL;
+}
+
+__isl_give isl_basic_map *isl_basic_map_from_basic_set(
+	__isl_take isl_basic_set *bset, __isl_take isl_space *space)
+{
+	return basic_map_from_basic_set(bset, space);
 }
 
 /* For a div d = floor(f/m), add the constraint
@@ -5310,10 +5317,11 @@ __isl_give isl_map *isl_map_from_set(__isl_take isl_set *set,
 	set = isl_set_cow(set);
 	if (!set || !dim)
 		goto error;
-	isl_assert(set->ctx, isl_space_compatible(set->dim, dim), goto error);
+	isl_assert(set->ctx, isl_space_compatible_internal(set->dim, dim),
+		goto error);
 	map = set_to_map(set);
 	for (i = 0; i < set->n; ++i) {
-		map->p[i] = isl_basic_map_from_basic_set(
+		map->p[i] = basic_map_from_basic_set(
 				set->p[i], isl_space_copy(dim));
 		if (!map->p[i])
 			goto error;
@@ -8538,7 +8546,7 @@ struct isl_set *isl_set_remove_empty_parts(struct isl_set *set)
 	return set_from_map(isl_map_remove_empty_parts(set_to_map(set)));
 }
 
-struct isl_basic_map *isl_map_copy_basic_map(struct isl_map *map)
+static __isl_give isl_basic_map *map_copy_basic_map(__isl_keep isl_map *map)
 {
 	struct isl_basic_map *bmap;
 	if (!map || map->n == 0)
@@ -8548,12 +8556,17 @@ struct isl_basic_map *isl_map_copy_basic_map(struct isl_map *map)
 	return isl_basic_map_copy(bmap);
 }
 
-struct isl_basic_set *isl_set_copy_basic_set(struct isl_set *set)
+__isl_give isl_basic_map *isl_map_copy_basic_map(__isl_keep isl_map *map)
 {
-	return bset_from_bmap(isl_map_copy_basic_map(set_to_map(set)));
+	return map_copy_basic_map(map);
 }
 
-__isl_give isl_map *isl_map_drop_basic_map(__isl_take isl_map *map,
+struct isl_basic_set *isl_set_copy_basic_set(struct isl_set *set)
+{
+	return bset_from_bmap(map_copy_basic_map(set_to_map(set)));
+}
+
+static __isl_give isl_map *map_drop_basic_map(__isl_take isl_map *map,
 						__isl_keep isl_basic_map *bmap)
 {
 	int i;
@@ -8580,10 +8593,16 @@ error:
 	return NULL;
 }
 
+__isl_give isl_map *isl_map_drop_basic_map(__isl_take isl_map *map,
+	__isl_keep isl_basic_map *bmap)
+{
+	return map_drop_basic_map(map, bmap);
+}
+
 struct isl_set *isl_set_drop_basic_set(struct isl_set *set,
 						struct isl_basic_set *bset)
 {
-	return set_from_map(isl_map_drop_basic_map(set_to_map(set),
+	return set_from_map(map_drop_basic_map(set_to_map(set),
 						bset_to_bmap(bset)));
 }
 
@@ -8595,14 +8614,13 @@ static enum isl_lp_result basic_set_maximal_difference_at(
 	__isl_keep isl_basic_set *bset1, __isl_keep isl_basic_set *bset2,
 	int pos, isl_int *opt)
 {
-	isl_space *dims;
-	struct isl_basic_map *bmap1 = NULL;
-	struct isl_basic_map *bmap2 = NULL;
+	isl_basic_map *bmap1;
+	isl_basic_map *bmap2;
 	struct isl_ctx *ctx;
 	struct isl_vec *obj;
 	unsigned total;
 	unsigned nparam;
-	unsigned dim1, dim2;
+	unsigned dim1;
 	enum isl_lp_result res;
 
 	if (!bset1 || !bset2)
@@ -8610,25 +8628,22 @@ static enum isl_lp_result basic_set_maximal_difference_at(
 
 	nparam = isl_basic_set_n_param(bset1);
 	dim1 = isl_basic_set_n_dim(bset1);
-	dim2 = isl_basic_set_n_dim(bset2);
-	dims = isl_space_alloc(bset1->ctx, nparam, pos, dim1 - pos);
-	bmap1 = isl_basic_map_from_basic_set(isl_basic_set_copy(bset1), dims);
-	dims = isl_space_alloc(bset2->ctx, nparam, pos, dim2 - pos);
-	bmap2 = isl_basic_map_from_basic_set(isl_basic_set_copy(bset2), dims);
-	if (!bmap1 || !bmap2)
-		goto error;
-	bmap1 = isl_basic_map_cow(bmap1);
-	bmap1 = isl_basic_map_extend(bmap1, nparam,
-			pos, (dim1 - pos) + (dim2 - pos),
-			bmap2->n_div, bmap2->n_eq, bmap2->n_ineq);
-	bmap1 = add_constraints(bmap1, bmap2, 0, dim1 - pos);
+
+	bmap1 = isl_basic_map_from_range(isl_basic_set_copy(bset1));
+	bmap2 = isl_basic_map_from_range(isl_basic_set_copy(bset2));
+	bmap1 = isl_basic_map_move_dims(bmap1, isl_dim_in, 0,
+					isl_dim_out, 0, pos);
+	bmap2 = isl_basic_map_move_dims(bmap2, isl_dim_in, 0,
+					isl_dim_out, 0, pos);
+	bmap1 = isl_basic_map_range_product(bmap1, bmap2);
 	if (!bmap1)
-		goto error2;
+		return isl_lp_error;
+
 	total = isl_basic_map_total_dim(bmap1);
 	ctx = bmap1->ctx;
 	obj = isl_vec_alloc(ctx, 1 + total);
 	if (!obj)
-		goto error2;
+		goto error;
 	isl_seq_clr(obj->block.data, 1 + total);
 	isl_int_set_si(obj->block.data[1+nparam+pos], 1);
 	isl_int_set_si(obj->block.data[1+nparam+pos+(dim1-pos)], -1);
@@ -8638,8 +8653,6 @@ static enum isl_lp_result basic_set_maximal_difference_at(
 	isl_vec_free(obj);
 	return res;
 error:
-	isl_basic_map_free(bmap2);
-error2:
 	isl_basic_map_free(bmap1);
 	return isl_lp_error;
 }
@@ -9445,6 +9458,41 @@ __isl_give isl_basic_set *isl_basic_set_list_intersect(
 	__isl_take isl_basic_set_list *list)
 {
 	return isl_basic_map_list_intersect(list);
+}
+
+/* Return the union of the elements of "list".
+ * The list is required to have at least one element.
+ */
+__isl_give isl_set *isl_basic_set_list_union(
+	__isl_take isl_basic_set_list *list)
+{
+	int i, n;
+	isl_space *space;
+	isl_basic_set *bset;
+	isl_set *set;
+
+	if (!list)
+		return NULL;
+	n = isl_basic_set_list_n_basic_set(list);
+	if (n < 1)
+		isl_die(isl_basic_set_list_get_ctx(list), isl_error_invalid,
+			"expecting non-empty list", goto error);
+
+	bset = isl_basic_set_list_get_basic_set(list, 0);
+	space = isl_basic_set_get_space(bset);
+	isl_basic_set_free(bset);
+
+	set = isl_set_alloc_space(space, n, 0);
+	for (i = 0; i < n; ++i) {
+		bset = isl_basic_set_list_get_basic_set(list, i);
+		set = isl_set_add_basic_set(set, bset);
+	}
+
+	isl_basic_set_list_free(list);
+	return set;
+error:
+	isl_basic_set_list_free(list);
+	return NULL;
 }
 
 /* Return the union of the elements in the non-empty list "list".
@@ -13125,4 +13173,70 @@ __isl_give isl_set *isl_set_preimage_multi_pw_aff(__isl_take isl_set *set,
 	__isl_take isl_multi_pw_aff *mpa)
 {
 	return isl_map_preimage_multi_pw_aff(set, isl_dim_set, mpa);
+}
+
+/* Is the point "inner" internal to inequality constraint "ineq"
+ * of "bset"?
+ * The point is considered to be internal to the inequality constraint,
+ * if it strictly lies on the positive side of the inequality constraint,
+ * or if it lies on the constraint and the constraint is lexico-positive.
+ */
+static isl_bool is_internal(__isl_keep isl_vec *inner,
+	__isl_keep isl_basic_set *bset, int ineq)
+{
+	isl_ctx *ctx;
+	int pos;
+	unsigned total;
+
+	if (!inner || !bset)
+		return isl_bool_error;
+
+	ctx = isl_basic_set_get_ctx(bset);
+	isl_seq_inner_product(inner->el, bset->ineq[ineq], inner->size,
+				&ctx->normalize_gcd);
+	if (!isl_int_is_zero(ctx->normalize_gcd))
+		return isl_int_is_nonneg(ctx->normalize_gcd);
+
+	total = isl_basic_set_dim(bset, isl_dim_all);
+	pos = isl_seq_first_non_zero(bset->ineq[ineq] + 1, total);
+	return isl_int_is_pos(bset->ineq[ineq][1 + pos]);
+}
+
+/* Tighten the inequality constraints of "bset" that are outward with respect
+ * to the point "vec".
+ * That is, tighten the constraints that are not satisfied by "vec".
+ *
+ * "vec" is a point internal to some superset S of "bset" that is used
+ * to make the subsets of S disjoint, by tightening one half of the constraints
+ * that separate two subsets.  In particular, the constraints of S
+ * are all satisfied by "vec" and should not be tightened.
+ * Of the internal constraints, those that have "vec" on the outside
+ * are tightened.  The shared facet is included in the adjacent subset
+ * with the opposite constraint.
+ * For constraints that saturate "vec", this criterion cannot be used
+ * to determine which of the two sides should be tightened.
+ * Instead, the sign of the first non-zero coefficient is used
+ * to make this choice.  Note that this second criterion is never used
+ * on the constraints of S since "vec" is interior to "S".
+ */
+__isl_give isl_basic_set *isl_basic_set_tighten_outward(
+	__isl_take isl_basic_set *bset, __isl_keep isl_vec *vec)
+{
+	int j;
+
+	bset = isl_basic_set_cow(bset);
+	if (!bset)
+		return NULL;
+	for (j = 0; j < bset->n_ineq; ++j) {
+		isl_bool internal;
+
+		internal = is_internal(vec, bset, j);
+		if (internal < 0)
+			return isl_basic_set_free(bset);
+		if (internal)
+			continue;
+		isl_int_sub_ui(bset->ineq[j][0], bset->ineq[j][0], 1);
+	}
+
+	return bset;
 }

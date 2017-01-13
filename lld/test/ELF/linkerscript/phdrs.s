@@ -39,6 +39,14 @@
 # RUN: ld.lld -o %t1 --script %t.script %t
 # RUN: llvm-readobj -program-headers %t1 | FileCheck --check-prefix=DEFHDR %s
 
+## Check that error is reported when trying to use phdr which is not listed 
+## inside PHDRS {} block
+## TODO: If script doesn't contain PHDRS {} block then default phdr is always 
+## created and error is not reported.
+# RUN: echo "PHDRS { all PT_LOAD; } \
+# RUN:       SECTIONS { .baz : {*(.foo.*)} :bar }" > %t.script
+# RUN: not ld.lld -o %t1 --script %t.script %t 2>&1 | FileCheck --check-prefix=BADHDR %s
+
 # CHECK:     ProgramHeaders [
 # CHECK-NEXT:  ProgramHeader {
 # CHECK-NEXT:    Type: PT_LOAD (0x1)
@@ -95,14 +103,14 @@
 # INT-PHDRS-NEXT:      Offset: 0xB0
 # INT-PHDRS-NEXT:      VirtualAddress: 0xB0
 # INT-PHDRS-NEXT:      PhysicalAddress: 0xB0
-# INT-PHDRS-NEXT:      FileSize: 9
-# INT-PHDRS-NEXT:      MemSize: 9
+# INT-PHDRS-NEXT:      FileSize:
+# INT-PHDRS-NEXT:      MemSize:
 # INT-PHDRS-NEXT:      Flags [
 # INT-PHDRS-NEXT:        PF_R
 # INT-PHDRS-NEXT:        PF_W
 # INT-PHDRS-NEXT:        PF_X
 # INT-PHDRS-NEXT:      ]
-# INT-PHDRS-NEXT:      Alignment: 4
+# INT-PHDRS-NEXT:      Alignment:
 # INT-PHDRS-NEXT:    }
 # INT-PHDRS-NEXT:  ]
 
@@ -119,6 +127,8 @@
 # DEFHDR-NEXT:      PF_W (0x2)
 # DEFHDR-NEXT:      PF_X (0x1)
 # DEFHDR-NEXT:    ]
+
+# BADHDR:       {{.*}}.script:1: section header 'bar' is not listed in PHDRS
 
 .global _start
 _start:

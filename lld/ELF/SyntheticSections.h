@@ -12,53 +12,11 @@
 
 #include "GdbIndex.h"
 #include "InputSection.h"
-#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/MC/StringTableBuilder.h"
 
 namespace lld {
 namespace elf {
-
-// .MIPS.abiflags section.
-template <class ELFT>
-class MipsAbiFlagsSection final : public InputSection<ELFT> {
-  typedef llvm::object::Elf_Mips_ABIFlags<ELFT> Elf_Mips_ABIFlags;
-
-public:
-  MipsAbiFlagsSection();
-
-private:
-  Elf_Mips_ABIFlags Flags = {};
-};
-
-// .MIPS.options section.
-template <class ELFT>
-class MipsOptionsSection final : public InputSection<ELFT> {
-  typedef llvm::object::Elf_Mips_Options<ELFT> Elf_Mips_Options;
-  typedef llvm::object::Elf_Mips_RegInfo<ELFT> Elf_Mips_RegInfo;
-
-public:
-  MipsOptionsSection();
-  void finalize();
-
-private:
-  std::vector<uint8_t> Buf;
-
-  Elf_Mips_Options *getOptions() {
-    return reinterpret_cast<Elf_Mips_Options *>(Buf.data());
-  }
-};
-
-// MIPS .reginfo section.
-template <class ELFT>
-class MipsReginfoSection final : public InputSection<ELFT> {
-  typedef llvm::object::Elf_Mips_RegInfo<ELFT> Elf_Mips_RegInfo;
-
-public:
-  MipsReginfoSection();
-  void finalize();
-
-private:
-  Elf_Mips_RegInfo Reginfo = {};
-};
 
 template <class ELFT> class SyntheticSection : public InputSection<ELFT> {
   typedef typename ELFT::uint uintX_t;
@@ -71,9 +29,12 @@ public:
     this->Live = true;
   }
 
+  virtual ~SyntheticSection() = default;
   virtual void writeTo(uint8_t *Buf) = 0;
-  virtual size_t getSize() const { return this->Data.size(); }
+  virtual size_t getSize() const = 0;
   virtual void finalize() {}
+  virtual bool empty() const { return false; }
+
   uintX_t getVA() const {
     return this->OutSec ? this->OutSec->Addr + this->OutSecOff : 0;
   }
@@ -81,62 +42,6 @@ public:
   static bool classof(const InputSectionData *D) {
     return D->kind() == InputSectionData::Synthetic;
   }
-
-protected:
-  ~SyntheticSection() = default;
-};
-
-// .note.gnu.build-id section.
-template <class ELFT> class BuildIdSection : public InputSection<ELFT> {
-public:
-  virtual void writeBuildId(llvm::MutableArrayRef<uint8_t> Buf) = 0;
-  virtual ~BuildIdSection() = default;
-
-  uint8_t *getOutputLoc(uint8_t *Start) const;
-
-protected:
-  BuildIdSection(size_t HashSize);
-  std::vector<uint8_t> Buf;
-
-  void
-  computeHash(llvm::MutableArrayRef<uint8_t> Buf,
-              std::function<void(ArrayRef<uint8_t> Arr, uint8_t *Hash)> Hash);
-
-  size_t HashSize;
-  // First 16 bytes are a header.
-  static const unsigned HeaderSize = 16;
-};
-
-template <class ELFT>
-class BuildIdFastHash final : public BuildIdSection<ELFT> {
-public:
-  BuildIdFastHash() : BuildIdSection<ELFT>(8) {}
-  void writeBuildId(llvm::MutableArrayRef<uint8_t> Buf) override;
-};
-
-template <class ELFT> class BuildIdMd5 final : public BuildIdSection<ELFT> {
-public:
-  BuildIdMd5() : BuildIdSection<ELFT>(16) {}
-  void writeBuildId(llvm::MutableArrayRef<uint8_t> Buf) override;
-};
-
-template <class ELFT> class BuildIdSha1 final : public BuildIdSection<ELFT> {
-public:
-  BuildIdSha1() : BuildIdSection<ELFT>(20) {}
-  void writeBuildId(llvm::MutableArrayRef<uint8_t> Buf) override;
-};
-
-template <class ELFT> class BuildIdUuid final : public BuildIdSection<ELFT> {
-public:
-  BuildIdUuid() : BuildIdSection<ELFT>(16) {}
-  void writeBuildId(llvm::MutableArrayRef<uint8_t> Buf) override;
-};
-
-template <class ELFT>
-class BuildIdHexstring final : public BuildIdSection<ELFT> {
-public:
-  BuildIdHexstring();
-  void writeBuildId(llvm::MutableArrayRef<uint8_t>) override;
 };
 
 template <class ELFT> class GotSection final : public SyntheticSection<ELFT> {
@@ -147,10 +52,11 @@ public:
   void writeTo(uint8_t *Buf) override;
   size_t getSize() const override { return Size; }
   void finalize() override;
+  bool empty() const override;
+
   void addEntry(SymbolBody &Sym);
   bool addDynTlsEntry(SymbolBody &Sym);
   bool addTlsIndex();
-  bool empty() const { return Entries.empty(); }
   uintX_t getGlobalDynAddr(const SymbolBody &B) const;
   uintX_t getGlobalDynOffset(const SymbolBody &B) const;
 
@@ -162,12 +68,32 @@ public:
   bool HasGotOffRel = false;
 
 private:
-  std::vector<const SymbolBody *> Entries;
+  size_t NumEntries = 0;
   uint32_t TlsIndexOff = -1;
   uintX_t Size = 0;
 };
 
-template <class ELFT> class MipsGotSection final : public SyntheticSection<ELFT> {
+// .note.gnu.build-id section.
+template <class ELFT> class BuildIdSection : public SyntheticSection<ELFT> {
+  // First 16 bytes are a header.
+  static const unsigned HeaderSize = 16;
+
+public:
+  BuildIdSection();
+  void writeTo(uint8_t *Buf) override;
+  size_t getSize() const override { return HeaderSize + HashSize; }
+  void writeBuildId(llvm::ArrayRef<uint8_t> Buf);
+
+private:
+  void computeHash(llvm::ArrayRef<uint8_t> Buf,
+                   std::function<void(uint8_t *, ArrayRef<uint8_t>)> Hash);
+
+  size_t HashSize;
+  uint8_t *HashBuf;
+};
+
+template <class ELFT>
+class MipsGotSection final : public SyntheticSection<ELFT> {
   typedef typename ELFT::uint uintX_t;
 
 public:
@@ -175,11 +101,11 @@ public:
   void writeTo(uint8_t *Buf) override;
   size_t getSize() const override { return Size; }
   void finalize() override;
+  bool empty() const override;
   void addEntry(SymbolBody &Sym, uintX_t Addend, RelExpr Expr);
   bool addDynTlsEntry(SymbolBody &Sym);
   bool addTlsIndex();
-  bool empty() const { return PageEntriesNum == 0 && TlsEntries.empty(); }
-  uintX_t getPageEntryOffset(uintX_t Addr);
+  uintX_t getPageEntryOffset(const SymbolBody &B, uintX_t Addend) const;
   uintX_t getBodyEntryOffset(const SymbolBody &B, uintX_t Addend) const;
   uintX_t getGlobalDynOffset(const SymbolBody &B) const;
 
@@ -198,6 +124,8 @@ public:
   uintX_t getTlsOffset() const;
 
   uint32_t getTlsIndexOff() const { return TlsIndexOff; }
+
+  uintX_t getGp() const;
 
 private:
   // MIPS GOT consists of three parts: local, global and tls. Each part
@@ -237,12 +165,13 @@ private:
   // TLS entries:
   //   Entries created by TLS relocations.
 
-  // Total number of allocated "Header" and "Page" entries.
+  // Number of "Header" entries.
+  static const unsigned HeaderEntriesNum = 2;
+  // Number of allocated "Page" entries.
   uint32_t PageEntriesNum = 0;
-  // Output sections referenced by MIPS GOT relocations.
-  llvm::SmallPtrSet<const OutputSectionBase *, 10> OutSections;
-  // Map from "page" address to the GOT index.
-  llvm::DenseMap<uintX_t, size_t> PageIndexMap;
+  // Map output sections referenced by MIPS GOT relocations
+  // to the first index of "Page" entries allocated for this section.
+  llvm::SmallMapVector<const OutputSectionBase *, size_t, 16> PageIndexMap;
 
   typedef std::pair<const SymbolBody *, uintX_t> GotEntry;
   typedef std::vector<GotEntry> GotEntries;
@@ -270,9 +199,28 @@ class GotPltSection final : public SyntheticSection<ELFT> {
 public:
   GotPltSection();
   void addEntry(SymbolBody &Sym);
-  bool empty() const;
   size_t getSize() const override;
   void writeTo(uint8_t *Buf) override;
+  bool empty() const override { return Entries.empty(); }
+
+private:
+  std::vector<const SymbolBody *> Entries;
+};
+
+// The IgotPltSection is a Got associated with the IpltSection for GNU Ifunc
+// Symbols that will be relocated by Target->IRelativeRel.
+// On most Targets the IgotPltSection will immediately follow the GotPltSection
+// on ARM the IgotPltSection will immediately follow the GotSection.
+template <class ELFT>
+class IgotPltSection final : public SyntheticSection<ELFT> {
+  typedef typename ELFT::uint uintX_t;
+
+public:
+  IgotPltSection();
+  void addEntry(SymbolBody &Sym);
+  size_t getSize() const override;
+  void writeTo(uint8_t *Buf) override;
+  bool empty() const override { return Entries.empty(); }
 
 private:
   std::vector<const SymbolBody *> Entries;
@@ -391,8 +339,8 @@ public:
   unsigned getRelocOffset();
   void finalize() override;
   void writeTo(uint8_t *Buf) override;
+  bool empty() const override { return Relocs.empty(); }
   size_t getSize() const override { return Relocs.size() * this->Entsize; }
-  bool hasRelocs() const { return !Relocs.empty(); }
   size_t getRelativeRelocCount() const { return NumRelativeRelocs; }
 
 private:
@@ -497,7 +445,22 @@ public:
   void writeTo(uint8_t *Buf) override;
   size_t getSize() const override;
   void addEntry(SymbolBody &Sym);
-  bool empty() const { return Entries.empty(); }
+  bool empty() const override { return Entries.empty(); }
+
+private:
+  std::vector<std::pair<const SymbolBody *, unsigned>> Entries;
+};
+
+// The IpltSection is a variant of Plt for recording entries for GNU Ifunc
+// symbols that will be subject to a Target->IRelativeRel
+// The IpltSection immediately follows the Plt section in the Output Section
+template <class ELFT> class IpltSection final : public SyntheticSection<ELFT> {
+public:
+  IpltSection();
+  void writeTo(uint8_t *Buf) override;
+  size_t getSize() const override;
+  void addEntry(SymbolBody &Sym);
+  bool empty() const override { return Entries.empty(); }
 
 private:
   std::vector<std::pair<const SymbolBody *, unsigned>> Entries;
@@ -517,16 +480,34 @@ public:
   GdbIndexSection();
   void finalize() override;
   void writeTo(uint8_t *Buf) override;
-  size_t getSize() const override { return CuTypesOffset; }
+  size_t getSize() const override;
+  bool empty() const override;
 
   // Pairs of [CU Offset, CU length].
   std::vector<std::pair<uintX_t, uintX_t>> CompilationUnits;
+
+  llvm::StringTableBuilder StringPool;
+
+  GdbHashTab SymbolTable;
+
+  // The CU vector portion of the constant pool.
+  std::vector<std::vector<std::pair<uint32_t, uint8_t>>> CuVectors;
+
+  std::vector<AddressEntry<ELFT>> AddressArea;
 
 private:
   void parseDebugSections();
   void readDwarf(InputSection<ELFT> *I);
 
   uint32_t CuTypesOffset;
+  uint32_t SymTabOffset;
+  uint32_t ConstantPoolOffset;
+  uint32_t StringPoolOffset;
+
+  size_t CuVectorsSize = 0;
+  std::vector<size_t> CuVectorsOffset;
+
+  bool Finalized = false;
 };
 
 // --eh-frame-hdr option tells linker to construct a header for all the
@@ -547,6 +528,7 @@ public:
   void writeTo(uint8_t *Buf) override;
   size_t getSize() const override;
   void addFde(uint32_t Pc, uint32_t FdeVA);
+  bool empty() const override;
 
 private:
   struct FdeData {
@@ -557,12 +539,153 @@ private:
   std::vector<FdeData> Fdes;
 };
 
+// For more information about .gnu.version and .gnu.version_r see:
+// https://www.akkadia.org/drepper/symbol-versioning
+
+// The .gnu.version_d section which has a section type of SHT_GNU_verdef shall
+// contain symbol version definitions. The number of entries in this section
+// shall be contained in the DT_VERDEFNUM entry of the .dynamic section.
+// The section shall contain an array of Elf_Verdef structures, optionally
+// followed by an array of Elf_Verdaux structures.
+template <class ELFT>
+class VersionDefinitionSection final : public SyntheticSection<ELFT> {
+  typedef typename ELFT::Verdef Elf_Verdef;
+  typedef typename ELFT::Verdaux Elf_Verdaux;
+
+public:
+  VersionDefinitionSection();
+  void finalize() override;
+  size_t getSize() const override;
+  void writeTo(uint8_t *Buf) override;
+
+private:
+  void writeOne(uint8_t *Buf, uint32_t Index, StringRef Name, size_t NameOff);
+
+  unsigned FileDefNameOff;
+};
+
+// The .gnu.version section specifies the required version of each symbol in the
+// dynamic symbol table. It contains one Elf_Versym for each dynamic symbol
+// table entry. An Elf_Versym is just a 16-bit integer that refers to a version
+// identifier defined in the either .gnu.version_r or .gnu.version_d section.
+// The values 0 and 1 are reserved. All other values are used for versions in
+// the own object or in any of the dependencies.
+template <class ELFT>
+class VersionTableSection final : public SyntheticSection<ELFT> {
+  typedef typename ELFT::Versym Elf_Versym;
+
+public:
+  VersionTableSection();
+  void finalize() override;
+  size_t getSize() const override;
+  void writeTo(uint8_t *Buf) override;
+  bool empty() const override;
+};
+
+// The .gnu.version_r section defines the version identifiers used by
+// .gnu.version. It contains a linked list of Elf_Verneed data structures. Each
+// Elf_Verneed specifies the version requirements for a single DSO, and contains
+// a reference to a linked list of Elf_Vernaux data structures which define the
+// mapping from version identifiers to version names.
+template <class ELFT>
+class VersionNeedSection final : public SyntheticSection<ELFT> {
+  typedef typename ELFT::Verneed Elf_Verneed;
+  typedef typename ELFT::Vernaux Elf_Vernaux;
+
+  // A vector of shared files that need Elf_Verneed data structures and the
+  // string table offsets of their sonames.
+  std::vector<std::pair<SharedFile<ELFT> *, size_t>> Needed;
+
+  // The next available version identifier.
+  unsigned NextIndex;
+
+public:
+  VersionNeedSection();
+  void addSymbol(SharedSymbol<ELFT> *SS);
+  void finalize() override;
+  void writeTo(uint8_t *Buf) override;
+  size_t getSize() const override;
+  size_t getNeedNum() const { return Needed.size(); }
+  bool empty() const override;
+};
+
+// .MIPS.abiflags section.
+template <class ELFT>
+class MipsAbiFlagsSection final : public SyntheticSection<ELFT> {
+  typedef llvm::object::Elf_Mips_ABIFlags<ELFT> Elf_Mips_ABIFlags;
+
+public:
+  static MipsAbiFlagsSection *create();
+
+  MipsAbiFlagsSection(Elf_Mips_ABIFlags Flags);
+  size_t getSize() const override { return sizeof(Elf_Mips_ABIFlags); }
+  void writeTo(uint8_t *Buf) override;
+
+private:
+  Elf_Mips_ABIFlags Flags;
+};
+
+// .MIPS.options section.
+template <class ELFT>
+class MipsOptionsSection final : public SyntheticSection<ELFT> {
+  typedef llvm::object::Elf_Mips_Options<ELFT> Elf_Mips_Options;
+  typedef llvm::object::Elf_Mips_RegInfo<ELFT> Elf_Mips_RegInfo;
+
+public:
+  static MipsOptionsSection *create();
+
+  MipsOptionsSection(Elf_Mips_RegInfo Reginfo);
+  void writeTo(uint8_t *Buf) override;
+
+  size_t getSize() const override {
+    return sizeof(Elf_Mips_Options) + sizeof(Elf_Mips_RegInfo);
+  }
+
+private:
+  Elf_Mips_RegInfo Reginfo;
+};
+
+// MIPS .reginfo section.
+template <class ELFT>
+class MipsReginfoSection final : public SyntheticSection<ELFT> {
+  typedef llvm::object::Elf_Mips_RegInfo<ELFT> Elf_Mips_RegInfo;
+
+public:
+  static MipsReginfoSection *create();
+
+  MipsReginfoSection(Elf_Mips_RegInfo Reginfo);
+  size_t getSize() const override { return sizeof(Elf_Mips_RegInfo); }
+  void writeTo(uint8_t *Buf) override;
+
+private:
+  Elf_Mips_RegInfo Reginfo;
+};
+
+// This is a MIPS specific section to hold a space within the data segment
+// of executable file which is pointed to by the DT_MIPS_RLD_MAP entry.
+// See "Dynamic section" in Chapter 5 in the following document:
+// ftp://www.linux-mips.org/pub/linux/mips/doc/ABI/mipsabi.pdf
+template <class ELFT> class MipsRldMapSection : public SyntheticSection<ELFT> {
+public:
+  MipsRldMapSection();
+  size_t getSize() const override { return sizeof(typename ELFT::uint); }
+  void writeTo(uint8_t *Buf) override;
+};
+
+template <class ELFT> class ARMExidxSentinelSection : public SyntheticSection<ELFT> {
+public:
+  ARMExidxSentinelSection();
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *Buf) override;
+};
+
 template <class ELFT> InputSection<ELFT> *createCommonSection();
 template <class ELFT> InputSection<ELFT> *createInterpSection();
 template <class ELFT> MergeInputSection<ELFT> *createCommentSection();
 
 // Linker generated sections which can be used as inputs.
 template <class ELFT> struct In {
+  static InputSection<ELFT> *ARMAttributes;
   static BuildIdSection<ELFT> *BuildId;
   static InputSection<ELFT> *Common;
   static DynamicSection<ELFT> *Dynamic;
@@ -574,19 +697,24 @@ template <class ELFT> struct In {
   static GotSection<ELFT> *Got;
   static MipsGotSection<ELFT> *MipsGot;
   static GotPltSection<ELFT> *GotPlt;
+  static IgotPltSection<ELFT> *IgotPlt;
   static HashTableSection<ELFT> *HashTab;
   static InputSection<ELFT> *Interp;
-  static MipsAbiFlagsSection<ELFT> *MipsAbiFlags;
-  static MipsOptionsSection<ELFT> *MipsOptions;
-  static MipsReginfoSection<ELFT> *MipsReginfo;
+  static MipsRldMapSection<ELFT> *MipsRldMap;
   static PltSection<ELFT> *Plt;
+  static IpltSection<ELFT> *Iplt;
   static RelocationSection<ELFT> *RelaDyn;
   static RelocationSection<ELFT> *RelaPlt;
+  static RelocationSection<ELFT> *RelaIplt;
   static StringTableSection<ELFT> *ShStrTab;
   static StringTableSection<ELFT> *StrTab;
   static SymbolTableSection<ELFT> *SymTab;
+  static VersionDefinitionSection<ELFT> *VerDef;
+  static VersionTableSection<ELFT> *VerSym;
+  static VersionNeedSection<ELFT> *VerNeed;
 };
 
+template <class ELFT> InputSection<ELFT> *In<ELFT>::ARMAttributes;
 template <class ELFT> BuildIdSection<ELFT> *In<ELFT>::BuildId;
 template <class ELFT> InputSection<ELFT> *In<ELFT>::Common;
 template <class ELFT> DynamicSection<ELFT> *In<ELFT>::Dynamic;
@@ -598,17 +726,21 @@ template <class ELFT> GnuHashTableSection<ELFT> *In<ELFT>::GnuHashTab;
 template <class ELFT> GotSection<ELFT> *In<ELFT>::Got;
 template <class ELFT> MipsGotSection<ELFT> *In<ELFT>::MipsGot;
 template <class ELFT> GotPltSection<ELFT> *In<ELFT>::GotPlt;
+template <class ELFT> IgotPltSection<ELFT> *In<ELFT>::IgotPlt;
 template <class ELFT> HashTableSection<ELFT> *In<ELFT>::HashTab;
 template <class ELFT> InputSection<ELFT> *In<ELFT>::Interp;
-template <class ELFT> MipsAbiFlagsSection<ELFT> *In<ELFT>::MipsAbiFlags;
-template <class ELFT> MipsOptionsSection<ELFT> *In<ELFT>::MipsOptions;
-template <class ELFT> MipsReginfoSection<ELFT> *In<ELFT>::MipsReginfo;
+template <class ELFT> MipsRldMapSection<ELFT> *In<ELFT>::MipsRldMap;
 template <class ELFT> PltSection<ELFT> *In<ELFT>::Plt;
+template <class ELFT> IpltSection<ELFT> *In<ELFT>::Iplt;
 template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaDyn;
 template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaPlt;
+template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaIplt;
 template <class ELFT> StringTableSection<ELFT> *In<ELFT>::ShStrTab;
 template <class ELFT> StringTableSection<ELFT> *In<ELFT>::StrTab;
 template <class ELFT> SymbolTableSection<ELFT> *In<ELFT>::SymTab;
+template <class ELFT> VersionDefinitionSection<ELFT> *In<ELFT>::VerDef;
+template <class ELFT> VersionTableSection<ELFT> *In<ELFT>::VerSym;
+template <class ELFT> VersionNeedSection<ELFT> *In<ELFT>::VerNeed;
 } // namespace elf
 } // namespace lld
 

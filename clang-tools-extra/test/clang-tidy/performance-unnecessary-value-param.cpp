@@ -225,6 +225,15 @@ void PositiveMoveOnCopyAssignment(ExpensiveMovableType E) {
   // CHECK-FIXES: F = std::move(E);
 }
 
+// The argument could be moved but is not since copy statement is inside a loop.
+void PositiveNoMoveInsideLoop(ExpensiveMovableType E) {
+  // CHECK-MESSAGES: [[@LINE-1]]:52: warning: the parameter 'E' is copied
+  // CHECK-FIXES: void PositiveNoMoveInsideLoop(const ExpensiveMovableType& E) {
+  for (;;) {
+    auto F = E;
+  }
+}
+
 void PositiveConstRefNotMoveConstructible(ExpensiveToCopyType T) {
   // CHECK-MESSAGES: [[@LINE-1]]:63: warning: the parameter 'T' is copied
   // CHECK-FIXES: void PositiveConstRefNotMoveConstructible(const ExpensiveToCopyType& T) {
@@ -271,3 +280,21 @@ void PositiveMessageAndFixAsFunctionIsCalled(ExpensiveToCopyType A) {
 void ReferenceFunctionByCallingIt() {
   PositiveMessageAndFixAsFunctionIsCalled(ExpensiveToCopyType());
 }
+
+// Virtual method overrides of dependent types cannot be recognized unless they
+// are marked as override or final. Test that check is not triggered on methods
+// marked with override or final.
+template <typename T>
+struct NegativeDependentTypeInterface {
+  virtual void Method(ExpensiveToCopyType E) = 0;
+};
+
+template <typename T>
+struct NegativeOverrideImpl : public NegativeDependentTypeInterface<T> {
+  void Method(ExpensiveToCopyType E) override {}
+};
+
+template <typename T>
+struct NegativeFinalImpl : public NegativeDependentTypeInterface<T> {
+  void Method(ExpensiveToCopyType E) final {}
+};

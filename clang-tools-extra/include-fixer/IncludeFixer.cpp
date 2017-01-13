@@ -136,10 +136,10 @@ static void addDiagnosticsForContext(TypoCorrection &Correction,
   const tooling::Replacement &Placed = *Reps->begin();
 
   auto Begin = StartOfFile.getLocWithOffset(Placed.getOffset());
-  auto End = Begin.getLocWithOffset(Placed.getLength());
+  auto End = Begin.getLocWithOffset(std::max(0, (int)Placed.getLength() - 1));
   PartialDiagnostic PD(DiagID, Ctx.getDiagAllocator());
   PD << Context.getHeaderInfos().front().Header
-     << FixItHint::CreateReplacement(SourceRange(Begin, End),
+     << FixItHint::CreateReplacement(CharSourceRange::getCharRange(Begin, End),
                                      Placed.getReplacementText());
   Correction.addExtraDiagnostic(std::move(PD));
 }
@@ -153,8 +153,8 @@ bool IncludeFixerSemaSource::MaybeDiagnoseMissingCompleteType(
     return false;
 
   clang::ASTContext &context = CI->getASTContext();
-  std::string QueryString =
-      T.getUnqualifiedType().getAsString(context.getPrintingPolicy());
+  std::string QueryString = QualType(T->getUnqualifiedDesugaredType(), 0)
+                                .getAsString(context.getPrintingPolicy());
   DEBUG(llvm::dbgs() << "Query missing complete type '" << QueryString << "'");
   // Pass an empty range here since we don't add qualifier in this case.
   std::vector<find_all_symbols::SymbolInfo> MatchedSymbols =
@@ -279,9 +279,9 @@ clang::TypoCorrection IncludeFixerSemaSource::CorrectTypo(
   std::vector<find_all_symbols::SymbolInfo> MatchedSymbols =
       query(QueryString, TypoScopeString, SymbolRange);
 
-  clang::TypoCorrection Correction(Typo.getName());
-  Correction.setCorrectionRange(SS, Typo);
   if (!MatchedSymbols.empty() && GenerateDiagnostics) {
+    TypoCorrection Correction(Typo.getName());
+    Correction.setCorrectionRange(SS, Typo);
     FileID FID = SM.getFileID(Typo.getLoc());
     StringRef Code = SM.getBufferData(FID);
     SourceLocation StartOfFile = SM.getLocForStartOfFile(FID);
@@ -290,8 +290,9 @@ clang::TypoCorrection IncludeFixerSemaSource::CorrectTypo(
         getIncludeFixerContext(SM, CI->getPreprocessor().getHeaderSearchInfo(),
                                MatchedSymbols),
         Code, StartOfFile, CI->getASTContext());
+    return Correction;
   }
-  return Correction;
+  return TypoCorrection();
 }
 
 /// Get the minimal include for a given path.
@@ -349,7 +350,7 @@ IncludeFixerSemaSource::query(StringRef Query, StringRef ScopedQualifiers,
   // here. The symbols which have the same ScopedQualifier and RawIdentifier
   // are considered equal. So that include-fixer avoids false positives, and
   // always adds missing qualifiers to correct symbols.
-  if (!QuerySymbolInfos.empty()) {
+  if (!GenerateDiagnostics && !QuerySymbolInfos.empty()) {
     if (ScopedQualifiers == QuerySymbolInfos.front().ScopedQualifiers &&
         Query == QuerySymbolInfos.front().RawIdentifier) {
       QuerySymbolInfos.push_back({Query.str(), ScopedQualifiers, Range});

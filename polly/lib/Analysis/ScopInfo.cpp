@@ -29,10 +29,10 @@
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopIterator.h"
@@ -244,20 +244,23 @@ void ScopArrayInfo::updateElementType(Type *NewElementType) {
   }
 }
 
-bool ScopArrayInfo::updateSizes(ArrayRef<const SCEV *> NewSizes) {
+bool ScopArrayInfo::updateSizes(ArrayRef<const SCEV *> NewSizes,
+                                bool CheckConsistency) {
   int SharedDims = std::min(NewSizes.size(), DimensionSizes.size());
   int ExtraDimsNew = NewSizes.size() - SharedDims;
   int ExtraDimsOld = DimensionSizes.size() - SharedDims;
 
-  for (int i = 0; i < SharedDims; i++) {
-    auto *NewSize = NewSizes[i + ExtraDimsNew];
-    auto *KnownSize = DimensionSizes[i + ExtraDimsOld];
-    if (NewSize && KnownSize && NewSize != KnownSize)
-      return false;
-  }
+  if (CheckConsistency) {
+    for (int i = 0; i < SharedDims; i++) {
+      auto *NewSize = NewSizes[i + ExtraDimsNew];
+      auto *KnownSize = DimensionSizes[i + ExtraDimsOld];
+      if (NewSize && KnownSize && NewSize != KnownSize)
+        return false;
+    }
 
-  if (DimensionSizes.size() >= NewSizes.size())
-    return true;
+    if (DimensionSizes.size() >= NewSizes.size())
+      return true;
+  }
 
   DimensionSizes.clear();
   DimensionSizes.insert(DimensionSizes.begin(), NewSizes.begin(),
@@ -477,8 +480,6 @@ void MemoryAccess::updateDimensionality() {
   }
 
   isl_space_free(ArraySpace);
-
-  assumeNoOutOfBound();
 }
 
 const std::string
@@ -738,8 +739,10 @@ void MemoryAccess::computeBoundsOnAccessRelation(unsigned ElementSize) {
   AccessRelation = isl_map_intersect_range(AccessRelation, AccessRange);
 }
 
-__isl_give isl_map *MemoryAccess::foldAccess(__isl_take isl_map *AccessRelation,
-                                             ScopStmt *Statement) {
+void MemoryAccess::foldAccessRelation() {
+  if (Sizes.size() < 2 || isa<SCEVConstant>(Sizes[1]))
+    return;
+
   int Size = Subscripts.size();
 
   for (int i = Size - 2; i >= 0; --i) {
@@ -785,7 +788,15 @@ __isl_give isl_map *MemoryAccess::foldAccess(__isl_take isl_map *AccessRelation,
     MapOne = isl_map_union(MapOne, MapTwo);
     AccessRelation = isl_map_apply_range(AccessRelation, MapOne);
   }
-  return AccessRelation;
+
+  isl_id *BaseAddrId = getScopArrayInfo()->getBasePtrId();
+  auto Space = Statement->getDomainSpace();
+  AccessRelation = isl_map_set_tuple_id(
+      AccessRelation, isl_dim_in, isl_space_get_tuple_id(Space, isl_dim_set));
+  AccessRelation =
+      isl_map_set_tuple_id(AccessRelation, isl_dim_out, BaseAddrId);
+  AccessRelation = isl_map_gist_domain(AccessRelation, Statement->getDomain());
+  isl_space_free(Space);
 }
 
 /// Check if @p Expr is divisible by @p Size.
@@ -857,9 +868,6 @@ void MemoryAccess::buildAccessRelation(const ScopArrayInfo *SAI) {
     isl_map *SubscriptMap = isl_map_from_pw_aff(Affine);
     AccessRelation = isl_map_flat_range_product(AccessRelation, SubscriptMap);
   }
-
-  if (Sizes.size() >= 2 && !isa<SCEVConstant>(Sizes[1]))
-    AccessRelation = foldAccess(AccessRelation, Statement);
 
   Space = Statement->getDomainSpace();
   AccessRelation = isl_map_set_tuple_id(
@@ -1041,6 +1049,11 @@ bool MemoryAccess::isStrideZero(__isl_take const isl_map *Schedule) const {
 
 bool MemoryAccess::isStrideOne(__isl_take const isl_map *Schedule) const {
   return isStrideX(Schedule, 1);
+}
+
+void MemoryAccess::setAccessRelation(__isl_take isl_map *NewAccess) {
+  isl_map_free(AccessRelation);
+  AccessRelation = NewAccess;
 }
 
 void MemoryAccess::setNewAccessRelation(__isl_take isl_map *NewAccess) {
@@ -1746,68 +1759,17 @@ void Scop::setContext(__isl_take isl_set *NewContext) {
 
 /// Remap parameter values but keep AddRecs valid wrt. invariant loads.
 struct SCEVSensitiveParameterRewriter
-    : public SCEVVisitor<SCEVSensitiveParameterRewriter, const SCEV *> {
+    : public SCEVRewriteVisitor<SCEVSensitiveParameterRewriter> {
   ValueToValueMap &VMap;
-  ScalarEvolution &SE;
 
 public:
   SCEVSensitiveParameterRewriter(ValueToValueMap &VMap, ScalarEvolution &SE)
-      : VMap(VMap), SE(SE) {}
+      : SCEVRewriteVisitor(SE), VMap(VMap) {}
 
   static const SCEV *rewrite(const SCEV *E, ScalarEvolution &SE,
                              ValueToValueMap &VMap) {
     SCEVSensitiveParameterRewriter SSPR(VMap, SE);
     return SSPR.visit(E);
-  }
-
-  const SCEV *visit(const SCEV *E) {
-    return SCEVVisitor<SCEVSensitiveParameterRewriter, const SCEV *>::visit(E);
-  }
-
-  const SCEV *visitConstant(const SCEVConstant *E) { return E; }
-
-  const SCEV *visitTruncateExpr(const SCEVTruncateExpr *E) {
-    return SE.getTruncateExpr(visit(E->getOperand()), E->getType());
-  }
-
-  const SCEV *visitZeroExtendExpr(const SCEVZeroExtendExpr *E) {
-    return SE.getZeroExtendExpr(visit(E->getOperand()), E->getType());
-  }
-
-  const SCEV *visitSignExtendExpr(const SCEVSignExtendExpr *E) {
-    return SE.getSignExtendExpr(visit(E->getOperand()), E->getType());
-  }
-
-  const SCEV *visitAddExpr(const SCEVAddExpr *E) {
-    SmallVector<const SCEV *, 4> Operands;
-    for (int i = 0, e = E->getNumOperands(); i < e; ++i)
-      Operands.push_back(visit(E->getOperand(i)));
-    return SE.getAddExpr(Operands);
-  }
-
-  const SCEV *visitMulExpr(const SCEVMulExpr *E) {
-    SmallVector<const SCEV *, 4> Operands;
-    for (int i = 0, e = E->getNumOperands(); i < e; ++i)
-      Operands.push_back(visit(E->getOperand(i)));
-    return SE.getMulExpr(Operands);
-  }
-
-  const SCEV *visitSMaxExpr(const SCEVSMaxExpr *E) {
-    SmallVector<const SCEV *, 4> Operands;
-    for (int i = 0, e = E->getNumOperands(); i < e; ++i)
-      Operands.push_back(visit(E->getOperand(i)));
-    return SE.getSMaxExpr(Operands);
-  }
-
-  const SCEV *visitUMaxExpr(const SCEVUMaxExpr *E) {
-    SmallVector<const SCEV *, 4> Operands;
-    for (int i = 0, e = E->getNumOperands(); i < e; ++i)
-      Operands.push_back(visit(E->getOperand(i)));
-    return SE.getUMaxExpr(Operands);
-  }
-
-  const SCEV *visitUDivExpr(const SCEVUDivExpr *E) {
-    return SE.getUDivExpr(visit(E->getLHS()), visit(E->getRHS()));
   }
 
   const SCEV *visitAddRecExpr(const SCEVAddRecExpr *E) {
@@ -1887,76 +1849,82 @@ bool Scop::isDominatedBy(const DominatorTree &DT, BasicBlock *BB) const {
   return DT.dominates(BB, getEntry());
 }
 
-void Scop::addUserAssumptions(AssumptionCache &AC, DominatorTree &DT,
-                              LoopInfo &LI) {
+void Scop::addUserAssumptions(DominatorTree &DT, LoopInfo &LI) {
   auto &F = getFunction();
-  for (auto &Assumption : AC.assumptions()) {
-    auto *CI = dyn_cast_or_null<CallInst>(Assumption);
-    if (!CI || CI->getNumArgOperands() != 1)
+
+  // TODO: Walk the DominatorTree from getRegion().getExit() to its root in
+  // order to not iterate over blocks we skip anyways.
+  for (auto &BB : F) {
+    bool InScop = contains(&BB);
+    if (!InScop && !isDominatedBy(DT, &BB))
       continue;
 
-    bool InScop = contains(CI);
-    if (!InScop && !isDominatedBy(DT, CI->getParent()))
-      continue;
-
-    auto *L = LI.getLoopFor(CI->getParent());
-    auto *Val = CI->getArgOperand(0);
-    ParameterSetTy DetectedParams;
-    if (!isAffineConstraint(Val, &R, L, *SE, DetectedParams)) {
-      emitOptimizationRemarkAnalysis(F.getContext(), DEBUG_TYPE, F,
-                                     CI->getDebugLoc(),
-                                     "Non-affine user assumption ignored.");
-      continue;
-    }
-
-    // Collect all newly introduced parameters.
-    ParameterSetTy NewParams;
-    for (auto *Param : DetectedParams) {
-      Param = extractConstantFactor(Param, *SE).second;
-      Param = getRepresentingInvariantLoadSCEV(Param);
-      if (Parameters.count(Param))
+    for (auto &Assumption : BB) {
+      auto *CI = dyn_cast_or_null<IntrinsicInst>(&Assumption);
+      if (!CI || CI->getNumArgOperands() != 1 ||
+          CI->getIntrinsicID() != Intrinsic::assume)
         continue;
-      NewParams.insert(Param);
-    }
 
-    SmallVector<isl_set *, 2> ConditionSets;
-    auto *TI = InScop ? CI->getParent()->getTerminator() : nullptr;
-    auto &Stmt = InScop ? *getStmtFor(CI->getParent()) : *Stmts.begin();
-    auto *Dom = InScop ? getDomainConditions(&Stmt) : isl_set_copy(Context);
-    bool Valid = buildConditionSets(Stmt, Val, TI, L, Dom, ConditionSets);
-    isl_set_free(Dom);
-
-    if (!Valid)
-      continue;
-
-    isl_set *AssumptionCtx = nullptr;
-    if (InScop) {
-      AssumptionCtx = isl_set_complement(isl_set_params(ConditionSets[1]));
-      isl_set_free(ConditionSets[0]);
-    } else {
-      AssumptionCtx = isl_set_complement(ConditionSets[1]);
-      AssumptionCtx = isl_set_intersect(AssumptionCtx, ConditionSets[0]);
-    }
-
-    // Project out newly introduced parameters as they are not otherwise useful.
-    if (!NewParams.empty()) {
-      for (unsigned u = 0; u < isl_set_n_param(AssumptionCtx); u++) {
-        auto *Id = isl_set_get_dim_id(AssumptionCtx, isl_dim_param, u);
-        auto *Param = static_cast<const SCEV *>(isl_id_get_user(Id));
-        isl_id_free(Id);
-
-        if (!NewParams.count(Param))
-          continue;
-
-        AssumptionCtx =
-            isl_set_project_out(AssumptionCtx, isl_dim_param, u--, 1);
+      auto *L = LI.getLoopFor(CI->getParent());
+      auto *Val = CI->getArgOperand(0);
+      ParameterSetTy DetectedParams;
+      if (!isAffineConstraint(Val, &R, L, *SE, DetectedParams)) {
+        emitOptimizationRemarkAnalysis(F.getContext(), DEBUG_TYPE, F,
+                                       CI->getDebugLoc(),
+                                       "Non-affine user assumption ignored.");
+        continue;
       }
-    }
 
-    emitOptimizationRemarkAnalysis(
-        F.getContext(), DEBUG_TYPE, F, CI->getDebugLoc(),
-        "Use user assumption: " + stringFromIslObj(AssumptionCtx));
-    Context = isl_set_intersect(Context, AssumptionCtx);
+      // Collect all newly introduced parameters.
+      ParameterSetTy NewParams;
+      for (auto *Param : DetectedParams) {
+        Param = extractConstantFactor(Param, *SE).second;
+        Param = getRepresentingInvariantLoadSCEV(Param);
+        if (Parameters.count(Param))
+          continue;
+        NewParams.insert(Param);
+      }
+
+      SmallVector<isl_set *, 2> ConditionSets;
+      auto *TI = InScop ? CI->getParent()->getTerminator() : nullptr;
+      auto &Stmt = InScop ? *getStmtFor(CI->getParent()) : *Stmts.begin();
+      auto *Dom = InScop ? getDomainConditions(&Stmt) : isl_set_copy(Context);
+      bool Valid = buildConditionSets(Stmt, Val, TI, L, Dom, ConditionSets);
+      isl_set_free(Dom);
+
+      if (!Valid)
+        continue;
+
+      isl_set *AssumptionCtx = nullptr;
+      if (InScop) {
+        AssumptionCtx = isl_set_complement(isl_set_params(ConditionSets[1]));
+        isl_set_free(ConditionSets[0]);
+      } else {
+        AssumptionCtx = isl_set_complement(ConditionSets[1]);
+        AssumptionCtx = isl_set_intersect(AssumptionCtx, ConditionSets[0]);
+      }
+
+      // Project out newly introduced parameters as they are not otherwise
+      // useful.
+      if (!NewParams.empty()) {
+        for (unsigned u = 0; u < isl_set_n_param(AssumptionCtx); u++) {
+          auto *Id = isl_set_get_dim_id(AssumptionCtx, isl_dim_param, u);
+          auto *Param = static_cast<const SCEV *>(isl_id_get_user(Id));
+          isl_id_free(Id);
+
+          if (!NewParams.count(Param))
+            continue;
+
+          AssumptionCtx =
+              isl_set_project_out(AssumptionCtx, isl_dim_param, u--, 1);
+        }
+      }
+
+      emitOptimizationRemarkAnalysis(
+          F.getContext(), DEBUG_TYPE, F, CI->getDebugLoc(),
+          "Use user assumption: " + stringFromIslObj(AssumptionCtx));
+      Context = isl_set_intersect(Context, AssumptionCtx);
+    }
   }
 }
 
@@ -3141,14 +3109,148 @@ Scop::Scop(Region &R, ScalarEvolution &ScalarEvolution, LoopInfo &LI,
   buildContext();
 }
 
-void Scop::init(AliasAnalysis &AA, AssumptionCache &AC, DominatorTree &DT,
-                LoopInfo &LI) {
+void Scop::foldSizeConstantsToRight() {
+  isl_union_set *Accessed = isl_union_map_range(getAccesses());
+
+  for (auto Array : arrays()) {
+    if (Array->getNumberOfDimensions() <= 1)
+      continue;
+
+    isl_space *Space = Array->getSpace();
+
+    Space = isl_space_align_params(Space, isl_union_set_get_space(Accessed));
+
+    if (!isl_union_set_contains(Accessed, Space)) {
+      isl_space_free(Space);
+      continue;
+    }
+
+    isl_set *Elements = isl_union_set_extract_set(Accessed, Space);
+
+    isl_map *Transform =
+        isl_map_universe(isl_space_map_from_set(Array->getSpace()));
+
+    std::vector<int> Int;
+
+    int Dims = isl_set_dim(Elements, isl_dim_set);
+    for (int i = 0; i < Dims; i++) {
+      isl_set *DimOnly =
+          isl_set_project_out(isl_set_copy(Elements), isl_dim_set, 0, i);
+      DimOnly = isl_set_project_out(DimOnly, isl_dim_set, 1, Dims - i - 1);
+      DimOnly = isl_set_lower_bound_si(DimOnly, isl_dim_set, 0, 0);
+
+      isl_basic_set *DimHull = isl_set_affine_hull(DimOnly);
+
+      if (i == Dims - 1) {
+        Int.push_back(1);
+        Transform = isl_map_equate(Transform, isl_dim_in, i, isl_dim_out, i);
+        isl_basic_set_free(DimHull);
+        continue;
+      }
+
+      if (isl_basic_set_dim(DimHull, isl_dim_div) == 1) {
+        isl_aff *Diff = isl_basic_set_get_div(DimHull, 0);
+        isl_val *Val = isl_aff_get_denominator_val(Diff);
+        isl_aff_free(Diff);
+
+        int ValInt = 1;
+
+        if (isl_val_is_int(Val))
+          ValInt = isl_val_get_num_si(Val);
+        isl_val_free(Val);
+
+        Int.push_back(ValInt);
+
+        isl_constraint *C = isl_constraint_alloc_equality(
+            isl_local_space_from_space(isl_map_get_space(Transform)));
+        C = isl_constraint_set_coefficient_si(C, isl_dim_out, i, ValInt);
+        C = isl_constraint_set_coefficient_si(C, isl_dim_in, i, -1);
+        Transform = isl_map_add_constraint(Transform, C);
+        isl_basic_set_free(DimHull);
+        continue;
+      }
+
+      isl_basic_set *ZeroSet = isl_basic_set_copy(DimHull);
+      ZeroSet = isl_basic_set_fix_si(ZeroSet, isl_dim_set, 0, 0);
+
+      int ValInt = 1;
+      if (isl_basic_set_is_equal(ZeroSet, DimHull)) {
+        ValInt = 0;
+      }
+
+      Int.push_back(ValInt);
+      Transform = isl_map_equate(Transform, isl_dim_in, i, isl_dim_out, i);
+      isl_basic_set_free(DimHull);
+      isl_basic_set_free(ZeroSet);
+    }
+
+    isl_set *MappedElements = isl_map_domain(isl_map_copy(Transform));
+
+    if (!isl_set_is_subset(Elements, MappedElements)) {
+      isl_set_free(Elements);
+      isl_set_free(MappedElements);
+      isl_map_free(Transform);
+      continue;
+    }
+
+    isl_set_free(MappedElements);
+
+    bool CanFold = true;
+
+    if (Int[0] <= 1)
+      CanFold = false;
+
+    unsigned NumDims = Array->getNumberOfDimensions();
+    for (unsigned i = 1; i < NumDims - 1; i++)
+      if (Int[0] != Int[i] && Int[i])
+        CanFold = false;
+
+    if (!CanFold) {
+      isl_set_free(Elements);
+      isl_map_free(Transform);
+      continue;
+    }
+
+    isl_map_dump(Transform);
+
+    for (auto &Access : AccessFunctions)
+      if (Access->getScopArrayInfo() == Array)
+        Access->setAccessRelation(isl_map_apply_range(
+            Access->getAccessRelation(), isl_map_copy(Transform)));
+
+    isl_map_free(Transform);
+
+    std::vector<const SCEV *> Sizes;
+    for (unsigned i = 0; i < NumDims; i++) {
+      auto Size = Array->getDimensionSize(i);
+
+      if (i == NumDims - 1)
+        Size = SE->getMulExpr(Size, SE->getConstant(Size->getType(), Int[0]));
+      Sizes.push_back(Size);
+    }
+
+    Array->updateSizes(Sizes, false /* CheckConsistency */);
+
+    isl_set_free(Elements);
+  }
+  isl_union_set_free(Accessed);
+  return;
+}
+
+void Scop::finalizeAccesses() {
+  updateAccessDimensionality();
+  foldSizeConstantsToRight();
+  foldAccessRelations();
+  assumeNoOutOfBounds();
+}
+
+void Scop::init(AliasAnalysis &AA, DominatorTree &DT, LoopInfo &LI) {
   buildInvariantEquivalenceClasses();
 
   if (!buildDomains(&R, DT, LI))
     return;
 
-  addUserAssumptions(AC, DT, LI);
+  addUserAssumptions(DT, LI);
 
   // Remove empty statements.
   // Exit early in case there are no executable statements left in this scop.
@@ -3160,6 +3262,10 @@ void Scop::init(AliasAnalysis &AA, AssumptionCache &AC, DominatorTree &DT,
   for (ScopStmt &Stmt : Stmts)
     Stmt.init(LI);
 
+  // Check early for a feasible runtime context.
+  if (!hasFeasibleRuntimeContext())
+    return;
+
   // Check early for profitability. Afterwards it cannot change anymore,
   // only the runtime context could become infeasible.
   if (!isProfitable()) {
@@ -3169,7 +3275,8 @@ void Scop::init(AliasAnalysis &AA, AssumptionCache &AC, DominatorTree &DT,
 
   buildSchedule(LI);
 
-  updateAccessDimensionality();
+  finalizeAccesses();
+
   realignParams();
   addUserContext();
 
@@ -3188,10 +3295,8 @@ void Scop::init(AliasAnalysis &AA, AssumptionCache &AC, DominatorTree &DT,
 
   // Check late for a feasible runtime context because profitability did not
   // change.
-  if (!hasFeasibleRuntimeContext()) {
-    invalidate(PROFITABLE, DebugLoc());
+  if (!hasFeasibleRuntimeContext())
     return;
-  }
 }
 
 Scop::~Scop() {
@@ -3255,6 +3360,18 @@ void Scop::updateAccessDimensionality() {
   for (auto &Stmt : *this)
     for (auto &Access : Stmt)
       Access->updateDimensionality();
+}
+
+void Scop::foldAccessRelations() {
+  for (auto &Stmt : *this)
+    for (auto &Access : Stmt)
+      Access->foldAccessRelation();
+}
+
+void Scop::assumeNoOutOfBounds() {
+  for (auto &Stmt : *this)
+    for (auto &Access : Stmt)
+      Access->assumeNoOutOfBound();
 }
 
 void Scop::simplifySCoP(bool AfterHoisting) {
@@ -3662,9 +3779,6 @@ __isl_give isl_set *Scop::getAssumedContext() const {
 bool Scop::isProfitable() const {
   if (PollyProcessUnprofitable)
     return true;
-
-  if (!hasFeasibleRuntimeContext())
-    return false;
 
   if (isEmpty())
     return false;
@@ -4206,18 +4320,19 @@ mapToDimension(__isl_take isl_union_set *USet, int N) {
   return isl_multi_union_pw_aff_from_union_pw_multi_aff(Data.Res);
 }
 
-void Scop::addScopStmt(BasicBlock *BB, Region *R) {
-  if (BB) {
-    Stmts.emplace_back(*this, *BB);
-    auto *Stmt = &Stmts.back();
+void Scop::addScopStmt(BasicBlock *BB) {
+  assert(BB && "Unexpected nullptr!");
+  Stmts.emplace_back(*this, *BB);
+  auto *Stmt = &Stmts.back();
+  StmtMap[BB] = Stmt;
+}
+
+void Scop::addScopStmt(Region *R) {
+  assert(R && "Unexpected nullptr!");
+  Stmts.emplace_back(*this, *R);
+  auto *Stmt = &Stmts.back();
+  for (BasicBlock *BB : R->blocks())
     StmtMap[BB] = Stmt;
-  } else {
-    assert(R && "Either basic block or a region expected.");
-    Stmts.emplace_back(*this, *R);
-    auto *Stmt = &Stmts.back();
-    for (BasicBlock *BB : R->blocks())
-      StmtMap[BB] = Stmt;
-  }
 }
 
 ScopStmt *Scop::addScopStmt(__isl_take isl_map *SourceRel,
@@ -4408,7 +4523,6 @@ void ScopInfoRegionPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequiredTransitive<ScalarEvolutionWrapperPass>();
   AU.addRequiredTransitive<ScopDetection>();
   AU.addRequired<AAResultsWrapperPass>();
-  AU.addRequired<AssumptionCacheTracker>();
   AU.setPreservesAll();
 }
 
@@ -4424,9 +4538,8 @@ bool ScopInfoRegionPass::runOnRegion(Region *R, RGPassManager &RGM) {
   auto &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
   auto const &DL = F->getParent()->getDataLayout();
   auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-  auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(*F);
 
-  ScopBuilder SB(R, AC, AA, DL, DT, LI, SD, SE);
+  ScopBuilder SB(R, AA, DL, DT, LI, SD, SE);
   S = SB.getScop(); // take ownership of scop object
   return false;
 }
@@ -4446,7 +4559,6 @@ INITIALIZE_PASS_BEGIN(ScopInfoRegionPass, "polly-scops",
                       "Polly - Create polyhedral description of Scops", false,
                       false);
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass);
-INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker);
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass);
 INITIALIZE_PASS_DEPENDENCY(RegionInfoPass);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass);
@@ -4464,7 +4576,6 @@ void ScopInfoWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequiredTransitive<ScalarEvolutionWrapperPass>();
   AU.addRequiredTransitive<ScopDetection>();
   AU.addRequired<AAResultsWrapperPass>();
-  AU.addRequired<AssumptionCacheTracker>();
   AU.setPreservesAll();
 }
 
@@ -4476,7 +4587,6 @@ bool ScopInfoWrapperPass::runOnFunction(Function &F) {
   auto &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
   auto const &DL = F.getParent()->getDataLayout();
   auto &DT = getAnalysis<DominatorTreeWrapperPass>().getDomTree();
-  auto &AC = getAnalysis<AssumptionCacheTracker>().getAssumptionCache(F);
 
   /// Create polyhedral descripton of scops for all the valid regions of a
   /// function.
@@ -4485,7 +4595,7 @@ bool ScopInfoWrapperPass::runOnFunction(Function &F) {
     if (!SD.isMaxRegionInScop(*R))
       continue;
 
-    ScopBuilder SB(R, AC, AA, DL, DT, LI, SD, SE);
+    ScopBuilder SB(R, AA, DL, DT, LI, SD, SE);
     std::unique_ptr<Scop> S = SB.getScop();
     if (!S)
       continue;
@@ -4517,7 +4627,6 @@ INITIALIZE_PASS_BEGIN(
     "Polly - Create polyhedral description of all Scops of a function", false,
     false);
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass);
-INITIALIZE_PASS_DEPENDENCY(AssumptionCacheTracker);
 INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass);
 INITIALIZE_PASS_DEPENDENCY(RegionInfoPass);
 INITIALIZE_PASS_DEPENDENCY(ScalarEvolutionWrapperPass);

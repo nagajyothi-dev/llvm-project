@@ -66,6 +66,8 @@ void readLinkerScript(MemoryBufferRef MB);
 // Parses a version script.
 void readVersionScript(MemoryBufferRef MB);
 
+void readDynamicList(MemoryBufferRef MB);
+
 // This enum is used to implement linker script SECTIONS command.
 // https://sourceware.org/binutils/docs/ld/SECTIONS.html#SECTIONS
 enum SectionsCommandKind {
@@ -124,6 +126,7 @@ struct OutputSectionCommand : BaseCommand {
   std::vector<StringRef> Phdrs;
   uint32_t Filler = 0;
   ConstraintKind Constraint = ConstraintKind::NoConstraint;
+  std::string Location;
 };
 
 // This struct represents one section match pattern in SECTIONS() command.
@@ -141,7 +144,7 @@ struct SectionPattern {
 
 struct InputSectionDescription : BaseCommand {
   InputSectionDescription(StringRef FilePattern)
-      : BaseCommand(InputSectionKind), FilePat({FilePattern}) {}
+      : BaseCommand(InputSectionKind), FilePat(FilePattern) {}
 
   static bool classof(const BaseCommand *C);
 
@@ -165,12 +168,12 @@ struct AssertCommand : BaseCommand {
 
 // Represents BYTE(), SHORT(), LONG(), or QUAD().
 struct BytesDataCommand : BaseCommand {
-  BytesDataCommand(uint64_t Data, unsigned Size)
-      : BaseCommand(BytesDataKind), Data(Data), Size(Size) {}
+  BytesDataCommand(Expr E, unsigned Size)
+      : BaseCommand(BytesDataKind), Expression(E), Size(Size) {}
 
   static bool classof(const BaseCommand *C);
 
-  uint64_t Data;
+  Expr Expression;
   unsigned Offset;
   unsigned Size;
 };
@@ -194,7 +197,8 @@ public:
   virtual bool isDefined(StringRef S) = 0;
   virtual bool isAbsolute(StringRef S) = 0;
   virtual const OutputSectionBase *getSymbolSection(StringRef S) = 0;
-  virtual const OutputSectionBase *getOutputSection(StringRef S) = 0;
+  virtual const OutputSectionBase *getOutputSection(const Twine &Loc,
+                                                    StringRef S) = 0;
   virtual uint64_t getOutputSectionSize(StringRef S) = 0;
 };
 
@@ -229,7 +233,7 @@ public:
   void adjustSectionsBeforeSorting();
   void adjustSectionsAfterSorting();
 
-  std::vector<PhdrEntry<ELFT>> createPhdrs();
+  std::vector<PhdrEntry> createPhdrs();
   bool ignoreInterpSection();
 
   uint32_t getFiller(StringRef Name);
@@ -238,14 +242,15 @@ public:
   bool shouldKeep(InputSectionBase<ELFT> *S);
   void assignOffsets(OutputSectionCommand *Cmd);
   void placeOrphanSections();
-  void assignAddresses(std::vector<PhdrEntry<ELFT>> &Phdrs);
+  void assignAddresses(std::vector<PhdrEntry> &Phdrs);
   bool hasPhdrsCommands();
   uint64_t getHeaderSize() override;
   uint64_t getSymbolValue(StringRef S) override;
   bool isDefined(StringRef S) override;
   bool isAbsolute(StringRef S) override;
   const OutputSectionBase *getSymbolSection(StringRef S) override;
-  const OutputSectionBase *getOutputSection(StringRef S) override;
+  const OutputSectionBase *getOutputSection(const Twine &Loc,
+                                            StringRef S) override;
   uint64_t getOutputSectionSize(StringRef S) override;
 
   std::vector<OutputSectionBase *> *OutputSections;
@@ -266,7 +271,7 @@ private:
   ScriptConfiguration &Opt = *ScriptConfig;
 
   std::vector<size_t> getPhdrIndices(StringRef SectionName);
-  size_t getPhdrIndex(StringRef PhdrName);
+  size_t getPhdrIndex(const Twine &Loc, StringRef PhdrName);
 
   uintX_t Dot;
   uintX_t LMAOffset = 0;

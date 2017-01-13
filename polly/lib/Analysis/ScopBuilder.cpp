@@ -59,7 +59,7 @@ void ScopBuilder::buildPHIAccesses(PHINode *PHI, Region *NonAffineSubRegion,
   // the region. If it is not it can only be in the exit block of the region.
   // In this case we model the operands but not the PHI itself.
   auto *Scope = LI.getLoopFor(PHI->getParent());
-  if (!IsExitBlock && canSynthesize(PHI, *scop, &LI, &SE, Scope))
+  if (!IsExitBlock && canSynthesize(PHI, *scop, &SE, Scope))
     return;
 
   // PHI nodes are modeled as if they had been demoted prior to the SCoP
@@ -430,7 +430,7 @@ void ScopBuilder::buildAccessFunctions(Region &SR) {
 void ScopBuilder::buildStmts(Region &SR) {
 
   if (scop->isNonAffineSubRegion(&SR)) {
-    scop->addScopStmt(nullptr, &SR);
+    scop->addScopStmt(&SR);
     return;
   }
 
@@ -438,7 +438,7 @@ void ScopBuilder::buildStmts(Region &SR) {
     if (I->isSubRegion())
       buildStmts(*I->getNodeAs<Region>());
     else
-      scop->addScopStmt(I->getNodeAs<BasicBlock>(), nullptr);
+      scop->addScopStmt(I->getNodeAs<BasicBlock>());
 }
 
 void ScopBuilder::buildAccessFunctions(BasicBlock &BB,
@@ -562,7 +562,7 @@ void ScopBuilder::ensureValueRead(Value *V, BasicBlock *UserBB) {
   // If the instruction can be synthesized and the user is in the region we do
   // not need to add a value dependences.
   auto *Scope = LI.getLoopFor(UserBB);
-  if (canSynthesize(V, *scop, &LI, &SE, Scope))
+  if (canSynthesize(V, *scop, &SE, Scope))
     return;
 
   // Do not build scalar dependences for required invariant loads as we will
@@ -645,7 +645,7 @@ void ScopBuilder::addPHIReadAccess(PHINode *PHI) {
                   ArrayRef<const SCEV *>(), ScopArrayInfo::MK_PHI);
 }
 
-void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
+void ScopBuilder::buildScop(Region &R) {
   scop.reset(new Scop(R, SE, LI, *SD.getDetectionContext(&R)));
 
   buildStmts(R);
@@ -669,12 +669,12 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
       addArrayAccess(MemAccInst(GlobalRead), MemoryAccess::READ, BP,
                      BP->getType(), false, {AF}, {nullptr}, GlobalRead);
 
-  scop->init(AA, AC, DT, LI);
+  scop->init(AA, DT, LI);
 }
 
-ScopBuilder::ScopBuilder(Region *R, AssumptionCache &AC, AliasAnalysis &AA,
-                         const DataLayout &DL, DominatorTree &DT, LoopInfo &LI,
-                         ScopDetection &SD, ScalarEvolution &SE)
+ScopBuilder::ScopBuilder(Region *R, AliasAnalysis &AA, const DataLayout &DL,
+                         DominatorTree &DT, LoopInfo &LI, ScopDetection &SD,
+                         ScalarEvolution &SE)
     : AA(AA), DL(DL), DT(DT), LI(LI), SD(SD), SE(SE) {
 
   Function *F = R->getEntry()->getParent();
@@ -684,7 +684,7 @@ ScopBuilder::ScopBuilder(Region *R, AssumptionCache &AC, AliasAnalysis &AA,
   std::string Msg = "SCoP begins here.";
   emitOptimizationRemarkAnalysis(F->getContext(), DEBUG_TYPE, *F, Beg, Msg);
 
-  buildScop(*R, AC);
+  buildScop(*R);
 
   DEBUG(scop->print(dbgs()));
 
