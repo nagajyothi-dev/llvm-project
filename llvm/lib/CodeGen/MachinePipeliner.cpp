@@ -1742,11 +1742,13 @@ static void computeLiveOuts(MachineFunction &MF, RegPressureTracker &RPTracker,
         unsigned Reg = MO.getReg();
         if (TargetRegisterInfo::isVirtualRegister(Reg)) {
           if (!Uses.count(Reg))
-            LiveOutRegs.push_back(RegisterMaskPair(Reg, 0));
+            LiveOutRegs.push_back(RegisterMaskPair(Reg,
+                                                   LaneBitmask::getNone()));
         } else if (MRI.isAllocatable(Reg)) {
           for (MCRegUnitIterator Units(Reg, TRI); Units.isValid(); ++Units)
             if (!Uses.count(*Units))
-              LiveOutRegs.push_back(RegisterMaskPair(*Units, 0));
+              LiveOutRegs.push_back(RegisterMaskPair(*Units,
+                                                     LaneBitmask::getNone()));
         }
       }
   RPTracker.addLiveRegs(LiveOutRegs);
@@ -3805,8 +3807,7 @@ bool SMSchedule::isLoopCarried(SwingSchedulerDAG *SSD, MachineInstr &Phi) {
     return true;
   unsigned LoopCycle = cycleScheduled(UseSU);
   int LoopStage = stageScheduled(UseSU);
-  return LoopCycle > DefCycle ||
-         (LoopCycle <= DefCycle && LoopStage <= DefStage);
+  return (LoopCycle > DefCycle) || (LoopStage <= DefStage);
 }
 
 /// Return true if the instruction is a definition that is loop carried

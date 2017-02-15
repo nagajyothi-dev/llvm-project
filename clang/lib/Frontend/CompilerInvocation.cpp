@@ -98,6 +98,9 @@ static unsigned getOptimizationLevel(ArgList &Args, InputKind IK,
     if (S == "s" || S == "z" || S.empty())
       return 2;
 
+    if (S == "g")
+      return 1;
+
     return getLastArgIntValue(Args, OPT_O, DefaultOpt, Diags);
   }
 
@@ -927,21 +930,13 @@ static bool parseShowColorsArgs(const ArgList &Args, bool DefaultColor) {
   } ShowColors = DefaultColor ? Colors_Auto : Colors_Off;
   for (Arg *A : Args) {
     const Option &O = A->getOption();
-    if (!O.matches(options::OPT_fcolor_diagnostics) &&
-        !O.matches(options::OPT_fdiagnostics_color) &&
-        !O.matches(options::OPT_fno_color_diagnostics) &&
-        !O.matches(options::OPT_fno_diagnostics_color) &&
-        !O.matches(options::OPT_fdiagnostics_color_EQ))
-      continue;
-
     if (O.matches(options::OPT_fcolor_diagnostics) ||
         O.matches(options::OPT_fdiagnostics_color)) {
       ShowColors = Colors_On;
     } else if (O.matches(options::OPT_fno_color_diagnostics) ||
                O.matches(options::OPT_fno_diagnostics_color)) {
       ShowColors = Colors_Off;
-    } else {
-      assert(O.matches(options::OPT_fdiagnostics_color_EQ));
+    } else if (O.matches(options::OPT_fdiagnostics_color_EQ)) {
       StringRef Value(A->getValue());
       if (Value == "always")
         ShowColors = Colors_On;
@@ -951,10 +946,9 @@ static bool parseShowColorsArgs(const ArgList &Args, bool DefaultColor) {
         ShowColors = Colors_Auto;
     }
   }
-  if (ShowColors == Colors_On ||
-      (ShowColors == Colors_Auto && llvm::sys::Process::StandardErrHasColors()))
-    return true;
-  return false;
+  return ShowColors == Colors_On ||
+         (ShowColors == Colors_Auto &&
+          llvm::sys::Process::StandardErrHasColors());
 }
 
 bool clang::ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
@@ -1111,7 +1105,8 @@ static bool parseTestModuleFileExtensionArg(StringRef Arg,
 }
 
 static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
-                                   DiagnosticsEngine &Diags) {
+                                   DiagnosticsEngine &Diags,
+                                   bool &IsHeaderFile) {
   using namespace options;
   Opts.ProgramAction = frontend::ParseSyntaxOnly;
   if (const Arg *A = Args.getLastArg(OPT_Action_Group)) {
@@ -1358,6 +1353,13 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
     if (DashX == IK_None)
       Diags.Report(diag::err_drv_invalid_value)
         << A->getAsString(Args) << A->getValue();
+    IsHeaderFile = llvm::StringSwitch<bool>(A->getValue())
+      .Case("c-header", true)
+      .Case("cl-header", true)
+      .Case("objective-c-header", true)
+      .Case("c++-header", true)
+      .Case("objective-c++-header", true)
+      .Default(false);
   }
 
   // '-' is the default input if none is given.
@@ -1460,7 +1462,7 @@ static void ParseHeaderSearchArgs(HeaderSearchOptions &Opts, ArgList &Args) {
       Path = Buffer.str();
     }
 
-    Opts.AddPath(Path.c_str(), Group, IsFramework,
+    Opts.AddPath(Path, Group, IsFramework,
                  /*IgnoreSysroot*/ true);
     IsIndexHeaderMap = false;
   }
@@ -1556,13 +1558,15 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     case IK_Asm:
     case IK_C:
     case IK_PreprocessedC:
-    case IK_ObjC:
-    case IK_PreprocessedObjC:
       // The PS4 uses C99 as the default C standard.
       if (T.isPS4())
         LangStd = LangStandard::lang_gnu99;
       else
         LangStd = LangStandard::lang_gnu11;
+      break;
+    case IK_ObjC:
+    case IK_PreprocessedObjC:
+      LangStd = LangStandard::lang_gnu11;
       break;
     case IK_CXX:
     case IK_PreprocessedCXX:
@@ -2345,6 +2349,7 @@ static void ParsePreprocessorOutputArgs(PreprocessorOutputOptions &Opts,
   Opts.ShowLineMarkers = !Args.hasArg(OPT_P);
   Opts.ShowMacroComments = Args.hasArg(OPT_CC);
   Opts.ShowMacros = Args.hasArg(OPT_dM) || Args.hasArg(OPT_dD);
+  Opts.ShowIncludeDirectives = Args.hasArg(OPT_dI);
   Opts.RewriteIncludes = Args.hasArg(OPT_frewrite_includes);
   Opts.UseLineDirectives = Args.hasArg(OPT_fuse_line_directives);
 }
@@ -2376,6 +2381,7 @@ static void ParseTargetArgs(TargetOptions &Opts, ArgList &Args,
   // Use the default target triple if unspecified.
   if (Opts.Triple.empty())
     Opts.Triple = llvm::sys::getDefaultTargetTriple();
+  Opts.OpenCLExtensionsAsWritten = Args.getAllArgValues(OPT_cl_ext_EQ);
 }
 
 bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
@@ -2415,7 +2421,8 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   ParseCommentArgs(LangOpts.CommentOpts, Args);
   ParseFileSystemArgs(Res.getFileSystemOpts(), Args);
   // FIXME: We shouldn't have to pass the DashX option around here
-  InputKind DashX = ParseFrontendArgs(Res.getFrontendOpts(), Args, Diags);
+  InputKind DashX = ParseFrontendArgs(Res.getFrontendOpts(), Args, Diags,
+                                      LangOpts.IsHeaderFile);
   ParseTargetArgs(Res.getTargetOpts(), Args, Diags);
   Success &= ParseCodeGenArgs(Res.getCodeGenOpts(), Args, DashX, Diags,
                               Res.getTargetOpts());

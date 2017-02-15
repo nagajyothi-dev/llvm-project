@@ -596,8 +596,7 @@ static void inferFrameworkLink(Module *Mod, const DirectoryEntry *FrameworkDir,
   // The library name of a framework has more than one possible extension since
   // the introduction of the text-based dynamic library format. We need to check
   // for both before we give up.
-  static const char *frameworkExtensions[] = {"", ".tbd"};
-  for (const auto *extension : frameworkExtensions) {
+  for (const char *extension : {"", ".tbd"}) {
     llvm::sys::path::replace_extension(LibName, extension);
     if (FileMgr.getFile(LibName)) {
       Mod->LinkLibraries.push_back(Module::LinkLibrary(Mod->Name,
@@ -1491,6 +1490,42 @@ void ModuleMapParser::parseModuleDecl() {
     ActiveModule->NoUndeclaredIncludes = true;
   ActiveModule->Directory = Directory;
 
+  if (!ActiveModule->Parent) {
+    StringRef MapFileName(ModuleMapFile->getName());
+    if (MapFileName.endswith("module.private.modulemap") ||
+        MapFileName.endswith("module_private.map")) {
+      // Adding a top-level module from a private modulemap is likely a
+      // user error; we check to see if there's another top-level module
+      // defined in the non-private map in the same dir, and if so emit a
+      // warning.
+      for (auto E = Map.module_begin(); E != Map.module_end(); ++E) {
+        auto const *M = E->getValue();
+        if (!M->Parent &&
+            M->Directory == ActiveModule->Directory &&
+            M->Name != ActiveModule->Name) {
+          Diags.Report(ActiveModule->DefinitionLoc,
+                       diag::warn_mmap_mismatched_top_level_private)
+            << ActiveModule->Name << M->Name;
+          // The pattern we're defending against here is typically due to
+          // a module named FooPrivate which is supposed to be a submodule
+          // called Foo.Private. Emit a fixit in that case.
+          auto D =
+            Diags.Report(ActiveModule->DefinitionLoc,
+                         diag::note_mmap_rename_top_level_private_as_submodule);
+          D << ActiveModule->Name << M->Name;
+          StringRef Bad(ActiveModule->Name);
+          if (Bad.consume_back("Private")) {
+            SmallString<128> Fixed = Bad;
+            Fixed.append(".Private");
+            D << FixItHint::CreateReplacement(ActiveModule->DefinitionLoc,
+                                              Fixed);
+          }
+          break;
+        }
+      }
+    }
+  }
+
   bool Done = false;
   do {
     switch (Tok.Kind) {
@@ -1655,15 +1690,12 @@ void ModuleMapParser::parseExternModuleDecl() {
 ///    was never correct and causes issues now that we check it, so drop it.
 static bool shouldAddRequirement(Module *M, StringRef Feature,
                                  bool &IsRequiresExcludedHack) {
-  static const StringRef DarwinCExcluded[] = {"Darwin", "C", "excluded"};
-  static const StringRef TclPrivate[] = {"Tcl", "Private"};
-  static const StringRef IOKitAVC[] = {"IOKit", "avc"};
-
-  if (Feature == "excluded" && (M->fullModuleNameIs(DarwinCExcluded) ||
-                                M->fullModuleNameIs(TclPrivate))) {
+  if (Feature == "excluded" &&
+      (M->fullModuleNameIs({"Darwin", "C", "excluded"}) ||
+       M->fullModuleNameIs({"Tcl", "Private"}))) {
     IsRequiresExcludedHack = true;
     return false;
-  } else if (Feature == "cplusplus" && M->fullModuleNameIs(IOKitAVC)) {
+  } else if (Feature == "cplusplus" && M->fullModuleNameIs({"IOKit", "avc"})) {
     return false;
   }
 

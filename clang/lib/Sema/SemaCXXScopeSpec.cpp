@@ -801,7 +801,7 @@ bool Sema::BuildCXXNestedNameSpecifier(Scope *S,
   if (!Found.empty()) {
     if (TypeDecl *TD = Found.getAsSingle<TypeDecl>())
       Diag(IdInfo.IdentifierLoc, diag::err_expected_class_or_namespace)
-          << QualType(TD->getTypeForDecl(), 0) << getLangOpts().CPlusPlus;
+          << Context.getTypeDeclType(TD) << getLangOpts().CPlusPlus;
     else {
       Diag(IdInfo.IdentifierLoc, diag::err_expected_class_or_namespace)
           << IdInfo.Identifier << getLangOpts().CPlusPlus;
@@ -1000,6 +1000,11 @@ void Sema::RestoreNestedNameSpecifierAnnotation(void *AnnotationPtr,
 
 bool Sema::ShouldEnterDeclaratorScope(Scope *S, const CXXScopeSpec &SS) {
   assert(SS.isSet() && "Parser passed invalid CXXScopeSpec.");
+
+  // Don't enter a declarator context when the current context is an Objective-C
+  // declaration.
+  if (isa<ObjCContainerDecl>(CurContext) || isa<ObjCMethodDecl>(CurContext))
+    return false;
 
   NestedNameSpecifier *Qualifier = SS.getScopeRep();
 

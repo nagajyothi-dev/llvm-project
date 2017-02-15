@@ -1097,7 +1097,7 @@ public:
   using MemorySSAWalker::getClobberingMemoryAccess;
   MemoryAccess *getClobberingMemoryAccess(MemoryAccess *) override;
   MemoryAccess *getClobberingMemoryAccess(MemoryAccess *,
-                                          MemoryLocation &) override;
+                                          const MemoryLocation &) override;
   void invalidateInfo(MemoryAccess *) override;
 
   /// Whether we call resetClobberWalker() after each time we *actually* walk to
@@ -1463,12 +1463,18 @@ void MemorySSA::OptimizeUses::optimizeUses() {
 }
 
 void MemorySSA::placePHINodes(
-    const SmallPtrSetImpl<BasicBlock *> &DefiningBlocks) {
+    const SmallPtrSetImpl<BasicBlock *> &DefiningBlocks,
+    const DenseMap<const BasicBlock *, unsigned int> &BBNumbers) {
   // Determine where our MemoryPhi's should go
   ForwardIDFCalculator IDFs(*DT);
   IDFs.setDefiningBlocks(DefiningBlocks);
   SmallVector<BasicBlock *, 32> IDFBlocks;
   IDFs.calculate(IDFBlocks);
+
+  std::sort(IDFBlocks.begin(), IDFBlocks.end(),
+            [&BBNumbers](const BasicBlock *A, const BasicBlock *B) {
+              return BBNumbers.lookup(A) < BBNumbers.lookup(B);
+            });
 
   // Now place MemoryPhi nodes.
   for (auto &BB : IDFBlocks) {
@@ -1491,6 +1497,8 @@ void MemorySSA::buildMemorySSA() {
   BasicBlock &StartingPoint = F.getEntryBlock();
   LiveOnEntryDef = make_unique<MemoryDef>(F.getContext(), nullptr, nullptr,
                                           &StartingPoint, NextID++);
+  DenseMap<const BasicBlock *, unsigned int> BBNumbers;
+  unsigned NextBBNum = 0;
 
   // We maintain lists of memory accesses per-block, trading memory for time. We
   // could just look up the memory access for every possible instruction in the
@@ -1500,6 +1508,7 @@ void MemorySSA::buildMemorySSA() {
   // Go through each block, figure out where defs occur, and chain together all
   // the accesses.
   for (BasicBlock &B : F) {
+    BBNumbers[&B] = NextBBNum++;
     bool InsertIntoDef = false;
     AccessList *Accesses = nullptr;
     for (Instruction &I : B) {
@@ -1517,7 +1526,7 @@ void MemorySSA::buildMemorySSA() {
     if (Accesses)
       DefUseBlocks.insert(&B);
   }
-  placePHINodes(DefiningBlocks);
+  placePHINodes(DefiningBlocks, BBNumbers);
 
   // Now do regular SSA renaming on the MemoryDef/MemoryUse. Visited will get
   // filled in with all blocks.
@@ -1589,9 +1598,10 @@ MemoryAccess *MemorySSA::createMemoryAccessInBB(Instruction *I,
   BlockNumberingValid.erase(BB);
   return NewAccess;
 }
-MemoryAccess *MemorySSA::createMemoryAccessBefore(Instruction *I,
-                                                  MemoryAccess *Definition,
-                                                  MemoryAccess *InsertPt) {
+
+MemoryUseOrDef *MemorySSA::createMemoryAccessBefore(Instruction *I,
+                                                    MemoryAccess *Definition,
+                                                    MemoryUseOrDef *InsertPt) {
   assert(I->getParent() == InsertPt->getBlock() &&
          "New and old access must be in the same block");
   MemoryUseOrDef *NewAccess = createDefinedAccess(I, Definition);
@@ -1601,9 +1611,9 @@ MemoryAccess *MemorySSA::createMemoryAccessBefore(Instruction *I,
   return NewAccess;
 }
 
-MemoryAccess *MemorySSA::createMemoryAccessAfter(Instruction *I,
-                                                 MemoryAccess *Definition,
-                                                 MemoryAccess *InsertPt) {
+MemoryUseOrDef *MemorySSA::createMemoryAccessAfter(Instruction *I,
+                                                   MemoryAccess *Definition,
+                                                   MemoryAccess *InsertPt) {
   assert(I->getParent() == InsertPt->getBlock() &&
          "New and old access must be in the same block");
   MemoryUseOrDef *NewAccess = createDefinedAccess(I, Definition);
@@ -1888,21 +1898,19 @@ void MemorySSA::verifyDefUses(Function &F) const {
     }
 
     for (Instruction &I : B) {
-      if (MemoryAccess *MA = getMemoryAccess(&I)) {
-        assert(isa<MemoryUseOrDef>(MA) &&
-               "Found a phi node not attached to a bb");
-        verifyUseInDefs(cast<MemoryUseOrDef>(MA)->getDefiningAccess(), MA);
+      if (MemoryUseOrDef *MA = getMemoryAccess(&I)) {
+        verifyUseInDefs(MA->getDefiningAccess(), MA);
       }
     }
   }
 }
 
-MemoryAccess *MemorySSA::getMemoryAccess(const Value *I) const {
-  return ValueToMemoryAccess.lookup(I);
+MemoryUseOrDef *MemorySSA::getMemoryAccess(const Instruction *I) const {
+  return cast_or_null<MemoryUseOrDef>(ValueToMemoryAccess.lookup(I));
 }
 
 MemoryPhi *MemorySSA::getMemoryAccess(const BasicBlock *BB) const {
-  return cast_or_null<MemoryPhi>(getMemoryAccess((const Value *)BB));
+  return cast_or_null<MemoryPhi>(ValueToMemoryAccess.lookup(cast<Value>(BB)));
 }
 
 /// Perform a local numbering on blocks so that instruction ordering can be
@@ -2059,7 +2067,7 @@ bool MemorySSAPrinterLegacyPass::runOnFunction(Function &F) {
   return false;
 }
 
-char MemorySSAAnalysis::PassID;
+AnalysisKey MemorySSAAnalysis::Key;
 
 MemorySSAAnalysis::Result MemorySSAAnalysis::run(Function &F,
                                                  FunctionAnalysisManager &AM) {
@@ -2163,7 +2171,7 @@ MemoryAccess *MemorySSA::CachingWalker::getClobberingMemoryAccess(
 }
 
 MemoryAccess *MemorySSA::CachingWalker::getClobberingMemoryAccess(
-    MemoryAccess *StartingAccess, MemoryLocation &Loc) {
+    MemoryAccess *StartingAccess, const MemoryLocation &Loc) {
   if (isa<MemoryPhi>(StartingAccess))
     return StartingAccess;
 
@@ -2266,7 +2274,7 @@ DoNothingMemorySSAWalker::getClobberingMemoryAccess(MemoryAccess *MA) {
 }
 
 MemoryAccess *DoNothingMemorySSAWalker::getClobberingMemoryAccess(
-    MemoryAccess *StartingAccess, MemoryLocation &) {
+    MemoryAccess *StartingAccess, const MemoryLocation &) {
   if (auto *Use = dyn_cast<MemoryUseOrDef>(StartingAccess))
     return Use->getDefiningAccess();
   return StartingAccess;

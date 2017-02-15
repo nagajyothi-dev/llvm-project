@@ -69,11 +69,11 @@ struct TestBase {
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
     explicit TestBase(std::initializer_list<int>& il, int = 0) noexcept
-      : value(il.size()) {
+      : value(static_cast<int>(il.size())) {
         ++alive; ++constructed; ++value_constructed;
     }
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    explicit TestBase(std::initializer_list<int>& il, int = 0) noexcept : value(il.size()) {
+    explicit TestBase(std::initializer_list<int>& il, int = 0) noexcept : value(static_cast<int>(il.size())) {
         ++alive; ++constructed; ++value_constructed;
     }
     TestBase& operator=(int xvalue) noexcept {
@@ -135,9 +135,9 @@ struct ValueBase {
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
     constexpr ValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
+    explicit constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(static_cast<int>(il.size())) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
+    constexpr ValueBase(std::initializer_list<int>& il, int = 0) : value(static_cast<int>(il.size())) {}
     TEST_CONSTEXPR_CXX14 ValueBase& operator=(int xvalue) noexcept {
         value = xvalue;
         return *this;
@@ -147,7 +147,7 @@ struct ValueBase {
 protected:
     constexpr static int check_value(int const& val) {
 #if TEST_STD_VER < 14
-      return val == -1 || val == 999 ? TEST_THROW(42) : val;
+      return val == -1 || val == 999 ? (TEST_THROW(42), 0) : val;
 #else
       assert(val != -1); assert(val != 999);
       return val;
@@ -155,7 +155,7 @@ protected:
     }
     constexpr static int check_value(int& val, int val_cp = 0) {
 #if TEST_STD_VER < 14
-      return val_cp = val, val = -1, (val_cp == -1 || val_cp == 999 ? TEST_THROW(42) : val_cp);
+      return val_cp = val, val = -1, (val_cp == -1 || val_cp == 999 ? (TEST_THROW(42), 0) : val_cp);
 #else
       assert(val != -1); assert(val != 999);
       val_cp = val;
@@ -193,9 +193,9 @@ struct TrivialValueBase {
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
     constexpr TrivialValueBase(int, int y) : value(y) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && Explicit, bool>::type = true>
-    explicit constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {}
+    explicit constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(static_cast<int>(il.size())) {}
     template <bool Dummy = true, typename std::enable_if<Dummy && !Explicit, bool>::type = true>
-    constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(il.size()) {};
+    constexpr TrivialValueBase(std::initializer_list<int>& il, int = 0) : value(static_cast<int>(il.size())) {}
     int value;
 protected:
     constexpr TrivialValueBase() noexcept : value(0) {}

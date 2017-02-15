@@ -520,17 +520,17 @@ getUuidAttrOfType(Sema &SemaRef, QualType QT,
   else if (QT->isArrayType())
     Ty = Ty->getBaseElementTypeUnsafe();
 
-  const auto *RD = Ty->getAsCXXRecordDecl();
-  if (!RD)
+  const auto *TD = Ty->getAsTagDecl();
+  if (!TD)
     return;
 
-  if (const auto *Uuid = RD->getMostRecentDecl()->getAttr<UuidAttr>()) {
+  if (const auto *Uuid = TD->getMostRecentDecl()->getAttr<UuidAttr>()) {
     UuidAttrs.insert(Uuid);
     return;
   }
 
   // __uuidof can grab UUIDs from template arguments.
-  if (const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
+  if (const auto *CTSD = dyn_cast<ClassTemplateSpecializationDecl>(TD)) {
     const TemplateArgumentList &TAL = CTSD->getTemplateArgs();
     for (const TemplateArgument &TA : TAL.asArray()) {
       const UuidAttr *UuidForTA = nullptr;
@@ -863,13 +863,8 @@ bool Sema::CheckCXXThrowOperand(SourceLocation ThrowLoc,
       // We don't keep the instantiated default argument expressions around so
       // we must rebuild them here.
       for (unsigned I = 1, E = CD->getNumParams(); I != E; ++I) {
-        // Skip any default arguments that we've already instantiated.
-        if (Context.getDefaultArgExprForConstructor(CD, I))
-          continue;
-
-        Expr *DefaultArg =
-            BuildCXXDefaultArgExpr(ThrowLoc, CD, CD->getParamDecl(I)).get();
-        Context.addDefaultArgExprForConstructor(CD, I, DefaultArg);
+        if (CheckCXXDefaultArgExpr(ThrowLoc, CD, CD->getParamDecl(I)))
+          return true;
       }
     }
   }
@@ -1150,7 +1145,7 @@ bool Sema::CheckCXXThisCapture(SourceLocation Loc, const bool Explicit,
 
   // In the loop below, respect the ByCopy flag only for the closure requesting
   // the capture (i.e. first iteration through the loop below).  Ignore it for
-  // all enclosing closure's upto NumCapturingClosures (since they must be
+  // all enclosing closure's up to NumCapturingClosures (since they must be
   // implicitly capturing the *enclosing  object* by reference (see loop
   // above)).
   assert((!ByCopy ||
@@ -1221,6 +1216,17 @@ Sema::ActOnCXXTypeConstructExpr(ParsedType TypeRep,
   if (!TInfo)
     TInfo = Context.getTrivialTypeSourceInfo(Ty, SourceLocation());
 
+  // Handle errors like: int({0})
+  if (exprs.size() == 1 && !canInitializeWithParenthesizedList(Ty) &&
+      LParenLoc.isValid() && RParenLoc.isValid())
+    if (auto IList = dyn_cast<InitListExpr>(exprs[0])) {
+      Diag(TInfo->getTypeLoc().getLocStart(), diag::err_list_init_in_parens)
+          << Ty << IList->getSourceRange()
+          << FixItHint::CreateRemoval(LParenLoc)
+          << FixItHint::CreateRemoval(RParenLoc);
+      LParenLoc = RParenLoc = SourceLocation();
+    }
+
   auto Result = BuildCXXTypeConstructExpr(TInfo, LParenLoc, exprs, RParenLoc);
   // Avoid creating a non-type-dependent expression that contains typos.
   // Non-type-dependent expressions are liable to be discarded without
@@ -1283,10 +1289,6 @@ Sema::BuildCXXTypeConstructExpr(TypeSourceInfo *TInfo,
   if (!Ty->isVoidType() &&
       RequireCompleteType(TyBeginLoc, ElemTy,
                           diag::err_invalid_incomplete_type_use, FullRange))
-    return ExprError();
-
-  if (RequireNonAbstractType(TyBeginLoc, Ty,
-                             diag::err_allocation_of_abstract_type))
     return ExprError();
 
   InitializedEntity Entity = InitializedEntity::InitializeTemporary(TInfo);
@@ -1562,8 +1564,20 @@ Sema::ActOnCXXNew(SourceLocation StartLoc, bool UseGlobal,
     return ExprError();
 
   SourceRange DirectInitRange;
-  if (ParenListExpr *List = dyn_cast_or_null<ParenListExpr>(Initializer))
+  if (ParenListExpr *List = dyn_cast_or_null<ParenListExpr>(Initializer)) {
     DirectInitRange = List->getSourceRange();
+    // Handle errors like: new int a({0})
+    if (List->getNumExprs() == 1 &&
+        !canInitializeWithParenthesizedList(AllocType))
+      if (auto IList = dyn_cast<InitListExpr>(List->getExpr(0))) {
+        Diag(TInfo->getTypeLoc().getLocStart(), diag::err_list_init_in_parens)
+            << AllocType << List->getSourceRange()
+            << FixItHint::CreateRemoval(List->getLocStart())
+            << FixItHint::CreateRemoval(List->getLocEnd());
+        DirectInitRange = SourceRange();
+        Initializer = IList;
+      }
+  }
 
   return BuildCXXNew(SourceRange(StartLoc, D.getLocEnd()), UseGlobal,
                      PlacementLParen,
@@ -2301,8 +2315,6 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
     // To perform this comparison, we compute the function type that
     // the deallocation function should have, and use that type both
     // for template argument deduction and for comparison purposes.
-    //
-    // FIXME: this comparison should ignore CC and the like.
     QualType ExpectedFunctionType;
     {
       const FunctionProtoType *Proto
@@ -2316,7 +2328,6 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
       FunctionProtoType::ExtProtoInfo EPI;
       // FIXME: This is not part of the standard's rule.
       EPI.Variadic = Proto->isVariadic();
-      EPI.ExceptionSpec.Type = EST_BasicNoexcept;
 
       ExpectedFunctionType
         = Context.getFunctionType(Context.VoidTy, ArgTypes, EPI);
@@ -2326,8 +2337,8 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
                              DEnd = FoundDelete.end();
          D != DEnd; ++D) {
       FunctionDecl *Fn = nullptr;
-      if (FunctionTemplateDecl *FnTmpl
-            = dyn_cast<FunctionTemplateDecl>((*D)->getUnderlyingDecl())) {
+      if (FunctionTemplateDecl *FnTmpl =
+              dyn_cast<FunctionTemplateDecl>((*D)->getUnderlyingDecl())) {
         // Perform template argument deduction to try to match the
         // expected function type.
         TemplateDeductionInfo Info(StartLoc);
@@ -2337,7 +2348,10 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
       } else
         Fn = cast<FunctionDecl>((*D)->getUnderlyingDecl());
 
-      if (Context.hasSameType(Fn->getType(), ExpectedFunctionType))
+      if (Context.hasSameType(adjustCCAndNoReturn(Fn->getType(),
+                                                  ExpectedFunctionType,
+                                                  /*AdjustExcpetionSpec*/true),
+                              ExpectedFunctionType))
         Matches.push_back(std::make_pair(D.getPair(), Fn));
     }
 
@@ -4398,9 +4412,12 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
         // A template constructor is never a copy constructor.
         // FIXME: However, it may actually be selected at the actual overload
         // resolution point.
-        if (isa<FunctionTemplateDecl>(ND))
+        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
           continue;
-        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
+        // UsingDecl itself is not a constructor
+        if (isa<UsingDecl>(ND))
+          continue;
+        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
         if (Constructor->isCopyConstructor(FoundTQs)) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -4434,9 +4451,12 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
       bool FoundConstructor = false;
       for (const auto *ND : Self.LookupConstructors(RD)) {
         // FIXME: In C++0x, a constructor template can be a default constructor.
-        if (isa<FunctionTemplateDecl>(ND))
+        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
           continue;
-        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
+        // UsingDecl itself is not a constructor
+        if (isa<UsingDecl>(ND))
+          continue;
+        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
         if (Constructor->isDefaultConstructor()) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -4960,11 +4980,14 @@ QualType Sema::CheckPointerToMemberOperands(ExprResult &LHS, ExprResult &RHS,
          !RHS.get()->getType()->isPlaceholderType() &&
          "placeholders should have been weeded out by now");
 
-  // The LHS undergoes lvalue conversions if this is ->*.
-  if (isIndirect) {
+  // The LHS undergoes lvalue conversions if this is ->*, and undergoes the
+  // temporary materialization conversion otherwise.
+  if (isIndirect)
     LHS = DefaultLvalueConversion(LHS.get());
-    if (LHS.isInvalid()) return QualType();
-  }
+  else if (LHS.get()->isRValue())
+    LHS = TemporaryMaterializationConversion(LHS.get());
+  if (LHS.isInvalid())
+    return QualType();
 
   // The RHS always undergoes lvalue conversions.
   RHS = DefaultLvalueConversion(RHS.get());
@@ -5176,8 +5199,7 @@ static bool TryClassUnification(Sema &Self, Expr *From, Expr *To,
   //
   // This actually refers very narrowly to the lvalue-to-rvalue conversion, not
   // to the array-to-pointer or function-to-pointer conversions.
-  if (!TTy->getAs<TagType>())
-    TTy = TTy.getUnqualifiedType();
+  TTy = TTy.getNonLValueExprType(Self.Context);
 
   InitializedEntity Entity = InitializedEntity::InitializeTemporary(TTy);
   InitializationSequence InitSeq(Self, Entity, Kind, From);
@@ -5384,13 +5406,19 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
     if (CompareReferenceRelationship(
             QuestionLoc, LTy, RTy, DerivedToBase,
             ObjCConversion, ObjCLifetimeConversion) == Ref_Compatible &&
-        !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion) {
+        !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion &&
+        // [...] subject to the constraint that the reference must bind
+        // directly [...]
+        !RHS.get()->refersToBitField() &&
+        !RHS.get()->refersToVectorElement()) {
       RHS = ImpCastExprToType(RHS.get(), LTy, CK_NoOp, RVK);
       RTy = RHS.get()->getType();
     } else if (CompareReferenceRelationship(
                    QuestionLoc, RTy, LTy, DerivedToBase,
                    ObjCConversion, ObjCLifetimeConversion) == Ref_Compatible &&
-               !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion) {
+               !DerivedToBase && !ObjCConversion && !ObjCLifetimeConversion &&
+               !LHS.get()->refersToBitField() &&
+               !LHS.get()->refersToVectorElement()) {
       LHS = ImpCastExprToType(LHS.get(), RTy, CK_NoOp, LVK);
       LTy = LHS.get()->getType();
     }
@@ -5458,9 +5486,6 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
   if (Context.getCanonicalType(LTy) == Context.getCanonicalType(RTy)) {
     if (LTy->isRecordType()) {
       // The operands have class type. Make a temporary copy.
-      if (RequireNonAbstractType(QuestionLoc, LTy,
-                                 diag::err_allocation_of_abstract_type))
-        return QualType();
       InitializedEntity Entity = InitializedEntity::InitializeTemporary(LTy);
 
       ExprResult LHSCopy = PerformCopyInitialization(Entity,
@@ -6809,6 +6834,16 @@ ExprResult Sema::IgnoredValueConversions(Expr *E) {
         return E;
       E = Res.get();
     }
+
+    // C++1z:
+    //   If the expression is a prvalue after this optional conversion, the
+    //   temporary materialization conversion is applied.
+    //
+    // We skip this step: IR generation is able to synthesize the storage for
+    // itself in the aggregate case, and adding the extra node to the AST is
+    // just clutter.
+    // FIXME: We don't emit lifetime markers for the temporaries due to this.
+    // FIXME: Do any other AST consumers care about this?
     return E;
   }
 
@@ -6879,8 +6914,14 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
 
   assert(!S.isUnevaluatedContext());
   assert(S.CurContext->isDependentContext());
-  assert(CurrentLSI->CallOperator == S.CurContext &&
+#ifndef NDEBUG
+  DeclContext *DC = S.CurContext;
+  while (DC && isa<CapturedDecl>(DC))
+    DC = DC->getParent();
+  assert(
+      CurrentLSI->CallOperator == DC &&
       "The current call operator must be synchronized with Sema's CurContext");
+#endif // NDEBUG
 
   const bool IsFullExprInstantiationDependent = FE->isInstantiationDependent();
 
@@ -7346,7 +7387,8 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
   // and then the full-expression +n + ({ 0; }); ends, but it's too late
   // for us to see that we need to capture n after all.
 
-  LambdaScopeInfo *const CurrentLSI = getCurLambda();
+  LambdaScopeInfo *const CurrentLSI =
+      getCurLambda(/*IgnoreCapturedRegions=*/true);
   // FIXME: PR 17877 showed that getCurLambda() can return a valid pointer
   // even if CurContext is not a lambda call operator. Refer to that Bug Report
   // for an example of the code that might cause this asynchrony.
@@ -7361,7 +7403,10 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
   //     constructor/destructor.
   //  - Teach the handful of places that iterate over FunctionScopes to
   //    stop at the outermost enclosing lexical scope."
-  const bool IsInLambdaDeclContext = isLambdaCallOperator(CurContext);
+  DeclContext *DC = CurContext;
+  while (DC && isa<CapturedDecl>(DC))
+    DC = DC->getParent();
+  const bool IsInLambdaDeclContext = isLambdaCallOperator(DC);
   if (IsInLambdaDeclContext && CurrentLSI &&
       CurrentLSI->hasPotentialCaptures() && !FullExpr.isInvalid())
     CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(FE, CurrentLSI,
@@ -7416,17 +7461,11 @@ Sema::CheckMicrosoftIfExistsSymbol(Scope *S, SourceLocation KeywordLoc,
                                    UnqualifiedId &Name) {
   DeclarationNameInfo TargetNameInfo = GetNameFromUnqualifiedId(Name);
 
-  // Check for unexpanded parameter packs.
-  SmallVector<UnexpandedParameterPack, 4> Unexpanded;
-  collectUnexpandedParameterPacks(SS, Unexpanded);
-  collectUnexpandedParameterPacks(TargetNameInfo, Unexpanded);
-  if (!Unexpanded.empty()) {
-    DiagnoseUnexpandedParameterPacks(KeywordLoc,
-                                     IsIfExists? UPPC_IfExists
-                                               : UPPC_IfNotExists,
-                                     Unexpanded);
+  // Check for an unexpanded parameter pack.
+  auto UPPC = IsIfExists ? UPPC_IfExists : UPPC_IfNotExists;
+  if (DiagnoseUnexpandedParameterPack(SS, UPPC) ||
+      DiagnoseUnexpandedParameterPack(TargetNameInfo, UPPC))
     return IER_Error;
-  }
 
   return CheckMicrosoftIfExistsSymbol(S, SS, TargetNameInfo);
 }

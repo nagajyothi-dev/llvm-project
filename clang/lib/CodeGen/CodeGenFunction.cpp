@@ -466,6 +466,23 @@ static void removeImageAccessQualifier(std::string& TyName) {
   }
 }
 
+// Returns the address space id that should be produced to the
+// kernel_arg_addr_space metadata. This is always fixed to the ids
+// as specified in the SPIR 2.0 specification in order to differentiate
+// for example in clGetKernelArgInfo() implementation between the address
+// spaces with targets without unique mapping to the OpenCL address spaces
+// (basically all single AS CPUs).
+static unsigned ArgInfoAddressSpace(unsigned LangAS) {
+  switch (LangAS) {
+  case LangAS::opencl_global:   return 1;
+  case LangAS::opencl_constant: return 2;
+  case LangAS::opencl_local:    return 3;
+  case LangAS::opencl_generic:  return 4; // Not in SPIR 2.0 specs.
+  default:
+    return 0; // Assume private.
+  }
+}
+
 // OpenCL v1.2 s5.6.4.6 allows the compiler to store kernel argument
 // information in the program executable. The argument information stored
 // includes the argument name, its type, the address and access qualifiers used.
@@ -506,7 +523,7 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
 
       // Get address qualifier.
       addressQuals.push_back(llvm::ConstantAsMetadata::get(Builder.getInt32(
-          ASTCtx.getTargetAddressSpace(pointeeTy.getAddressSpace()))));
+        ArgInfoAddressSpace(pointeeTy.getAddressSpace()))));
 
       // Get argument type name.
       std::string typeName =
@@ -543,8 +560,7 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
       uint32_t AddrSpc = 0;
       bool isPipe = ty->isPipeType();
       if (ty->isImageType() || isPipe)
-        AddrSpc =
-          CGM.getContext().getTargetAddressSpace(LangAS::opencl_global);
+        AddrSpc = ArgInfoAddressSpace(LangAS::opencl_global);
 
       addressQuals.push_back(
           llvm::ConstantAsMetadata::get(Builder.getInt32(AddrSpc)));
@@ -730,6 +746,20 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
     Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
   if (SanOpts.has(SanitizerKind::SafeStack))
     Fn->addFnAttr(llvm::Attribute::SafeStack);
+
+  // Ignore TSan memory acesses from within ObjC/ObjC++ dealloc, initialize,
+  // .cxx_destruct and all of their calees at run time.
+  if (SanOpts.has(SanitizerKind::Thread)) {
+    if (const auto *OMD = dyn_cast_or_null<ObjCMethodDecl>(D)) {
+      IdentifierInfo *II = OMD->getSelector().getIdentifierInfoForSlot(0);
+      if (OMD->getMethodFamily() == OMF_dealloc ||
+          OMD->getMethodFamily() == OMF_initialize ||
+          (OMD->getSelector().isUnarySelector() && II->isStr(".cxx_destruct"))) {
+        Fn->addFnAttr("sanitize_thread_no_checking_at_run_time");
+        Fn->removeFnAttr(llvm::Attribute::SanitizeThread);
+      }
+    }
+  }
 
   // Apply xray attributes to the function (as a string, for now)
   if (D && ShouldXRayInstrumentFunction()) {
@@ -1119,8 +1149,8 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       SanitizerScope SanScope(this);
       llvm::Value *IsFalse = Builder.getFalse();
       EmitCheck(std::make_pair(IsFalse, SanitizerKind::Return),
-                "missing_return", EmitCheckSourceLocation(FD->getLocation()),
-                None);
+                SanitizerHandler::MissingReturn,
+                EmitCheckSourceLocation(FD->getLocation()), None);
     } else if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
       EmitTrapCall(llvm::Intrinsic::trap);
     }
@@ -1828,7 +1858,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
             };
             EmitCheck(std::make_pair(Builder.CreateICmpSGT(Size, Zero),
                                      SanitizerKind::VLABound),
-                      "vla_bound_not_positive", StaticArgs, Size);
+                      SanitizerHandler::VLABoundNotPositive, StaticArgs, Size);
           }
 
           // Always zexting here would be wrong if it weren't
@@ -2079,4 +2109,11 @@ void CodeGenFunction::EmitSanitizerStatReport(llvm::SanitizerStatKind SSK) {
   llvm::IRBuilder<> IRB(Builder.GetInsertBlock(), Builder.GetInsertPoint());
   IRB.SetCurrentDebugLocation(Builder.getCurrentDebugLocation());
   CGM.getSanStats().create(IRB, SSK);
+}
+
+llvm::DebugLoc CodeGenFunction::SourceLocToDebugLoc(SourceLocation Location) {
+  if (CGDebugInfo *DI = getDebugInfo())
+    return DI->SourceLocToDebugLoc(Location);
+
+  return llvm::DebugLoc();
 }

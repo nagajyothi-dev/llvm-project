@@ -14,13 +14,15 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/Utils.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/IR/DataLayout.h"
@@ -101,7 +103,7 @@ public:
                      const clang::TargetOptions &TOpts,
                      const LangOptions &LOpts, Module *M)
       : Diags(_Diags), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts),
-        TheModule(M), CodeGenerationTime("Code Generation Time") {}
+        TheModule(M), CodeGenerationTime("codegen", "Code Generation Time") {}
 
   ~EmitAssemblyHelper() {
     if (CodeGenOpts.DisableFree)
@@ -200,7 +202,9 @@ static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
-  PM.add(createMemorySanitizerPass(CGOpts.SanitizeMemoryTrackOrigins));
+  int TrackOrigins = CGOpts.SanitizeMemoryTrackOrigins;
+  bool Recover = CGOpts.SanitizeRecover.has(SanitizerKind::Memory);
+  PM.add(createMemorySanitizerPass(TrackOrigins, Recover));
 
   // MemorySanitizer inserts complex instrumentation that mostly follows
   // the logic of the original code, but operates on "shadow" values.
@@ -295,9 +299,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
 
   PassManagerBuilderWrapper PMBuilder(CodeGenOpts, LangOpts);
 
-  // Figure out TargetLibraryInfo.
+  // Figure out TargetLibraryInfo.  This needs to be added to MPM and FPM
+  // manually (and not via PMBuilder), since some passes (eg. InstrProfiling)
+  // are inserted before PMBuilder ones - they'd get the default-constructed
+  // TLI with an unknown target otherwise.
   Triple TargetTriple(TheModule->getTargetTriple());
-  PMBuilder.LibraryInfo = createTLII(TargetTriple, CodeGenOpts);
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(TargetTriple, CodeGenOpts));
 
   switch (Inlining) {
   case CodeGenOptions::NoInlining:
@@ -329,6 +337,8 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   PMBuilder.PrepareForThinLTO = CodeGenOpts.EmitSummaryIndex;
   PMBuilder.PrepareForLTO = CodeGenOpts.PrepareForLTO;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
+
+  MPM.add(new TargetLibraryInfoWrapperPass(*TLII));
 
   // Add target-specific passes that need to run as early as possible.
   if (TM)
@@ -413,6 +423,7 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   }
 
   // Set up the per-function pass manager.
+  FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
   if (CodeGenOpts.VerifyModule)
     FPM.add(createVerifierPass());
 
@@ -454,10 +465,8 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   if (CodeGenOpts.hasProfileIRUse())
     PMBuilder.PGOInstrUse = CodeGenOpts.ProfileInstrumentUsePath;
 
-  if (!CodeGenOpts.SampleProfileFile.empty()) {
-    MPM.add(createPruneEHPass());
-    MPM.add(createSampleProfileLoaderPass(CodeGenOpts.SampleProfileFile));
-  }
+  if (!CodeGenOpts.SampleProfileFile.empty())
+    PMBuilder.PGOSampleUse = CodeGenOpts.SampleProfileFile;
 
   PMBuilder.populateFunctionPassManager(FPM);
   PMBuilder.populateModulePassManager(MPM);
@@ -722,14 +731,12 @@ static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
   // If we are performing a ThinLTO importing compile, load the function index
   // into memory and pass it into thinBackend, which will run the function
   // importer and invoke LTO passes.
-  ErrorOr<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
-      llvm::getModuleSummaryIndexForFile(
-          CGOpts.ThinLTOIndexFile,
-          [&](const DiagnosticInfo &DI) { M->getContext().diagnose(DI); });
-  if (std::error_code EC = IndexOrErr.getError()) {
-    std::string Error = EC.message();
-    errs() << "Error loading index file '" << CGOpts.ThinLTOIndexFile
-           << "': " << Error << "\n";
+  Expected<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
+      llvm::getModuleSummaryIndexForFile(CGOpts.ThinLTOIndexFile);
+  if (!IndexOrErr) {
+    logAllUnhandledErrors(IndexOrErr.takeError(), errs(),
+                          "Error loading index file '" +
+                              CGOpts.ThinLTOIndexFile + "': ");
     return;
   }
   std::unique_ptr<ModuleSummaryIndex> CombinedIndex = std::move(*IndexOrErr);
@@ -745,7 +752,7 @@ static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
                                     ImportList);
 
   std::vector<std::unique_ptr<llvm::MemoryBuffer>> OwnedImports;
-  MapVector<llvm::StringRef, llvm::MemoryBufferRef> ModuleMap;
+  MapVector<llvm::StringRef, llvm::BitcodeModule> ModuleMap;
 
   for (auto &I : ImportList) {
     ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> MBOrErr =
@@ -755,7 +762,34 @@ static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
              << "': " << MBOrErr.getError().message() << "\n";
       return;
     }
-    ModuleMap[I.first()] = (*MBOrErr)->getMemBufferRef();
+
+    Expected<std::vector<BitcodeModule>> BMsOrErr =
+        getBitcodeModuleList(**MBOrErr);
+    if (!BMsOrErr) {
+      handleAllErrors(BMsOrErr.takeError(), [&](ErrorInfoBase &EIB) {
+        errs() << "Error loading imported file '" << I.first()
+               << "': " << EIB.message() << '\n';
+      });
+      return;
+    }
+
+    // The bitcode file may contain multiple modules, we want the one with a
+    // summary.
+    bool FoundModule = false;
+    for (BitcodeModule &BM : *BMsOrErr) {
+      Expected<bool> HasSummary = BM.hasSummary();
+      if (HasSummary && *HasSummary) {
+        ModuleMap.insert({I.first(), BM});
+        FoundModule = true;
+        break;
+      }
+    }
+    if (!FoundModule) {
+      errs() << "Error loading imported file '" << I.first()
+             << "': Could not find module summary\n";
+      return;
+    }
+
     OwnedImports.push_back(std::move(*MBOrErr));
   }
   auto AddStream = [&](size_t Task) {

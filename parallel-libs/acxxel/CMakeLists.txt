@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.1)
 
 option(ACXXEL_ENABLE_UNIT_TESTS "enable acxxel unit tests" ON)
+option(ACXXEL_ENABLE_MULTI_DEVICE_UNIT_TESTS "enable acxxel multi-device unit tests" OFF)
 option(ACXXEL_ENABLE_EXAMPLES "enable acxxel examples" OFF)
 option(ACXXEL_ENABLE_DOXYGEN "enable Doxygen for acxxel" OFF)
 option(ACXXEL_ENABLE_CUDA "enable CUDA for acxxel" ON)
@@ -34,7 +35,7 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add warning flags.
-set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-missing-braces")
+set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 
 add_library(
     acxxel

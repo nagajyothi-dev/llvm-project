@@ -15,12 +15,14 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace llvm;
 
@@ -33,7 +35,7 @@ bool GlobalValue::isMaterializable() const {
     return F->isMaterializable();
   return false;
 }
-std::error_code GlobalValue::materialize() {
+Error GlobalValue::materialize() {
   return getParent()->materialize(this);
 }
 
@@ -219,6 +221,26 @@ GlobalObject *GlobalValue::getBaseObject() {
   if (auto *GA = dyn_cast<GlobalAlias>(this))
     return GA->getBaseObject();
   return nullptr;
+}
+
+bool GlobalValue::isAbsoluteSymbolRef() const {
+  auto *GO = dyn_cast<GlobalObject>(this);
+  if (!GO)
+    return false;
+
+  return GO->getMetadata(LLVMContext::MD_absolute_symbol);
+}
+
+Optional<ConstantRange> GlobalValue::getAbsoluteSymbolRange() const {
+  auto *GO = dyn_cast<GlobalObject>(this);
+  if (!GO)
+    return None;
+
+  MDNode *MD = GO->getMetadata(LLVMContext::MD_absolute_symbol);
+  if (!MD)
+    return None;
+
+  return getConstantRangeFromMetadata(*MD);
 }
 
 //===----------------------------------------------------------------------===//

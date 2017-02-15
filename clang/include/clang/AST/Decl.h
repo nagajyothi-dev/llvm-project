@@ -1601,11 +1601,6 @@ private:
   /// no formals.
   ParmVarDecl **ParamInfo;
 
-  /// DeclsInPrototypeScope - Array of pointers to NamedDecls for
-  /// decls defined in the function prototype that are not parameters. E.g.
-  /// 'enum Y' in 'void f(enum Y {AA} x) {}'.
-  ArrayRef<NamedDecl *> DeclsInPrototypeScope;
-
   LazyDeclStmtPtr Body;
 
   // FIXME: This can be packed into the bitfields in DeclContext.
@@ -1631,6 +1626,11 @@ private:
   /// \brief Indicates if the function was a definition but its body was
   /// skipped.
   unsigned HasSkippedBody : 1;
+
+  /// Indicates if the function declaration will have a body, once we're done
+  /// parsing it.  (We don't set it to false when we're done parsing, in the
+  /// hopes this is simpler.)
+  unsigned WillHaveBody : 1;
 
   /// \brief End part of this FunctionDecl's source range.
   ///
@@ -1701,25 +1701,21 @@ private:
 
 protected:
   FunctionDecl(Kind DK, ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
-               const DeclarationNameInfo &NameInfo,
-               QualType T, TypeSourceInfo *TInfo,
-               StorageClass S, bool isInlineSpecified,
+               const DeclarationNameInfo &NameInfo, QualType T,
+               TypeSourceInfo *TInfo, StorageClass S, bool isInlineSpecified,
                bool isConstexprSpecified)
-    : DeclaratorDecl(DK, DC, NameInfo.getLoc(), NameInfo.getName(), T, TInfo,
-                     StartLoc),
-      DeclContext(DK),
-      redeclarable_base(C),
-      ParamInfo(nullptr), Body(),
-      SClass(S),
-      IsInline(isInlineSpecified), IsInlineSpecified(isInlineSpecified),
-      IsVirtualAsWritten(false), IsPure(false), HasInheritedPrototype(false),
-      HasWrittenPrototype(true), IsDeleted(false), IsTrivial(false),
-      IsDefaulted(false), IsExplicitlyDefaulted(false),
-      HasImplicitReturnZero(false), IsLateTemplateParsed(false),
-      IsConstexpr(isConstexprSpecified), UsesSEHTry(false),
-      HasSkippedBody(false), EndRangeLoc(NameInfo.getEndLoc()),
-      TemplateOrSpecialization(),
-      DNLoc(NameInfo.getInfo()) {}
+      : DeclaratorDecl(DK, DC, NameInfo.getLoc(), NameInfo.getName(), T, TInfo,
+                       StartLoc),
+        DeclContext(DK), redeclarable_base(C), ParamInfo(nullptr), Body(),
+        SClass(S), IsInline(isInlineSpecified),
+        IsInlineSpecified(isInlineSpecified), IsVirtualAsWritten(false),
+        IsPure(false), HasInheritedPrototype(false), HasWrittenPrototype(true),
+        IsDeleted(false), IsTrivial(false), IsDefaulted(false),
+        IsExplicitlyDefaulted(false), HasImplicitReturnZero(false),
+        IsLateTemplateParsed(false), IsConstexpr(isConstexprSpecified),
+        UsesSEHTry(false), HasSkippedBody(false), WillHaveBody(false),
+        EndRangeLoc(NameInfo.getEndLoc()), TemplateOrSpecialization(),
+        DNLoc(NameInfo.getInfo()) {}
 
   typedef Redeclarable<FunctionDecl> redeclarable_base;
   FunctionDecl *getNextRedeclarationImpl() override {
@@ -2001,6 +1997,10 @@ public:
   bool hasSkippedBody() const { return HasSkippedBody; }
   void setHasSkippedBody(bool Skipped = true) { HasSkippedBody = Skipped; }
 
+  /// True if this function will eventually have a body, once it's fully parsed.
+  bool willHaveBody() const { return WillHaveBody; }
+  void setWillHaveBody(bool V = true) { WillHaveBody = V; }
+
   void setPreviousDeclaration(FunctionDecl * PrevDecl);
 
   FunctionDecl *getCanonicalDecl() override;
@@ -2044,11 +2044,6 @@ public:
   void setParams(ArrayRef<ParmVarDecl *> NewParamInfo) {
     setParams(getASTContext(), NewParamInfo);
   }
-
-  ArrayRef<NamedDecl *> getDeclsInPrototypeScope() const {
-    return DeclsInPrototypeScope;
-  }
-  void setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls);
 
   /// getMinRequiredArguments - Returns the minimum number of arguments
   /// needed to call this function. This may be fewer than the number of

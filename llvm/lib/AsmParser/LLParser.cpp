@@ -3175,7 +3175,9 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
         return true;
     }
 
-    if (ParseGlobalValueVector(Elts) ||
+    Optional<unsigned> InRangeOp;
+    if (ParseGlobalValueVector(
+            Elts, Opc == Instruction::GetElementPtr ? &InRangeOp : nullptr) ||
         ParseToken(lltok::rparen, "expected ')' in constantexpr"))
       return true;
 
@@ -3191,20 +3193,23 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
             ExplicitTypeLoc,
             "explicit pointee type doesn't match operand's pointee type");
 
+      unsigned GEPWidth =
+          BaseType->isVectorTy() ? BaseType->getVectorNumElements() : 0;
+
       ArrayRef<Constant *> Indices(Elts.begin() + 1, Elts.end());
       for (Constant *Val : Indices) {
         Type *ValTy = Val->getType();
         if (!ValTy->getScalarType()->isIntegerTy())
           return Error(ID.Loc, "getelementptr index must be an integer");
-        if (ValTy->isVectorTy() != BaseType->isVectorTy())
-          return Error(ID.Loc, "getelementptr index type missmatch");
         if (ValTy->isVectorTy()) {
           unsigned ValNumEl = ValTy->getVectorNumElements();
-          unsigned PtrNumEl = BaseType->getVectorNumElements();
-          if (ValNumEl != PtrNumEl)
+          if (GEPWidth && (ValNumEl != GEPWidth))
             return Error(
                 ID.Loc,
                 "getelementptr vector index has a wrong number of elements");
+          // GEPWidth may have been unknown because the base is a scalar,
+          // but it is known now.
+          GEPWidth = ValNumEl;
         }
       }
 
@@ -3214,8 +3219,16 @@ bool LLParser::ParseValID(ValID &ID, PerFunctionState *PFS) {
 
       if (!GetElementPtrInst::getIndexedType(Ty, Indices))
         return Error(ID.Loc, "invalid getelementptr indices");
-      ID.ConstantVal =
-          ConstantExpr::getGetElementPtr(Ty, Elts[0], Indices, InBounds);
+
+      if (InRangeOp) {
+        if (*InRangeOp == 0)
+          return Error(ID.Loc,
+                       "inrange keyword may not appear on pointer operand");
+        --*InRangeOp;
+      }
+
+      ID.ConstantVal = ConstantExpr::getGetElementPtr(Ty, Elts[0], Indices,
+                                                      InBounds, InRangeOp);
     } else if (Opc == Instruction::Select) {
       if (Elts.size() != 3)
         return Error(ID.Loc, "expected three operands to select");
@@ -3298,8 +3311,9 @@ bool LLParser::parseOptionalComdat(StringRef GlobalName, Comdat *&C) {
 
 /// ParseGlobalValueVector
 ///   ::= /*empty*/
-///   ::= TypeAndValue (',' TypeAndValue)*
-bool LLParser::ParseGlobalValueVector(SmallVectorImpl<Constant *> &Elts) {
+///   ::= [inrange] TypeAndValue (',' [inrange] TypeAndValue)*
+bool LLParser::ParseGlobalValueVector(SmallVectorImpl<Constant *> &Elts,
+                                      Optional<unsigned> *InRangeOp) {
   // Empty list.
   if (Lex.getKind() == lltok::rbrace ||
       Lex.getKind() == lltok::rsquare ||
@@ -3307,14 +3321,14 @@ bool LLParser::ParseGlobalValueVector(SmallVectorImpl<Constant *> &Elts) {
       Lex.getKind() == lltok::rparen)
     return false;
 
-  Constant *C;
-  if (ParseGlobalTypeAndValue(C)) return true;
-  Elts.push_back(C);
+  do {
+    if (InRangeOp && !*InRangeOp && EatIfPresent(lltok::kw_inrange))
+      *InRangeOp = Elts.size();
 
-  while (EatIfPresent(lltok::comma)) {
+    Constant *C;
     if (ParseGlobalTypeAndValue(C)) return true;
     Elts.push_back(C);
-  }
+  } while (EatIfPresent(lltok::comma));
 
   return false;
 }
@@ -4092,12 +4106,13 @@ bool LLParser::ParseDINamespace(MDNode *&Result, bool IsDistinct) {
   REQUIRED(scope, MDField, );                                                  \
   OPTIONAL(file, MDField, );                                                   \
   OPTIONAL(name, MDStringField, );                                             \
-  OPTIONAL(line, LineField, );
+  OPTIONAL(line, LineField, );                                                 \
+  OPTIONAL(exportSymbols, MDBoolField, );
   PARSE_MD_FIELDS();
 #undef VISIT_MD_FIELDS
 
   Result = GET_OR_DISTINCT(DINamespace,
-                           (Context, scope.Val, file.Val, name.Val, line.Val));
+  (Context, scope.Val, file.Val, name.Val, line.Val, exportSymbols.Val));
   return false;
 }
 
@@ -4185,8 +4200,7 @@ bool LLParser::ParseDITemplateValueParameter(MDNode *&Result, bool IsDistinct) {
 /// ParseDIGlobalVariable:
 ///   ::= !DIGlobalVariable(scope: !0, name: "foo", linkageName: "foo",
 ///                         file: !1, line: 7, type: !2, isLocal: false,
-///                         isDefinition: true, variable: i32* @foo,
-///                         declaration: !3, align: 8)
+///                         isDefinition: true, declaration: !3, align: 8)
 bool LLParser::ParseDIGlobalVariable(MDNode *&Result, bool IsDistinct) {
 #define VISIT_MD_FIELDS(OPTIONAL, REQUIRED)                                    \
   REQUIRED(name, MDStringField, (/* AllowEmpty */ false));                     \
@@ -4197,7 +4211,6 @@ bool LLParser::ParseDIGlobalVariable(MDNode *&Result, bool IsDistinct) {
   OPTIONAL(type, MDField, );                                                   \
   OPTIONAL(isLocal, MDBoolField, );                                            \
   OPTIONAL(isDefinition, MDBoolField, (true));                                 \
-  OPTIONAL(expr, MDField, );                                                   \
   OPTIONAL(declaration, MDField, );                                            \
   OPTIONAL(align, MDUnsignedField, (0, UINT32_MAX));
   PARSE_MD_FIELDS();
@@ -4206,8 +4219,7 @@ bool LLParser::ParseDIGlobalVariable(MDNode *&Result, bool IsDistinct) {
   Result = GET_OR_DISTINCT(DIGlobalVariable,
                            (Context, scope.Val, name.Val, linkageName.Val,
                             file.Val, line.Val, type.Val, isLocal.Val,
-                            isDefinition.Val, expr.Val, declaration.Val,
-                            align.Val));
+                            isDefinition.Val, declaration.Val, align.Val));
   return false;
 }
 
@@ -4272,6 +4284,21 @@ bool LLParser::ParseDIExpression(MDNode *&Result, bool IsDistinct) {
     return true;
 
   Result = GET_OR_DISTINCT(DIExpression, (Context, Elements));
+  return false;
+}
+
+/// ParseDIGlobalVariableExpression:
+///   ::= !DIGlobalVariableExpression(var: !0, expr: !1)
+bool LLParser::ParseDIGlobalVariableExpression(MDNode *&Result,
+                                               bool IsDistinct) {
+#define VISIT_MD_FIELDS(OPTIONAL, REQUIRED)                                    \
+  REQUIRED(var, MDField, );                                                    \
+  OPTIONAL(expr, MDField, );
+  PARSE_MD_FIELDS();
+#undef VISIT_MD_FIELDS
+
+  Result =
+      GET_OR_DISTINCT(DIGlobalVariableExpression, (Context, var.Val, expr.Val));
   return false;
 }
 
@@ -4448,13 +4475,13 @@ bool LLParser::ConvertValIDToValue(Type *Ty, ValID &ID, Value *&V,
 
     // The lexer has no type info, so builds all half, float, and double FP
     // constants as double.  Fix this here.  Long double does not need this.
-    if (&ID.APFloatVal.getSemantics() == &APFloat::IEEEdouble) {
+    if (&ID.APFloatVal.getSemantics() == &APFloat::IEEEdouble()) {
       bool Ignored;
       if (Ty->isHalfTy())
-        ID.APFloatVal.convert(APFloat::IEEEhalf, APFloat::rmNearestTiesToEven,
+        ID.APFloatVal.convert(APFloat::IEEEhalf(), APFloat::rmNearestTiesToEven,
                               &Ignored);
       else if (Ty->isFloatTy())
-        ID.APFloatVal.convert(APFloat::IEEEsingle, APFloat::rmNearestTiesToEven,
+        ID.APFloatVal.convert(APFloat::IEEEsingle(), APFloat::rmNearestTiesToEven,
                               &Ignored);
     }
     V = ConstantFP::get(Context, ID.APFloatVal);

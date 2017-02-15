@@ -1106,15 +1106,15 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
   }
 
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(CV)) {
-    if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEsingle ||
-        &CFP->getValueAPF().getSemantics() == &APFloat::IEEEdouble) {
+    if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEsingle() ||
+        &CFP->getValueAPF().getSemantics() == &APFloat::IEEEdouble()) {
       // We would like to output the FP constant value in exponential notation,
       // but we cannot do this if doing so will lose precision.  Check here to
       // make sure that we only output it in exponential format if we can parse
       // the value back and get the same value.
       //
       bool ignored;
-      bool isDouble = &CFP->getValueAPF().getSemantics()==&APFloat::IEEEdouble;
+      bool isDouble = &CFP->getValueAPF().getSemantics()==&APFloat::IEEEdouble();
       bool isInf = CFP->getValueAPF().isInfinity();
       bool isNaN = CFP->getValueAPF().isNaN();
       if (!isInf && !isNaN) {
@@ -1131,7 +1131,7 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
             ((StrVal[0] == '-' || StrVal[0] == '+') &&
              (StrVal[1] >= '0' && StrVal[1] <= '9'))) {
           // Reparse stringized version!
-          if (APFloat(APFloat::IEEEdouble, StrVal).convertToDouble() == Val) {
+          if (APFloat(APFloat::IEEEdouble(), StrVal).convertToDouble() == Val) {
             Out << StrVal;
             return;
           }
@@ -1146,7 +1146,7 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
       APFloat apf = CFP->getValueAPF();
       // Floats are represented in ASCII IR as double, convert.
       if (!isDouble)
-        apf.convert(APFloat::IEEEdouble, APFloat::rmNearestTiesToEven,
+        apf.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven,
                           &ignored);
       Out << format_hex(apf.bitcastToAPInt().getZExtValue(), 0, /*Upper=*/true);
       return;
@@ -1157,26 +1157,26 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
     // fixed number of hex digits.
     Out << "0x";
     APInt API = CFP->getValueAPF().bitcastToAPInt();
-    if (&CFP->getValueAPF().getSemantics() == &APFloat::x87DoubleExtended) {
+    if (&CFP->getValueAPF().getSemantics() == &APFloat::x87DoubleExtended()) {
       Out << 'K';
       Out << format_hex_no_prefix(API.getHiBits(16).getZExtValue(), 4,
                                   /*Upper=*/true);
       Out << format_hex_no_prefix(API.getLoBits(64).getZExtValue(), 16,
                                   /*Upper=*/true);
       return;
-    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEquad) {
+    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEquad()) {
       Out << 'L';
       Out << format_hex_no_prefix(API.getLoBits(64).getZExtValue(), 16,
                                   /*Upper=*/true);
       Out << format_hex_no_prefix(API.getHiBits(64).getZExtValue(), 16,
                                   /*Upper=*/true);
-    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::PPCDoubleDouble) {
+    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::PPCDoubleDouble()) {
       Out << 'M';
       Out << format_hex_no_prefix(API.getLoBits(64).getZExtValue(), 16,
                                   /*Upper=*/true);
       Out << format_hex_no_prefix(API.getHiBits(64).getZExtValue(), 16,
                                   /*Upper=*/true);
-    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEhalf) {
+    } else if (&CFP->getValueAPF().getSemantics() == &APFloat::IEEEhalf()) {
       Out << 'H';
       Out << format_hex_no_prefix(API.getZExtValue(), 4,
                                   /*Upper=*/true);
@@ -1320,12 +1320,18 @@ static void WriteConstantInternal(raw_ostream &Out, const Constant *CV,
                         static_cast<CmpInst::Predicate>(CE->getPredicate()));
     Out << " (";
 
+    Optional<unsigned> InRangeOp;
     if (const GEPOperator *GEP = dyn_cast<GEPOperator>(CE)) {
       TypePrinter.print(GEP->getSourceElementType(), Out);
       Out << ", ";
+      InRangeOp = GEP->getInRangeIndex();
+      if (InRangeOp)
+        ++*InRangeOp;
     }
 
     for (User::const_op_iterator OI=CE->op_begin(); OI != CE->op_end(); ++OI) {
+      if (InRangeOp && unsigned(OI - CE->op_begin()) == *InRangeOp)
+        Out << "inrange ";
       TypePrinter.print((*OI)->getType(), Out);
       Out << ' ';
       WriteAsOperandInternal(Out, *OI, &TypePrinter, Machine, Context);
@@ -1740,6 +1746,7 @@ static void writeDINamespace(raw_ostream &Out, const DINamespace *N,
   Printer.printMetadata("scope", N->getRawScope(), /* ShouldSkipNull */ false);
   Printer.printMetadata("file", N->getRawFile());
   Printer.printInt("line", N->getLine());
+  Printer.printBool("exportSymbols", N->getExportSymbols(), false);
   Out << ")";
 }
 
@@ -1820,7 +1827,6 @@ static void writeDIGlobalVariable(raw_ostream &Out, const DIGlobalVariable *N,
   Printer.printMetadata("type", N->getRawType());
   Printer.printBool("isLocal", N->isLocalToUnit());
   Printer.printBool("isDefinition", N->isDefinition());
-  Printer.printMetadata("expr", N->getExpr());
   Printer.printMetadata("declaration", N->getRawStaticDataMemberDeclaration());
   Printer.printInt("align", N->getAlignInBits());
   Out << ")";
@@ -1860,6 +1866,18 @@ static void writeDIExpression(raw_ostream &Out, const DIExpression *N,
     for (const auto &I : N->getElements())
       Out << FS << I;
   }
+  Out << ")";
+}
+
+static void writeDIGlobalVariableExpression(raw_ostream &Out,
+                                            const DIGlobalVariableExpression *N,
+                                            TypePrinting *TypePrinter,
+                                            SlotTracker *Machine,
+                                            const Module *Context) {
+  Out << "!DIGlobalVariableExpression(";
+  MDFieldPrinter Printer(Out, TypePrinter, Machine, Context);
+  Printer.printMetadata("var", N->getVariable());
+  Printer.printMetadata("expr", N->getExpression());
   Out << ")";
 }
 

@@ -92,12 +92,35 @@ void Preprocessor::appendMacroDirective(IdentifierInfo *II, MacroDirective *MD){
 }
 
 void Preprocessor::setLoadedMacroDirective(IdentifierInfo *II,
+                                           MacroDirective *ED,
                                            MacroDirective *MD) {
+  // Normally, when a macro is defined, it goes through appendMacroDirective()
+  // above, which chains a macro to previous defines, undefs, etc.
+  // However, in a pch, the whole macro history up to the end of the pch is
+  // stored, so ASTReader goes through this function instead.
+  // However, built-in macros are already registered in the Preprocessor
+  // ctor, and ASTWriter stops writing the macro chain at built-in macros,
+  // so in that case the chain from the pch needs to be spliced to the existing
+  // built-in.
+
   assert(II && MD);
   MacroState &StoredMD = CurSubmoduleState->Macros[II];
-  assert(!StoredMD.getLatest() &&
-         "the macro history was modified before initializing it from a pch");
-  StoredMD = MD;
+
+  if (auto *OldMD = StoredMD.getLatest()) {
+    // shouldIgnoreMacro() in ASTWriter also stops at macros from the
+    // predefines buffer in module builds. However, in module builds, modules
+    // are loaded completely before predefines are processed, so StoredMD
+    // will be nullptr for them when they're loaded. StoredMD should only be
+    // non-nullptr for builtins read from a pch file.
+    assert(OldMD->getMacroInfo()->isBuiltinMacro() &&
+           "only built-ins should have an entry here");
+    assert(!OldMD->getPrevious() && "builtin should only have a single entry");
+    ED->setPrevious(OldMD);
+    StoredMD.setLatest(MD);
+  } else {
+    StoredMD = MD;
+  }
+
   // Setup the identifier as having associated macro history.
   II->setHasMacroDefinition(true);
   if (!MD->isDefined() && LeafModuleMacros.find(II) == LeafModuleMacros.end())
@@ -1108,6 +1131,7 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       .Case("cxx_rtti", LangOpts.RTTI && LangOpts.RTTIData)
       .Case("enumerator_attributes", true)
       .Case("nullability", true)
+      .Case("nullability_on_arrays", true)
       .Case("memory_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Memory))
       .Case("thread_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Thread))
       .Case("dataflow_sanitizer", LangOpts.Sanitize.has(SanitizerKind::DataFlow))
@@ -1421,7 +1445,11 @@ static bool EvaluateHasIncludeNext(Token &Tok,
   // Preprocessor::HandleIncludeNextDirective.
   const DirectoryLookup *Lookup = PP.GetCurDirLookup();
   const FileEntry *LookupFromFile = nullptr;
-  if (PP.isInPrimaryFile()) {
+  if (PP.isInPrimaryFile() && PP.getLangOpts().IsHeaderFile) {
+    // If the main file is a header, then it's either for PCH/AST generation,
+    // or libclang opened it. Either way, handle it as a normal include below
+    // and do not complain about __has_include_next.
+  } else if (PP.isInPrimaryFile()) {
     Lookup = nullptr;
     PP.Diag(Tok, diag::pp_include_next_in_primary);
   } else if (PP.getCurrentSubmodule()) {

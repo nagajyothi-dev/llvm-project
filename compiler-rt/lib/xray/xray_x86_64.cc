@@ -1,4 +1,5 @@
 #include "sanitizer_common/sanitizer_common.h"
+#include "xray_defs.h"
 #include "xray_interface_internal.h"
 #include <atomic>
 #include <cstdint>
@@ -16,7 +17,7 @@ static constexpr int64_t MinOffset{std::numeric_limits<int32_t>::min()};
 static constexpr int64_t MaxOffset{std::numeric_limits<int32_t>::max()};
 
 bool patchFunctionEntry(const bool Enable, const uint32_t FuncId,
-                        const XRaySledEntry &Sled) {
+                        const XRaySledEntry &Sled) XRAY_NEVER_INSTRUMENT {
   // Here we do the dance of replacing the following sled:
   //
   // xray_sled_n:
@@ -42,10 +43,8 @@ bool patchFunctionEntry(const bool Enable, const uint32_t FuncId,
   int64_t TrampolineOffset = reinterpret_cast<int64_t>(__xray_FunctionEntry) -
                              (static_cast<int64_t>(Sled.Address) + 11);
   if (TrampolineOffset < MinOffset || TrampolineOffset > MaxOffset) {
-    Report("XRay Entry trampoline (%p) too far from sled (%p); distance = "
-           "%ld\n",
-           __xray_FunctionEntry, reinterpret_cast<void *>(Sled.Address),
-           TrampolineOffset);
+    Report("XRay Entry trampoline (%p) too far from sled (%p)\n",
+           __xray_FunctionEntry, reinterpret_cast<void *>(Sled.Address));
     return false;
   }
   if (Enable) {
@@ -65,7 +64,7 @@ bool patchFunctionEntry(const bool Enable, const uint32_t FuncId,
 }
 
 bool patchFunctionExit(const bool Enable, const uint32_t FuncId,
-                       const XRaySledEntry &Sled) {
+                       const XRaySledEntry &Sled) XRAY_NEVER_INSTRUMENT {
   // Here we do the dance of replacing the following sled:
   //
   // xray_sled_n:
@@ -89,10 +88,8 @@ bool patchFunctionExit(const bool Enable, const uint32_t FuncId,
   int64_t TrampolineOffset = reinterpret_cast<int64_t>(__xray_FunctionExit) -
                              (static_cast<int64_t>(Sled.Address) + 11);
   if (TrampolineOffset < MinOffset || TrampolineOffset > MaxOffset) {
-    Report("XRay Exit trampoline (%p) too far from sled (%p); distance = "
-           "%ld\n",
-           __xray_FunctionExit, reinterpret_cast<void *>(Sled.Address),
-           TrampolineOffset);
+    Report("XRay Exit trampoline (%p) too far from sled (%p)\n",
+           __xray_FunctionExit, reinterpret_cast<void *>(Sled.Address));
     return false;
   }
   if (Enable) {
@@ -112,20 +109,15 @@ bool patchFunctionExit(const bool Enable, const uint32_t FuncId,
 }
 
 bool patchFunctionTailExit(const bool Enable, const uint32_t FuncId,
-                           const XRaySledEntry &Sled) {
+                           const XRaySledEntry &Sled) XRAY_NEVER_INSTRUMENT {
   // Here we do the dance of replacing the tail call sled with a similar
-  // sequence as the entry sled, but calls the exit sled instead, so we can
-  // treat tail call exits as if they were normal exits.
-  //
-  // FIXME: In the future we'd need to distinguish between non-tail exits and
-  // tail exits for better information preservation.
-  int64_t TrampolineOffset = reinterpret_cast<int64_t>(__xray_FunctionExit) -
-                             (static_cast<int64_t>(Sled.Address) + 11);
+  // sequence as the entry sled, but calls the tail exit sled instead.
+  int64_t TrampolineOffset =
+      reinterpret_cast<int64_t>(__xray_FunctionTailExit) -
+      (static_cast<int64_t>(Sled.Address) + 11);
   if (TrampolineOffset < MinOffset || TrampolineOffset > MaxOffset) {
-    Report("XRay Exit trampoline (%p) too far from sled (%p); distance = "
-           "%ld\n",
-           __xray_FunctionExit, reinterpret_cast<void *>(Sled.Address),
-           TrampolineOffset);
+    Report("XRay Exit trampoline (%p) too far from sled (%p)\n",
+           __xray_FunctionExit, reinterpret_cast<void *>(Sled.Address));
     return false;
   }
   if (Enable) {

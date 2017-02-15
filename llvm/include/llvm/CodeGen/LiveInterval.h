@@ -57,7 +57,7 @@ namespace llvm {
       : id(i), def(d)
     { }
 
-    /// VNInfo construtor, copies values from orig, except for the value number.
+    /// VNInfo constructor, copies values from orig, except for the value number.
     VNInfo(unsigned i, const VNInfo &orig)
       : id(i), def(orig.def)
     { }
@@ -672,7 +672,7 @@ namespace llvm {
         P = P->Next;
         return *this;
       }
-      SingleLinkedListIterator<T> &operator++(int) {
+      SingleLinkedListIterator<T> operator++(int) {
         SingleLinkedListIterator res = *this;
         ++*this;
         return res;

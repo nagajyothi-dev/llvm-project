@@ -99,6 +99,8 @@ def FeatureSlowBTMem : SubtargetFeature<"slow-bt-mem", "IsBTMemSlow", "true",
                                        "Bit testing of memory is slow">;
 def FeatureSlowSHLD : SubtargetFeature<"slow-shld", "IsSHLDSlow", "true",
                                        "SHLD instruction is slow">;
+def FeatureSlowPMULLD : SubtargetFeature<"slow-pmulld", "IsPMULLDSlow", "true",
+                                        "PMULLD instruction is slow">;
 // FIXME: This should not apply to CPUs that do not have SSE.
 def FeatureSlowUAMem16 : SubtargetFeature<"slow-unaligned-mem-16",
                                 "IsUAMem16Slow", "true",
@@ -141,8 +143,8 @@ def FeatureVLX     : SubtargetFeature<"avx512vl", "HasVLX", "true",
                       "Enable AVX-512 Vector Length eXtensions",
                                       [FeatureAVX512]>;
 def FeatureVBMI     : SubtargetFeature<"avx512vbmi", "HasVBMI", "true",
-                      "Enable AVX-512 Vector Bit Manipulation Instructions",
-                                      [FeatureAVX512]>;
+                      "Enable AVX-512 Vector Byte Manipulation Instructions",
+                                      [FeatureBWI]>;
 def FeatureIFMA     : SubtargetFeature<"avx512ifma", "HasIFMA", "true",
                       "Enable AVX-512 Integer Fused Multiple-Add",
                                       [FeatureAVX512]>;
@@ -403,6 +405,7 @@ class SilvermontProc<string Name> : ProcessorModel<Name, SLMModel, [
   FeatureSlowLEA,
   FeatureSlowIncDec,
   FeatureSlowBTMem,
+  FeatureSlowPMULLD,
   FeatureLAHFSAHF
 ]>;
 def : SilvermontProc<"silvermont">;

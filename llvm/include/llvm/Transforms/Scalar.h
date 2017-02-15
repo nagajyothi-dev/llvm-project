@@ -140,6 +140,13 @@ Pass *createLICMPass();
 
 //===----------------------------------------------------------------------===//
 //
+// LoopSink - This pass sinks invariants from preheader to loop body where
+// frequency is lower than loop preheader.
+//
+Pass *createLoopSinkPass();
+
+//===----------------------------------------------------------------------===//
+//
 // LoopInterchange - This pass interchanges loops to provide a more
 // cache-friendly memory access patterns.
 //
@@ -493,10 +500,7 @@ FunctionPass *createNaryReassociatePass();
 //
 // LoopDistribute - Distribute loops.
 //
-// ProcessAllLoopsByDefault instructs the pass to look for distribution
-// opportunities in all loops unless -enable-loop-distribute or the
-// llvm.loop.distribute.enable metadata data override this default.
-FunctionPass *createLoopDistributePass(bool ProcessAllLoopsByDefault);
+FunctionPass *createLoopDistributePass();
 
 //===----------------------------------------------------------------------===//
 //
