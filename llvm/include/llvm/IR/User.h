@@ -122,7 +122,15 @@ protected:
   }
 
 private:
+  const Use *getHungOffOperands() const {
+    return *(reinterpret_cast<const Use *const *>(this) - 1);
+  }
+
   Use *&getHungOffOperands() { return *(reinterpret_cast<Use **>(this) - 1); }
+
+  const Use *getIntrusiveOperands() const {
+    return reinterpret_cast<const Use *>(this) - NumUserOperands;
+  }
 
   Use *getIntrusiveOperands() {
     return reinterpret_cast<Use *>(this) - NumUserOperands;
@@ -135,11 +143,11 @@ private:
   }
 
 public:
-  Use *getOperandList() {
+  const Use *getOperandList() const {
     return HasHungOffUses ? getHungOffOperands() : getIntrusiveOperands();
   }
-  const Use *getOperandList() const {
-    return const_cast<User *>(this)->getOperandList();
+  Use *getOperandList() {
+    return const_cast<Use *>(static_cast<const User *>(this)->getOperandList());
   }
 
   Value *getOperand(unsigned i) const {
@@ -235,6 +243,26 @@ public:
     return value_op_iterator(op_end());
   }
   iterator_range<value_op_iterator> operand_values() {
+    return make_range(value_op_begin(), value_op_end());
+  }
+
+  struct const_value_op_iterator
+      : iterator_adaptor_base<const_value_op_iterator, const_op_iterator,
+                              std::random_access_iterator_tag, const Value *,
+                              ptrdiff_t, const Value *, const Value *> {
+    explicit const_value_op_iterator(const Use *U = nullptr) :
+      iterator_adaptor_base(U) {}
+    const Value *operator*() const { return *I; }
+    const Value *operator->() const { return operator*(); }
+  };
+
+  const_value_op_iterator value_op_begin() const {
+    return const_value_op_iterator(op_begin());
+  }
+  const_value_op_iterator value_op_end() const {
+    return const_value_op_iterator(op_end());
+  }
+  iterator_range<const_value_op_iterator> operand_values() const {
     return make_range(value_op_begin(), value_op_end());
   }
 

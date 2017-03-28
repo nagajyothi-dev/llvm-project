@@ -1,3 +1,7 @@
+// RUN: %clang_builtins %s %librt -o %t && %run %t
+// XFAIL: armhf-target-arch
+// This test fails for armhf (see pr32261)
+
 //===-- ledf2vfp_test.c - Test __ledf2vfp ---------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -19,7 +23,7 @@
 
 extern int __ledf2vfp(double a, double b);
 
-#if __arm__
+#if __arm__ && __VFP_FP__
 int test__ledf2vfp(double a, double b)
 {
     int actual = __ledf2vfp(a, b);
@@ -33,7 +37,7 @@ int test__ledf2vfp(double a, double b)
 
 int main()
 {
-#if __arm__
+#if __arm__ && __VFP_FP__
     if (test__ledf2vfp(0.0, 0.0))
         return 1;
     if (test__ledf2vfp(1.0, 1.0))

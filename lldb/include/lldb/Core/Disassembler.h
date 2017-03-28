@@ -12,6 +12,8 @@
 
 // C Includes
 // C++ Includes
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -22,9 +24,9 @@
 #include "lldb/Core/EmulateInstruction.h"
 #include "lldb/Core/Opcode.h"
 #include "lldb/Core/PluginInterface.h"
-#include "lldb/Host/FileSpec.h"
 #include "lldb/Interpreter/OptionValue.h"
 #include "lldb/Symbol/LineEntry.h"
+#include "lldb/Utility/FileSpec.h"
 #include "lldb/lldb-private.h"
 
 namespace lldb_private {

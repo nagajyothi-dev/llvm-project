@@ -4454,7 +4454,7 @@ static void BuildUniqueMethodName(std::string &Name,
   Name += "__" + MD->getSelector().getAsString();
   // Convert colons to underscores.
   std::string::size_type loc = 0;
-  while ((loc = Name.find(":", loc)) != std::string::npos)
+  while ((loc = Name.find(':', loc)) != std::string::npos)
     Name.replace(loc, 1, "_");
 }
 
@@ -7500,7 +7500,7 @@ Stmt *RewriteModernObjC::RewriteObjCIvarRefExpr(ObjCIvarRefExpr *IV) {
       BinaryOperator *addExpr = 
         new (Context) BinaryOperator(castExpr, DRE, BO_Add, 
                                      Context->getPointerType(Context->CharTy),
-                                     VK_RValue, OK_Ordinary, SourceLocation(), false);
+                                     VK_RValue, OK_Ordinary, SourceLocation(), FPOptions());
       // Don't forget the parens to enforce the proper binding.
       ParenExpr *PE = new (Context) ParenExpr(SourceLocation(),
                                               SourceLocation(),

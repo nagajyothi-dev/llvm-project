@@ -419,10 +419,10 @@ class BitcodeReader : public BitcodeReaderBase, public GVMaterializer {
 
   /// The set of attributes by index.  Index zero in the file is for null, and
   /// is thus not represented here.  As such all indices are off by one.
-  std::vector<AttributeSet> MAttributes;
+  std::vector<AttributeList> MAttributes;
 
   /// The set of attribute groups.
-  std::map<unsigned, AttributeSet> MAttributeGroups;
+  std::map<unsigned, AttributeList> MAttributeGroups;
 
   /// While parsing a function body, this is a list of the basic blocks for the
   /// function.
@@ -512,7 +512,7 @@ private:
   }
 
   Metadata *getFnMetadataByID(unsigned ID) {
-    return MDLoader->getMetadataFwdRef(ID);
+    return MDLoader->getMetadataFwdRefOrLoad(ID);
   }
 
   BasicBlock *getBasicBlock(unsigned ID) const {
@@ -520,10 +520,10 @@ private:
     return FunctionBBs[ID];
   }
 
-  AttributeSet getAttributes(unsigned i) const {
+  AttributeList getAttributes(unsigned i) const {
     if (i-1 < MAttributes.size())
       return MAttributes[i-1];
-    return AttributeSet();
+    return AttributeList();
   }
 
   /// Read a value/type pair out of the specified record from slot 'Slot'.
@@ -801,12 +801,12 @@ static GlobalValueSummary::GVFlags getDecodedGVSummaryFlags(uint64_t RawFlags,
   // to getDecodedLinkage() will need to be taken into account here as above.
   auto Linkage = GlobalValue::LinkageTypes(RawFlags & 0xF); // 4 bits
   RawFlags = RawFlags >> 4;
-  bool NoRename = RawFlags & 0x1;
-  bool IsNotViableToInline = RawFlags & 0x2;
-  bool HasInlineAsmMaybeReferencingInternal = RawFlags & 0x4;
-  return GlobalValueSummary::GVFlags(Linkage, NoRename,
-                                     HasInlineAsmMaybeReferencingInternal,
-                                     IsNotViableToInline);
+  bool NotEligibleToImport = (RawFlags & 0x1) || Version < 3;
+  // The LiveRoot flag wasn't introduced until version 3. For dead stripping
+  // to work correctly on earlier versions, we must conservatively treat all
+  // values as live.
+  bool LiveRoot = (RawFlags & 0x2) || Version < 3;
+  return GlobalValueSummary::GVFlags(Linkage, NotEligibleToImport, LiveRoot);
 }
 
 static GlobalValue::VisibilityTypes getDecodedVisibility(unsigned Val) {
@@ -1132,7 +1132,7 @@ Error BitcodeReader::parseAttributeBlock() {
 
   SmallVector<uint64_t, 64> Record;
 
-  SmallVector<AttributeSet, 8> Attrs;
+  SmallVector<AttributeList, 8> Attrs;
 
   // Read all the records.
   while (true) {
@@ -1162,10 +1162,10 @@ Error BitcodeReader::parseAttributeBlock() {
       for (unsigned i = 0, e = Record.size(); i != e; i += 2) {
         AttrBuilder B;
         decodeLLVMAttributesForBitcode(B, Record[i+1]);
-        Attrs.push_back(AttributeSet::get(Context, Record[i], B));
+        Attrs.push_back(AttributeList::get(Context, Record[i], B));
       }
 
-      MAttributes.push_back(AttributeSet::get(Context, Attrs));
+      MAttributes.push_back(AttributeList::get(Context, Attrs));
       Attrs.clear();
       break;
     }
@@ -1173,7 +1173,7 @@ Error BitcodeReader::parseAttributeBlock() {
       for (unsigned i = 0, e = Record.size(); i != e; ++i)
         Attrs.push_back(MAttributeGroups[Record[i]]);
 
-      MAttributes.push_back(AttributeSet::get(Context, Attrs));
+      MAttributes.push_back(AttributeList::get(Context, Attrs));
       Attrs.clear();
       break;
     }
@@ -1391,7 +1391,7 @@ Error BitcodeReader::parseAttributeGroupBlock() {
         }
       }
 
-      MAttributeGroups[GrpID] = AttributeSet::get(Context, Idx, B);
+      MAttributeGroups[GrpID] = AttributeList::get(Context, Idx, B);
       break;
     }
     }
@@ -3840,7 +3840,7 @@ Error BitcodeReader::parseFunctionBody(Function *F) {
       if (Record.size() < 4)
         return error("Invalid record");
       unsigned OpNum = 0;
-      AttributeSet PAL = getAttributes(Record[OpNum++]);
+      AttributeList PAL = getAttributes(Record[OpNum++]);
       unsigned CCInfo = Record[OpNum++];
       BasicBlock *NormalBB = getBasicBlock(Record[OpNum++]);
       BasicBlock *UnwindBB = getBasicBlock(Record[OpNum++]);
@@ -4225,7 +4225,7 @@ Error BitcodeReader::parseFunctionBody(Function *F) {
         return error("Invalid record");
 
       unsigned OpNum = 0;
-      AttributeSet PAL = getAttributes(Record[OpNum++]);
+      AttributeList PAL = getAttributes(Record[OpNum++]);
       unsigned CCInfo = Record[OpNum++];
 
       FastMathFlags FMF;
@@ -4838,15 +4838,25 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
   }
   const uint64_t Version = Record[0];
   const bool IsOldProfileFormat = Version == 1;
-  if (!IsOldProfileFormat && Version != 2)
+  if (Version < 1 || Version > 3)
     return error("Invalid summary version " + Twine(Version) +
-                 ", 1 or 2 expected");
+                 ", 1, 2 or 3 expected");
   Record.clear();
 
   // Keep around the last seen summary to be used when we see an optional
   // "OriginalName" attachement.
   GlobalValueSummary *LastSeenSummary = nullptr;
+  GlobalValue::GUID LastSeenGUID = 0;
   bool Combined = false;
+
+  // We can expect to see any number of type ID information records before
+  // each function summary records; these variables store the information
+  // collected so far so that it can be used to create the summary object.
+  std::vector<GlobalValue::GUID> PendingTypeTests;
+  std::vector<FunctionSummary::VFuncId> PendingTypeTestAssumeVCalls,
+      PendingTypeCheckedLoadVCalls;
+  std::vector<FunctionSummary::ConstVCall> PendingTypeTestAssumeConstVCalls,
+      PendingTypeCheckedLoadConstVCalls;
 
   while (true) {
     BitstreamEntry Entry = Stream.advanceSkippingSubblocks();
@@ -4912,7 +4922,16 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
           ArrayRef<uint64_t>(Record).slice(CallGraphEdgeStartIndex),
           IsOldProfileFormat, HasProfile);
       auto FS = llvm::make_unique<FunctionSummary>(
-          Flags, InstCount, std::move(Refs), std::move(Calls));
+          Flags, InstCount, std::move(Refs), std::move(Calls),
+          std::move(PendingTypeTests), std::move(PendingTypeTestAssumeVCalls),
+          std::move(PendingTypeCheckedLoadVCalls),
+          std::move(PendingTypeTestAssumeConstVCalls),
+          std::move(PendingTypeCheckedLoadConstVCalls));
+      PendingTypeTests.clear();
+      PendingTypeTestAssumeVCalls.clear();
+      PendingTypeCheckedLoadVCalls.clear();
+      PendingTypeTestAssumeConstVCalls.clear();
+      PendingTypeCheckedLoadConstVCalls.clear();
       auto GUID = getGUIDFromValueId(ValueID);
       FS->setModulePath(TheIndex.addModulePath(ModulePath, 0)->first());
       FS->setOriginalName(GUID.second);
@@ -4985,8 +5004,18 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
           IsOldProfileFormat, HasProfile);
       GlobalValue::GUID GUID = getGUIDFromValueId(ValueID).first;
       auto FS = llvm::make_unique<FunctionSummary>(
-          Flags, InstCount, std::move(Refs), std::move(Edges));
+          Flags, InstCount, std::move(Refs), std::move(Edges),
+          std::move(PendingTypeTests), std::move(PendingTypeTestAssumeVCalls),
+          std::move(PendingTypeCheckedLoadVCalls),
+          std::move(PendingTypeTestAssumeConstVCalls),
+          std::move(PendingTypeCheckedLoadConstVCalls));
+      PendingTypeTests.clear();
+      PendingTypeTestAssumeVCalls.clear();
+      PendingTypeCheckedLoadVCalls.clear();
+      PendingTypeTestAssumeConstVCalls.clear();
+      PendingTypeCheckedLoadConstVCalls.clear();
       LastSeenSummary = FS.get();
+      LastSeenGUID = GUID;
       FS->setModulePath(ModuleIdMap[ModuleId]);
       TheIndex.addGlobalValueSummary(GUID, std::move(FS));
       Combined = true;
@@ -5013,6 +5042,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
       AS->setAliasee(AliaseeInModule);
 
       GlobalValue::GUID GUID = getGUIDFromValueId(ValueID).first;
+      LastSeenGUID = GUID;
       TheIndex.addGlobalValueSummary(GUID, std::move(AS));
       Combined = true;
       break;
@@ -5029,6 +5059,7 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
       LastSeenSummary = FS.get();
       FS->setModulePath(ModuleIdMap[ModuleId]);
       GlobalValue::GUID GUID = getGUIDFromValueId(ValueID).first;
+      LastSeenGUID = GUID;
       TheIndex.addGlobalValueSummary(GUID, std::move(FS));
       Combined = true;
       break;
@@ -5039,8 +5070,39 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(
       if (!LastSeenSummary)
         return error("Name attachment that does not follow a combined record");
       LastSeenSummary->setOriginalName(OriginalName);
+      TheIndex.addOriginalName(LastSeenGUID, OriginalName);
       // Reset the LastSeenSummary
       LastSeenSummary = nullptr;
+      LastSeenGUID = 0;
+      break;
+    }
+    case bitc::FS_TYPE_TESTS: {
+      assert(PendingTypeTests.empty());
+      PendingTypeTests.insert(PendingTypeTests.end(), Record.begin(),
+                              Record.end());
+      break;
+    }
+    case bitc::FS_TYPE_TEST_ASSUME_VCALLS: {
+      assert(PendingTypeTestAssumeVCalls.empty());
+      for (unsigned I = 0; I != Record.size(); I += 2)
+        PendingTypeTestAssumeVCalls.push_back({Record[I], Record[I+1]});
+      break;
+    }
+    case bitc::FS_TYPE_CHECKED_LOAD_VCALLS: {
+      assert(PendingTypeCheckedLoadVCalls.empty());
+      for (unsigned I = 0; I != Record.size(); I += 2)
+        PendingTypeCheckedLoadVCalls.push_back({Record[I], Record[I+1]});
+      break;
+    }
+    case bitc::FS_TYPE_TEST_ASSUME_CONST_VCALL: {
+      PendingTypeTestAssumeConstVCalls.push_back(
+          {{Record[0], Record[1]}, {Record.begin() + 2, Record.end()}});
+      break;
+    }
+    case bitc::FS_TYPE_CHECKED_LOAD_CONST_VCALL: {
+      PendingTypeCheckedLoadConstVCalls.push_back(
+          {{Record[0], Record[1]}, {Record.begin() + 2, Record.end()}});
+      break;
     }
     }
   }

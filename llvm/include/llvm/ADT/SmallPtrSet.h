@@ -18,6 +18,7 @@
 #include "llvm/Config/abi-breaking.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/PointerLikeTypeTraits.h"
+#include "llvm/Support/type_traits.h"
 #include <cassert>
 #include <cstddef>
 #include <cstring>
@@ -162,22 +163,38 @@ protected:
   /// return true, otherwise return false.  This is hidden from the client so
   /// that the derived class can check that the right type of pointer is passed
   /// in.
-  bool erase_imp(const void * Ptr);
+  bool erase_imp(const void * Ptr) {
+    const void *const *P = find_imp(Ptr);
+    if (P == EndPointer())
+      return false;
+    
+    const void ** Loc = const_cast<const void **>(P);
+    assert(*Loc == Ptr && "broken find!");
+    *Loc = getTombstoneMarker();
+    NumTombstones++;
+    return true;
+  }
 
-  bool count_imp(const void * Ptr) const {
+  /// Returns the raw pointer needed to construct an iterator.  If element not
+  /// found, this will be EndPointer.  Otherwise, it will be a pointer to the
+  /// slot which stores Ptr;
+  const void *const * find_imp(const void * Ptr) const {
     if (isSmall()) {
       // Linear search for the item.
       for (const void *const *APtr = SmallArray,
                       *const *E = SmallArray + NumNonEmpty; APtr != E; ++APtr)
         if (*APtr == Ptr)
-          return true;
-      return false;
+          return APtr;
+      return EndPointer();
     }
 
     // Big set case.
-    return *FindBucketFor(Ptr) == Ptr;
+    auto *Bucket = FindBucketFor(Ptr);
+    if (*Bucket == Ptr)
+      return Bucket;
+    return EndPointer();
   }
-
+  
 private:
   bool isSmall() const { return CurArray == SmallArray; }
 
@@ -243,11 +260,10 @@ protected:
   }
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
   void RetreatIfNotValid() {
-    --Bucket;
-    assert(Bucket <= End);
+    assert(Bucket >= End);
     while (Bucket != End &&
-           (*Bucket == SmallPtrSetImplBase::getEmptyMarker() ||
-            *Bucket == SmallPtrSetImplBase::getTombstoneMarker())) {
+           (Bucket[-1] == SmallPtrSetImplBase::getEmptyMarker() ||
+            Bucket[-1] == SmallPtrSetImplBase::getTombstoneMarker())) {
       --Bucket;
     }
   }
@@ -272,6 +288,12 @@ public:
   // Most methods provided by baseclass.
 
   const PtrTy operator*() const {
+#if LLVM_ENABLE_ABI_BREAKING_CHECKS
+    if (ReverseIterate<bool>::value) {
+      assert(Bucket > End);
+      return PtrTraits::getFromVoidPointer(const_cast<void *>(Bucket[-1]));
+    }
+#endif
     assert(Bucket < End);
     return PtrTraits::getFromVoidPointer(const_cast<void*>(*Bucket));
   }
@@ -279,6 +301,7 @@ public:
   inline SmallPtrSetIterator& operator++() {          // Preincrement
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
     if (ReverseIterate<bool>::value) {
+      --Bucket;
       RetreatIfNotValid();
       return *this;
     }
@@ -290,12 +313,6 @@ public:
 
   SmallPtrSetIterator operator++(int) {        // Postincrement
     SmallPtrSetIterator tmp = *this;
-#if LLVM_ENABLE_ABI_BREAKING_CHECKS
-    if (ReverseIterate<bool>::value) {
-      --*this;
-      return tmp;
-    }
-#endif
     ++*this;
     return tmp;
   }
@@ -333,7 +350,9 @@ struct RoundUpToPowerOfTwo {
 /// to avoid encoding a particular small size in the interface boundary.
 template <typename PtrType>
 class SmallPtrSetImpl : public SmallPtrSetImplBase {
+  using ConstPtrType = typename add_const_past_pointer<PtrType>::type;
   typedef PointerLikeTypeTraits<PtrType> PtrTraits;
+  typedef PointerLikeTypeTraits<ConstPtrType> ConstPtrTraits;
 
 protected:
   // Constructors that forward to the base.
@@ -357,7 +376,7 @@ public:
   /// the element equal to Ptr.
   std::pair<iterator, bool> insert(PtrType Ptr) {
     auto p = insert_imp(PtrTraits::getAsVoidPointer(Ptr));
-    return std::make_pair(iterator(p.first, EndPointer()), p.second);
+    return std::make_pair(makeIterator(p.first), p.second);
   }
 
   /// erase - If the set contains the specified pointer, remove it and return
@@ -365,10 +384,10 @@ public:
   bool erase(PtrType Ptr) {
     return erase_imp(PtrTraits::getAsVoidPointer(Ptr));
   }
-
   /// count - Return 1 if the specified pointer is in the set, 0 otherwise.
-  size_type count(PtrType Ptr) const {
-    return count_imp(PtrTraits::getAsVoidPointer(Ptr)) ? 1 : 0;
+  size_type count(ConstPtrType Ptr) const { return find(Ptr) != end() ? 1 : 0; }
+  iterator find(ConstPtrType Ptr) const {
+    return makeIterator(find_imp(ConstPtrTraits::getAsVoidPointer(Ptr)));
   }
 
   template <typename IterT>
@@ -381,25 +400,23 @@ public:
     insert(IL.begin(), IL.end());
   }
 
-  inline iterator begin() const {
+  iterator begin() const {
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
     if (ReverseIterate<bool>::value)
-      return endPtr();
+      return makeIterator(EndPointer() - 1);
 #endif
-    return iterator(CurArray, EndPointer());
+    return makeIterator(CurArray);
   }
-  inline iterator end() const {
-#if LLVM_ENABLE_ABI_BREAKING_CHECKS
-    if (ReverseIterate<bool>::value)
-      return iterator(CurArray, CurArray);
-#endif
-    return endPtr();
-  }
+  iterator end() const { return makeIterator(EndPointer()); }
 
 private:
-  inline iterator endPtr() const {
-    const void *const *End = EndPointer();
-    return iterator(End, End);
+  /// Create an iterator that dereferences to same place as the given pointer.
+  iterator makeIterator(const void *const *P) const {
+#if LLVM_ENABLE_ABI_BREAKING_CHECKS
+    if (ReverseIterate<bool>::value)
+      return iterator(P == EndPointer() ? CurArray : P + 1, CurArray);
+#endif
+    return iterator(P, EndPointer());
   }
 };
 

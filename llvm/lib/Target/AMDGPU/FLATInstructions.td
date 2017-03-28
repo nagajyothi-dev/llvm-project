@@ -136,7 +136,7 @@ multiclass FLAT_Atomic_Pseudo<
 class flat_binary_atomic_op<SDNode atomic_op> : PatFrag<
   (ops node:$ptr, node:$value),
   (atomic_op node:$ptr, node:$value),
-  [{return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUAS::FLAT_ADDRESS;}]
+  [{return cast<MemSDNode>(N)->getAddressSpace() == AMDGPUASI.FLAT_ADDRESS;}]
 >;
 
 def atomic_cmp_swap_flat : flat_binary_atomic_op<AMDGPUatomic_cmp_swap>;
@@ -284,16 +284,16 @@ defm FLAT_ATOMIC_FMAX_X2     : FLAT_Atomic_Pseudo <"flat_atomic_fmax_x2",
 class flat_ld <SDPatternOperator ld> : PatFrag<(ops node:$ptr),
                                                (ld node:$ptr), [{
   auto const AS = cast<MemSDNode>(N)->getAddressSpace();
-  return AS == AMDGPUAS::FLAT_ADDRESS ||
-         AS == AMDGPUAS::GLOBAL_ADDRESS ||
-         AS == AMDGPUAS::CONSTANT_ADDRESS;
+  return AS == AMDGPUASI.FLAT_ADDRESS ||
+         AS == AMDGPUASI.GLOBAL_ADDRESS ||
+         AS == AMDGPUASI.CONSTANT_ADDRESS;
 }]>;
 
 class flat_st <SDPatternOperator st> : PatFrag<(ops node:$val, node:$ptr),
                                                (st node:$val, node:$ptr), [{
   auto const AS = cast<MemSDNode>(N)->getAddressSpace();
-  return AS == AMDGPUAS::FLAT_ADDRESS ||
-         AS == AMDGPUAS::GLOBAL_ADDRESS;
+  return AS == AMDGPUASI.FLAT_ADDRESS ||
+         AS == AMDGPUASI.GLOBAL_ADDRESS;
 }]>;
 
 def atomic_flat_load   : flat_ld <atomic_load>;
@@ -372,7 +372,7 @@ def : FlatAtomicPat <FLAT_ATOMIC_SMIN_RTN, atomic_min_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_UMIN_RTN, atomic_umin_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_OR_RTN, atomic_or_global, i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_SWAP_RTN, atomic_swap_global, i32>;
-def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_RTN, atomic_cmp_swap_global, i32, v2i32>;
+def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_RTN, AMDGPUatomic_cmp_swap_global, i32, v2i32>;
 def : FlatAtomicPat <FLAT_ATOMIC_XOR_RTN, atomic_xor_global, i32>;
 
 def : FlatAtomicPat <FLAT_ATOMIC_ADD_X2_RTN, atomic_add_global, i64>;
@@ -386,7 +386,7 @@ def : FlatAtomicPat <FLAT_ATOMIC_SMIN_X2_RTN, atomic_min_global, i64>;
 def : FlatAtomicPat <FLAT_ATOMIC_UMIN_X2_RTN, atomic_umin_global, i64>;
 def : FlatAtomicPat <FLAT_ATOMIC_OR_X2_RTN, atomic_or_global, i64>;
 def : FlatAtomicPat <FLAT_ATOMIC_SWAP_X2_RTN, atomic_swap_global, i64>;
-def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_X2_RTN, atomic_cmp_swap_global, i64, v2i64>;
+def : FlatAtomicPat <FLAT_ATOMIC_CMPSWAP_X2_RTN, AMDGPUatomic_cmp_swap_global, i64, v2i64>;
 def : FlatAtomicPat <FLAT_ATOMIC_XOR_X2_RTN, atomic_xor_global, i64>;
 
 } // End Predicates = [isCIVI]

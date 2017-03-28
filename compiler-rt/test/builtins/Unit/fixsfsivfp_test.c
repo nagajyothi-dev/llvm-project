@@ -1,3 +1,7 @@
+// RUN: %clang_builtins %s %librt -o %t && %run %t
+// XFAIL: armhf-target-arch
+// This test fails for armhf (see pr32261)
+
 //===-- fixsfsivfp_test.c - Test __fixsfsivfp -----------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -18,7 +22,7 @@
 
 extern int __fixsfsivfp(float a);
 
-#if __arm__
+#if __arm__ && __VFP_FP__
 int test__fixsfsivfp(float a)
 {
 	int actual = __fixsfsivfp(a);
@@ -32,7 +36,7 @@ int test__fixsfsivfp(float a)
 
 int main()
 {
-#if __arm__
+#if __arm__ && __VFP_FP__
     if (test__fixsfsivfp(0.0))
         return 1;
     if (test__fixsfsivfp(1.0))

@@ -66,7 +66,7 @@ public:
       : S(S), Builder(Builder), Annotator(Annotator),
         ExprBuilder(S, Builder, IDToValue, ValueMap, DL, SE, DT, LI,
                     StartBlock),
-        BlockGen(Builder, LI, SE, DT, ScalarMap, PHIOpMap, EscapeMap, ValueMap,
+        BlockGen(Builder, LI, SE, DT, ScalarMap, EscapeMap, ValueMap,
                  &ExprBuilder, StartBlock),
         RegionGen(BlockGen), P(P), DL(DL), LI(LI), SE(SE), DT(DT),
         StartBlock(StartBlock) {}
@@ -125,10 +125,7 @@ protected:
   ///@{
 
   /// See BlockGenerator::ScalarMap.
-  BlockGenerator::ScalarAllocaMapTy ScalarMap;
-
-  /// See BlockGenerator::PhiOpMap.
-  BlockGenerator::ScalarAllocaMapTy PHIOpMap;
+  BlockGenerator::AllocaMapTy ScalarMap;
 
   /// See BlockGenerator::EscapeMap.
   BlockGenerator::EscapeUsersAllocaMapTy EscapeMap;
@@ -184,11 +181,13 @@ protected:
 
   /// Materialize parameters of @p Set.
   ///
-  /// @param All If not set only parameters referred to by the constraints in
-  ///            @p Set will be materialized, otherwise all.
+  /// @returns False, iff a problem occurred and the value was not materialized.
+  bool materializeParameters(__isl_take isl_set *Set);
+
+  /// Materialize all parameters in the current scop.
   ///
   /// @returns False, iff a problem occurred and the value was not materialized.
-  bool materializeParameters(__isl_take isl_set *Set, bool All);
+  bool materializeParameters();
 
   // Extract the upper bound of this loop
   //

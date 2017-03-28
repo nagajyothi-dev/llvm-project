@@ -99,7 +99,9 @@ private:
   mutable llvm::Triple EffectiveTriple;
 
   /// Set the toolchain's effective clang triple.
-  void setEffectiveTriple(llvm::Triple ET) const { EffectiveTriple = ET; }
+  void setEffectiveTriple(llvm::Triple ET) const {
+    EffectiveTriple = std::move(ET);
+  }
 
   friend class RegisterEffectiveTriple;
 
@@ -138,6 +140,13 @@ public:
   const Driver &getDriver() const { return D; }
   vfs::FileSystem &getVFS() const;
   const llvm::Triple &getTriple() const { return Triple; }
+
+  /// Get the toolchain's aux triple, if it has one.
+  ///
+  /// Exactly what the aux triple represents depends on the toolchain, but for
+  /// example when compiling CUDA code for the GPU, the triple might be NVPTX,
+  /// while the aux triple is the host (CPU) toolchain, e.g. x86-linux-gnu.
+  virtual const llvm::Triple *getAuxTriple() const { return nullptr; }
 
   llvm::Triple::ArchType getArch() const { return Triple.getArch(); }
   StringRef getArchName() const { return Triple.getArchName(); }
@@ -292,6 +301,11 @@ public:
   const char *getCompilerRTArgString(const llvm::opt::ArgList &Args,
                                      StringRef Component,
                                      bool Shared = false) const;
+
+  // Returns <ResourceDir>/lib/<OSName>/<arch>.  This is used by runtimes (such
+  // as OpenMP) to find arch-specific libraries.
+  std::string getArchSpecificLibPath() const;
+
   /// needsProfileRT - returns true if instrumentation profile is on.
   static bool needsProfileRT(const llvm::opt::ArgList &Args);
 
@@ -464,7 +478,7 @@ class RegisterEffectiveTriple {
 
 public:
   RegisterEffectiveTriple(const ToolChain &TC, llvm::Triple T) : TC(TC) {
-    TC.setEffectiveTriple(T);
+    TC.setEffectiveTriple(std::move(T));
   }
 
   ~RegisterEffectiveTriple() { TC.setEffectiveTriple(llvm::Triple()); }

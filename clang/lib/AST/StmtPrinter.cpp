@@ -1232,6 +1232,30 @@ void StmtPrinter::VisitOMPTargetTeamsDirective(OMPTargetTeamsDirective *Node) {
   PrintOMPExecutableDirective(Node);
 }
 
+void StmtPrinter::VisitOMPTargetTeamsDistributeDirective(
+    OMPTargetTeamsDistributeDirective *Node) {
+  Indent() << "#pragma omp target teams distribute ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTargetTeamsDistributeParallelForDirective(
+    OMPTargetTeamsDistributeParallelForDirective *Node) {
+  Indent() << "#pragma omp target teams distribute parallel for ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTargetTeamsDistributeParallelForSimdDirective(
+    OMPTargetTeamsDistributeParallelForSimdDirective *Node) {
+  Indent() << "#pragma omp target teams distribute parallel for simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTargetTeamsDistributeSimdDirective(
+    OMPTargetTeamsDistributeSimdDirective *Node) {
+  Indent() << "#pragma omp target teams distribute simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
 //===----------------------------------------------------------------------===//
 //  Expr printing methods.
 //===----------------------------------------------------------------------===//
@@ -2450,6 +2474,13 @@ void StmtPrinter::VisitCoawaitExpr(CoawaitExpr *S) {
   OS << "co_await ";
   PrintExpr(S->getOperand());
 }
+
+
+void StmtPrinter::VisitDependentCoawaitExpr(DependentCoawaitExpr *S) {
+  OS << "co_await ";
+  PrintExpr(S->getOperand());
+}
+
 
 void StmtPrinter::VisitCoyieldExpr(CoyieldExpr *S) {
   OS << "co_yield ";

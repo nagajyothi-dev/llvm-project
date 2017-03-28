@@ -14,8 +14,6 @@
 #include <mutex>
 
 // Other libraries and framework includes
-#include "lldb/Core/DataBufferHeap.h"
-#include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
@@ -25,8 +23,12 @@
 #include "lldb/Target/MemoryRegionInfo.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/UnixSignals.h"
+#include "lldb/Utility/DataBufferHeap.h"
+#include "lldb/Utility/DataBufferLLVM.h"
+#include "lldb/Utility/Log.h"
 
 #include "llvm/Support/ELF.h"
+#include "llvm/Support/Threading.h"
 
 #include "Plugins/DynamicLoader/POSIX-DYLD/DynamicLoaderPOSIXDYLD.h"
 #include "Plugins/ObjectFile/ELF/ObjectFileELF.h"
@@ -56,9 +58,12 @@ lldb::ProcessSP ProcessElfCore::CreateInstance(lldb::TargetSP target_sp,
   lldb::ProcessSP process_sp;
   if (crash_file) {
     // Read enough data for a ELF32 header or ELF64 header
+    // Note: Here we care about e_type field only, so it is safe
+    // to ignore possible presence of the header extension.
     const size_t header_size = sizeof(llvm::ELF::Elf64_Ehdr);
 
-    lldb::DataBufferSP data_sp(crash_file->ReadFileContents(0, header_size));
+    auto data_sp =
+        DataBufferLLVM::CreateSliceFromPath(crash_file->GetPath(), header_size, 0);
     if (data_sp && data_sp->GetByteSize() == header_size &&
         elf::ELFHeader::MagicBytesMatch(data_sp->GetBytes())) {
       elf::ELFHeader elf_header;
@@ -398,9 +403,9 @@ void ProcessElfCore::Clear() {
 }
 
 void ProcessElfCore::Initialize() {
-  static std::once_flag g_once_flag;
+  static llvm::once_flag g_once_flag;
 
-  std::call_once(g_once_flag, []() {
+  llvm::call_once(g_once_flag, []() {
     PluginManager::RegisterPlugin(GetPluginNameStatic(),
                                   GetPluginDescriptionStatic(), CreateInstance);
   });
@@ -426,6 +431,10 @@ enum {
   NT_FILE = 0x46494c45,
   NT_PRXFPREG = 0x46e62b7f,
   NT_SIGINFO = 0x53494749,
+  NT_OPENBSD_PROCINFO = 10,
+  NT_OPENBSD_AUXV = 11,
+  NT_OPENBSD_REGS = 20,
+  NT_OPENBSD_FPREGS = 21,
 };
 
 namespace FREEBSD {
@@ -474,6 +483,18 @@ static void ParseFreeBSDPrStatus(ThreadData &thread_data, DataExtractor &data,
 static void ParseFreeBSDThrMisc(ThreadData &thread_data, DataExtractor &data) {
   lldb::offset_t offset = 0;
   thread_data.name = data.GetCStr(&offset, 20);
+}
+
+static void ParseOpenBSDProcInfo(ThreadData &thread_data, DataExtractor &data)
+{
+  lldb::offset_t offset = 0;
+  
+  int version = data.GetU32(&offset);
+  if (version != 1)
+	  return;
+
+  offset += 4;
+  thread_data.signo = data.GetU32(&offset);
 }
 
 /// Parse Thread context from PT_NOTE segment and store it in the thread list
@@ -563,6 +584,24 @@ Error ProcessElfCore::ParseThreadContextsFromNoteSegment(
         break;
       default:
         break;
+      }
+    } else if (note.n_name.substr(0, 7) == "OpenBSD") {
+      // OpenBSD per-thread information is stored in notes named
+      // "OpenBSD@nnn" so match on the initial part of the string.
+      m_os = llvm::Triple::OpenBSD;
+      switch (note.n_type) {
+      case NT_OPENBSD_PROCINFO:
+	ParseOpenBSDProcInfo(*thread_data, note_data);
+	break;
+      case NT_OPENBSD_AUXV:
+	m_auxv = DataExtractor(note_data);
+	break;
+      case NT_OPENBSD_REGS:
+	thread_data->gpregset = note_data;
+	break;
+      case NT_OPENBSD_FPREGS:
+	thread_data->fpregset = note_data;
+	break;
       }
     } else if (note.n_name == "CORE") {
       switch (note.n_type) {

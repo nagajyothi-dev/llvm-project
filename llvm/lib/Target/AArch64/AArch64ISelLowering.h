@@ -402,7 +402,7 @@ public:
     return AArch64::X1;
   }
 
-  bool isIntDivCheap(EVT VT, AttributeSet Attr) const override;
+  bool isIntDivCheap(EVT VT, AttributeList Attr) const override;
 
   bool isCheapToSpeculateCttz() const override {
     return true;
@@ -411,6 +411,8 @@ public:
   bool isCheapToSpeculateCtlz() const override {
     return true;
   }
+
+  bool isMaskAndCmp0FoldingBeneficial(const Instruction &AndI) const override;
 
   bool hasAndNotCompare(SDValue) const override {
     // 'bics'
@@ -434,6 +436,9 @@ public:
   bool supportSwiftError() const override {
     return true;
   }
+
+  /// Returns the size of the platform's va_list object.
+  unsigned getVaListSizeInBits(const DataLayout &DL) const override;
 
 private:
   bool isExtFreeImpl(const Instruction *Ext) const override;

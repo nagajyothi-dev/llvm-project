@@ -16,8 +16,8 @@
 
 // Other libraries and framework includes
 // Project includes
-#include "lldb/Core/UserID.h"
 #include "lldb/Target/ExecutionContextScope.h"
+#include "lldb/Utility/UserID.h"
 #include "lldb/lldb-private.h"
 
 namespace lldb_private {
@@ -62,6 +62,9 @@ public:
 
   void Clear() { m_value_objects.clear(); }
 
+  const std::vector<lldb::ValueObjectSP> &GetObjects() const {
+    return m_value_objects;
+  }
 protected:
   typedef std::vector<lldb::ValueObjectSP> collection;
   //------------------------------------------------------------------
