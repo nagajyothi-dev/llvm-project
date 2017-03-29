@@ -116,17 +116,17 @@ _mm_hsub_ps(__m128 __a, __m128 __b)
 /// \brief Moves and duplicates high-order (odd-indexed) values from a 128-bit
 ///    vector of [4 x float] to float values stored in a 128-bit vector of
 ///    [4 x float].
-///    Bits [127:96] of the source are written to bits [127:96] and [95:64] of
-///    the destination.
-///    Bits [63:32] of the source are written to bits [63:32] and [31:0] of the
-///    destination.
 ///
 /// \headerfile <x86intrin.h>
 ///
 /// This intrinsic corresponds to the <c> VMOVSHDUP </c> instruction.
 ///
 /// \param __a
-///    A 128-bit vector of [4 x float].
+///    A 128-bit vector of [4 x float]. \n
+///    Bits [127:96] of the source are written to bits [127:96] and [95:64] of
+///    the destination. \n
+///    Bits [63:32] of the source are written to bits [63:32] and [31:0] of the
+///    destination.
 /// \returns A 128-bit vector of [4 x float] containing the moved and duplicated
 ///    values.
 static __inline__ __m128 __DEFAULT_FN_ATTRS
@@ -135,20 +135,19 @@ _mm_movehdup_ps(__m128 __a)
   return __builtin_shufflevector((__v4sf)__a, (__v4sf)__a, 1, 1, 3, 3);
 }
 
-/// \brief Duplicates low-order (even-indexed) values from a 128-bit
-///    vector of [4 x float] to float values stored in a 128-bit vector of
-///    [4 x float].
-///    Bits [95:64] of the source are written to bits [127:96] and [95:64] of
-///    the destination.
-///    Bits [31:0] of the source are written to bits [63:32] and [31:0] of the
-///    destination.
+/// \brief Duplicates low-order (even-indexed) values from a 128-bit vector of
+///    [4 x float] to float values stored in a 128-bit vector of [4 x float].
 ///
 /// \headerfile <x86intrin.h>
 ///
 /// This intrinsic corresponds to the <c> VMOVSLDUP </c> instruction.
 ///
 /// \param __a
-///    A 128-bit vector of [4 x float].
+///    A 128-bit vector of [4 x float] \n
+///    Bits [95:64] of the source are written to bits [127:96] and [95:64] of
+///    the destination. \n
+///    Bits [31:0] of the source are written to bits [63:32] and [31:0] of the
+///    destination.
 /// \returns A 128-bit vector of [4 x float] containing the moved and duplicated
 ///    values.
 static __inline__ __m128 __DEFAULT_FN_ATTRS
@@ -257,14 +256,6 @@ _mm_movedup_pd(__m128d __a)
 {
   return __builtin_shufflevector((__v2df)__a, (__v2df)__a, 0, 0);
 }
-
-#define _MM_DENORMALS_ZERO_ON   (0x0040)
-#define _MM_DENORMALS_ZERO_OFF  (0x0000)
-
-#define _MM_DENORMALS_ZERO_MASK (0x0040)
-
-#define _MM_GET_DENORMALS_ZERO_MODE() (_mm_getcsr() & _MM_DENORMALS_ZERO_MASK)
-#define _MM_SET_DENORMALS_ZERO_MODE(x) (_mm_setcsr((_mm_getcsr() & ~_MM_DENORMALS_ZERO_MASK) | (x)))
 
 /// \brief Establishes a linear address memory range to be monitored and puts
 ///    the processor in the monitor event pending state. Data stored in the

@@ -26,21 +26,21 @@
 // C++ Includes
 // Other libraries and framework includes
 // Project includes
-#include "lldb/Core/DataExtractor.h"
-#include "lldb/Core/Error.h"
-#include "lldb/Core/Log.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/StreamFile.h"
-#include "lldb/Core/StreamString.h"
-#include "lldb/Host/Endian.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
+#include "lldb/Utility/DataExtractor.h"
+#include "lldb/Utility/Endian.h"
+#include "lldb/Utility/Error.h"
+#include "lldb/Utility/Log.h"
+#include "lldb/Utility/StreamString.h"
 
-#include "lldb/Core/DataBufferHeap.h"
-#include "lldb/Core/DataExtractor.h"
 #include "lldb/Utility/CleanUp.h"
+#include "lldb/Utility/DataBufferHeap.h"
+#include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/NameMatches.h"
 
 #include "llvm/Support/Host.h"
@@ -241,23 +241,6 @@ bool Host::GetProcessInfo(lldb::pid_t pid, ProcessInstanceInfo &process_info) {
 
   process_info.Clear();
   return false;
-}
-
-lldb::DataBufferSP Host::GetAuxvData(lldb_private::Process *process) {
-  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_AUXV, 0};
-  size_t auxv_size = AT_COUNT * sizeof(Elf_Auxinfo);
-  DataBufferSP buf_sp;
-
-  std::unique_ptr<DataBufferHeap> buf_ap(new DataBufferHeap(auxv_size, 0));
-
-  mib[3] = process->GetID();
-  if (::sysctl(mib, 4, buf_ap->GetBytes(), &auxv_size, NULL, 0) == 0) {
-    buf_sp.reset(buf_ap.release());
-  } else {
-    perror("sysctl failed on auxv");
-  }
-
-  return buf_sp;
 }
 
 Error Host::ShellExpandArguments(ProcessLaunchInfo &launch_info) {

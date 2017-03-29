@@ -25,6 +25,7 @@
 
 namespace llvm {
 
+template <typename IRUnitT> class AllAnalysesOn;
 template <typename IRUnitT, typename... ExtraArgTs> class AnalysisManager;
 class Invalidator;
 class PreservedAnalyses;
@@ -191,7 +192,9 @@ struct AnalysisResultModel<IRUnitT, PassT, ResultT, PreservedAnalysesT,
   // ones that use the trivial behavior.
   bool invalidate(IRUnitT &, const PreservedAnalysesT &PA,
                   InvalidatorT &) override {
-    return !PA.preserved(PassT::ID());
+    auto PAC = PA.template getChecker<PassT>();
+    return !PAC.preserved() &&
+           !PAC.template preservedSet<AllAnalysesOn<IRUnitT>>();
   }
 
   ResultT Result;
@@ -288,7 +291,7 @@ struct AnalysisPassModel : AnalysisPassConcept<IRUnitT, PreservedAnalysesT,
       AnalysisResultConcept<IRUnitT, PreservedAnalysesT, InvalidatorT>>
   run(IRUnitT &IR, AnalysisManager<IRUnitT, ExtraArgTs...> &AM,
       ExtraArgTs... ExtraArgs) override {
-    return make_unique<ResultModelT>(Pass.run(IR, AM, ExtraArgs...));
+    return llvm::make_unique<ResultModelT>(Pass.run(IR, AM, ExtraArgs...));
   }
 
   /// \brief The model delegates to a static \c PassT::name method.

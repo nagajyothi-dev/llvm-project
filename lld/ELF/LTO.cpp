@@ -12,12 +12,13 @@
 #include "Error.h"
 #include "InputFiles.h"
 #include "Symbols.h"
+#include "lld/Core/TargetOptionsCommandFlags.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/LTO/Caching.h"
 #include "llvm/LTO/Config.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/SymbolicFile.h"
@@ -46,7 +47,7 @@ static void saveBuffer(StringRef Buffer, const Twine &Path) {
   std::error_code EC;
   raw_fd_ostream OS(Path.str(), EC, sys::fs::OpenFlags::F_None);
   if (EC)
-    error(EC, "cannot create " + Path);
+    error("cannot create " + Path + ": " + EC.message());
   OS << Buffer;
 }
 
@@ -73,6 +74,7 @@ static std::unique_ptr<lto::LTO> createLTO() {
   Conf.Options.RelaxELFRelocations = true;
 
   Conf.RelocModel = Config->Pic ? Reloc::PIC_ : Reloc::Static;
+  Conf.CodeModel = GetCodeModelFromCMModel();
   Conf.DisableVerify = Config->DisableVerify;
   Conf.DiagHandler = diagnosticHandler;
   Conf.OptLevel = Config->LTOO;
@@ -80,6 +82,10 @@ static std::unique_ptr<lto::LTO> createLTO() {
   // Set up a custom pipeline if we've been asked to.
   Conf.OptPipeline = Config->LTONewPmPasses;
   Conf.AAPipeline = Config->LTOAAPipeline;
+
+  // Set up optimization remarks if we've been asked to.
+  Conf.RemarksFilename = Config->OptRemarksFilename;
+  Conf.RemarksWithHotness = Config->OptRemarksWithHotness;
 
   if (Config->SaveTemps)
     checkError(Conf.addSaveTemps(std::string(Config->OutputFile) + ".",
@@ -137,17 +143,34 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
   std::vector<InputFile *> Ret;
   unsigned MaxTasks = LTOObj->getMaxTasks();
   Buff.resize(MaxTasks);
+  Files.resize(MaxTasks);
 
-  checkError(LTOObj->run([&](size_t Task) {
-    return llvm::make_unique<lto::NativeObjectStream>(
-        llvm::make_unique<raw_svector_ostream>(Buff[Task]));
-  }));
+  // The --thinlto-cache-dir option specifies the path to a directory in which
+  // to cache native object files for ThinLTO incremental builds. If a path was
+  // specified, configure LTO to use it as the cache directory.
+  lto::NativeObjectCache Cache;
+  if (!Config->ThinLTOCacheDir.empty())
+    Cache = check(
+        lto::localCache(Config->ThinLTOCacheDir,
+                        [&](size_t Task, std::unique_ptr<MemoryBuffer> MB) {
+                          Files[Task] = std::move(MB);
+                        }));
+
+  checkError(LTOObj->run(
+      [&](size_t Task) {
+        return llvm::make_unique<lto::NativeObjectStream>(
+            llvm::make_unique<raw_svector_ostream>(Buff[Task]));
+      },
+      Cache));
+
+  if (!Config->ThinLTOCacheDir.empty())
+    pruneCache(Config->ThinLTOCacheDir, Config->ThinLTOCachePolicy);
 
   for (unsigned I = 0; I != MaxTasks; ++I) {
     if (Buff[I].empty())
       continue;
     if (Config->SaveTemps) {
-      if (MaxTasks == 1)
+      if (I == 0)
         saveBuffer(Buff[I], Config->OutputFile + ".lto.o");
       else
         saveBuffer(Buff[I], Config->OutputFile + Twine(I) + ".lto.o");
@@ -155,5 +178,10 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
     InputFile *Obj = createObjectFile(MemoryBufferRef(Buff[I], "lto.tmp"));
     Ret.push_back(Obj);
   }
+
+  for (std::unique_ptr<MemoryBuffer> &File : Files)
+    if (File)
+      Ret.push_back(createObjectFile(*File));
+
   return Ret;
 }

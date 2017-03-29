@@ -68,7 +68,7 @@ void WinException::beginFunction(const MachineFunction *MF) {
 
   const Function *F = MF->getFunction();
 
-  shouldEmitMoves = Asm->needsSEHMoves();
+  shouldEmitMoves = Asm->needsSEHMoves() && MF->hasWinCFI();
 
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   unsigned PerEncoding = TLOF.getPersonalityEncoding();
@@ -94,7 +94,7 @@ void WinException::beginFunction(const MachineFunction *MF) {
 
   // If we're not using CFI, we don't want the CFI or the personality, but we
   // might want EH tables if we had EH pads.
-  if (!Asm->MAI->usesWindowsCFI() || (!MF->hasWinCFI() && !PerFn)) {
+  if (!Asm->MAI->usesWindowsCFI()) {
     if (Per == EHPersonality::MSVC_X86SEH && !hasEHFunclets) {
       // If this is 32-bit SEH and we don't have any funclets (really invokes),
       // make sure we emit the parent offset label. Some unreferenced filter
@@ -208,8 +208,10 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
   }
 
   // Mark 'Sym' as starting our funclet.
-  if (shouldEmitMoves || shouldEmitPersonality)
+  if (shouldEmitMoves || shouldEmitPersonality) {
+    CurrentFuncletTextSection = Asm->OutStreamer->getCurrentSectionOnly();
     Asm->OutStreamer->EmitWinCFIStartProc(Sym);
+  }
 
   if (shouldEmitPersonality) {
     const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
@@ -243,10 +245,6 @@ void WinException::endFunclet() {
     if (F->hasPersonalityFn())
       Per = classifyEHPersonality(F->getPersonalityFn()->stripPointerCasts());
 
-    // The .seh_handlerdata directive implicitly switches section, push the
-    // current section so that we may return to it.
-    Asm->OutStreamer->PushSection();
-
     // Emit an UNWIND_INFO struct describing the prologue.
     Asm->OutStreamer->EmitWinEHHandlerData();
 
@@ -265,11 +263,10 @@ void WinException::endFunclet() {
       emitCSpecificHandlerTable(MF);
     }
 
-    // Switch back to the previous section now that we are done writing to
-    // .xdata.
-    Asm->OutStreamer->PopSection();
-
-    // Emit a .seh_endproc directive to mark the end of the function.
+    // Switch back to the funclet start .text section now that we are done
+    // writing to .xdata, and emit an .seh_endproc directive to mark the end of
+    // the function.
+    Asm->OutStreamer->SwitchSection(CurrentFuncletTextSection);
     Asm->OutStreamer->EmitWinCFIEndProc();
   }
 

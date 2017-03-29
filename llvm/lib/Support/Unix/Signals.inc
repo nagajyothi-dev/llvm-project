@@ -48,7 +48,7 @@
 // _Unwind_Backtrace function, but on FreeBSD the configure test passes
 // despite the function not existing, and on Android, <unwind.h> conflicts
 // with <link.h>.
-#if defined(__GLIBC__) || defined(__APPLE__)
+#ifdef __GLIBC__
 #include <unwind.h>
 #else
 #undef HAVE__UNWIND_BACKTRACE
@@ -149,11 +149,7 @@ static void CreateSigAltStack() {}
 #endif
 
 static void RegisterHandlers() {
-  // We need to dereference the signals mutex during handler registration so
-  // that we force its construction. This is to prevent the first use being
-  // during handling an actual signal because you can't safely call new in a
-  // signal handler.
-  *SignalsMutex;
+  sys::SmartScopedLock<true> Guard(*SignalsMutex);
 
   // If the handlers are already registered, we're done.
   if (NumRegisteredSignals != 0) return;
@@ -412,7 +408,7 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
 
   if (printSymbolizedStackTrace(Argv0, StackTrace, depth, OS))
     return;
-#if HAVE_DLFCN_H && __GNUG__ && !defined(__CYGWIN__)
+#if HAVE_DLFCN_H && HAVE_DLADDR
   int width = 0;
   for (int i = 0; i < depth; ++i) {
     Dl_info dlinfo;

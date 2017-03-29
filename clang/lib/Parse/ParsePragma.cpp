@@ -11,13 +11,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RAIIObjectsForParser.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/PragmaKinds.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
+#include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/LoopHint.h"
 #include "clang/Sema/Scope.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -506,10 +506,12 @@ void Parser::HandlePragmaOpenCLExtension() {
   // overriding all previously issued extension directives, but only if the
   // behavior is set to disable."
   if (Name == "all") {
-    if (State == Disable)
+    if (State == Disable) {
       Opt.disableAll();
-    else
+      Opt.enableSupportedCore(getLangOpts().OpenCLVersion);
+    } else {
       PP.Diag(NameLoc, diag::warn_pragma_expected_predicate) << 1;
+    }
   } else if (State == Begin) {
     if (!Opt.isKnown(Name) ||
         !Opt.isSupported(Name, getLangOpts().OpenCLVersion)) {

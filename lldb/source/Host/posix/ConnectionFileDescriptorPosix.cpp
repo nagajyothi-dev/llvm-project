@@ -19,7 +19,6 @@
 #include "lldb/Host/IOObject.h"
 #include "lldb/Host/Socket.h"
 #include "lldb/Host/SocketAddress.h"
-#include "lldb/Host/StringConvert.h"
 #include "lldb/Utility/SelectHelper.h"
 
 // C Includes
@@ -43,13 +42,12 @@
 #endif
 // Project includes
 #include "lldb/Core/Communication.h"
-#include "lldb/Core/Log.h"
-#include "lldb/Core/StreamString.h"
 #include "lldb/Core/Timer.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/Socket.h"
 #include "lldb/Host/common/TCPSocket.h"
-#include "lldb/Interpreter/Args.h"
+#include "lldb/Utility/Log.h"
+#include "lldb/Utility/StreamString.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -561,10 +559,7 @@ ConnectionFileDescriptor::BytesAvailable(const Timeout<std::micro> &timeout,
   // ever get used more generally we will need to lock here as well.
 
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_CONNECTION));
-  if (log)
-    log->Printf(
-        "%p ConnectionFileDescriptor::BytesAvailable (timeout_usec = %lu)",
-        static_cast<void *>(this), long(timeout ? timeout->count() : -1));
+  LLDB_LOG(log, "this = {0}, timeout = {1}", this, timeout);
 
   // Make a copy of the file descriptors to make sure we don't
   // have another thread change these values out from under us

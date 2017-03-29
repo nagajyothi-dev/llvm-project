@@ -215,14 +215,14 @@ public:
 
   /// \brief Create the initialization entity for a parameter.
   static InitializedEntity InitializeParameter(ASTContext &Context,
-                                               ParmVarDecl *Parm) {
+                                               const ParmVarDecl *Parm) {
     return InitializeParameter(Context, Parm, Parm->getType());
   }
 
   /// \brief Create the initialization entity for a parameter, but use
   /// another type.
   static InitializedEntity InitializeParameter(ASTContext &Context,
-                                               ParmVarDecl *Parm,
+                                               const ParmVarDecl *Parm,
                                                QualType Type) {
     bool Consumed = (Context.getLangOpts().ObjCAutoRefCount &&
                      Parm->hasAttr<NSConsumedAttr>());
@@ -274,15 +274,18 @@ public:
   
   /// \brief Create the initialization entity for a temporary.
   static InitializedEntity InitializeTemporary(QualType Type) {
-    InitializedEntity Result(EK_Temporary, SourceLocation(), Type);
-    Result.TypeInfo = nullptr;
-    return Result;
+    return InitializeTemporary(nullptr, Type);
   }
 
   /// \brief Create the initialization entity for a temporary.
   static InitializedEntity InitializeTemporary(TypeSourceInfo *TypeInfo) {
-    InitializedEntity Result(EK_Temporary, SourceLocation(), 
-                             TypeInfo->getType());
+    return InitializeTemporary(TypeInfo, TypeInfo->getType());
+  }
+  
+  /// \brief Create the initialization entity for a temporary.
+  static InitializedEntity InitializeTemporary(TypeSourceInfo *TypeInfo,
+                                               QualType Type) {
+    InitializedEntity Result(EK_Temporary, SourceLocation(), Type);
     Result.TypeInfo = TypeInfo;
     return Result;
   }
@@ -579,6 +582,16 @@ public:
     return InitializationKind(IK_Value, isImplicit ? IC_Implicit : IC_Normal,
                               InitLoc, LParenLoc, RParenLoc);
   }
+
+  /// \brief Create an initialization from an initializer (which, for direct
+  /// initialization from a parenthesized list, will be a ParenListExpr).
+  static InitializationKind CreateForInit(SourceLocation Loc, bool DirectInit,
+                                          Expr *Init) {
+    if (!Init) return CreateDefault(Loc);
+    if (!DirectInit) return CreateCopy(Loc, Init->getLocStart());
+    if (isa<InitListExpr>(Init)) return CreateDirectList(Loc);
+    return CreateDirect(Loc, Init->getLocStart(), Init->getLocEnd());
+  }
   
   /// \brief Determine the initialization kind.
   InitKind getKind() const {
@@ -751,6 +764,8 @@ public:
     SK_StdInitializerListConstructorCall,
     /// \brief Initialize an OpenCL sampler from an integer.
     SK_OCLSamplerInit,
+    /// \brief Initialize queue_t from 0.
+    SK_OCLZeroQueue,
     /// \brief Passing zero to a function where OpenCL event_t is expected.
     SK_OCLZeroEvent
   };
@@ -807,6 +822,8 @@ public:
   enum FailureKind {
     /// \brief Too many initializers provided for a reference.
     FK_TooManyInitsForReference,
+    /// \brief Reference initialized from a parenthesized initializer list.
+    FK_ParenthesizedListInitForReference,
     /// \brief Array must be initialized with an initializer list.
     FK_ArrayNeedsInitList,
     /// \brief Array must be initialized with an initializer list or a 
@@ -851,6 +868,8 @@ public:
     FK_ConversionFromPropertyFailed,
     /// \brief Too many initializers for scalar
     FK_TooManyInitsForScalar,
+    /// \brief Scalar initialized from a parenthesized initializer list.
+    FK_ParenthesizedListInitForScalar,
     /// \brief Reference initialization from an initializer list
     FK_ReferenceBindingToInitList,
     /// \brief Initialization of some unused destination type with an
@@ -877,7 +896,7 @@ public:
     /// having its address taken.
     FK_AddressOfUnaddressableFunction,
     /// \brief List-copy-initialization chose an explicit constructor.
-    FK_ExplicitConstructor
+    FK_ExplicitConstructor,
   };
   
 private:
@@ -1147,6 +1166,9 @@ public:
   /// \brief Add a step to initialize an OpenCL event_t from a NULL
   /// constant.
   void AddOCLZeroEventStep(QualType T);
+
+  /// \brief Add a step to initialize an OpenCL queue_t from 0.
+  void AddOCLZeroQueueStep(QualType T);
 
   /// \brief Add steps to unwrap a initializer list for a reference around a
   /// single element and rewrap it at the end.
