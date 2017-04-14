@@ -605,8 +605,16 @@ public:
 
   /// \brief Returns the "normalized" GCC register name.
   ///
-  /// For example, on x86 it will return "ax" when "eax" is passed in.
-  StringRef getNormalizedGCCRegisterName(StringRef Name) const;
+  /// ReturnCannonical true will return the register name without any additions
+  /// such as "{}" or "%" in it's canonical form, for example:
+  /// ReturnCanonical = true and Name = "rax", will return "ax".
+  StringRef getNormalizedGCCRegisterName(StringRef Name,
+                                         bool ReturnCanonical = false) const;
+ 
+  virtual StringRef getConstraintRegister(const StringRef &Constraint,
+                                          const StringRef &Expression) const {
+    return "";
+  }
 
   struct ConstraintInfo {
     enum {
@@ -815,8 +823,9 @@ public:
   /// \brief Set forced language options.
   ///
   /// Apply changes to the target information with respect to certain
-  /// language options which change the target configuration.
-  virtual void adjust(const LangOptions &Opts);
+  /// language options which change the target configuration and adjust
+  /// the language based on the target options where applicable.
+  virtual void adjust(LangOptions &Opts);
 
   /// \brief Adjust target options based on codegen options.
   virtual void adjustTargetOptions(const CodeGenOptions &CGOpts,
@@ -1022,6 +1031,21 @@ public:
   /// \brief Get OpenCL image type address space.
   virtual LangAS::ID getOpenCLImageAddrSpace() const {
     return LangAS::opencl_global;
+  }
+
+  /// \returns Target specific vtbl ptr address space.
+  virtual unsigned getVtblPtrAddressSpace() const {
+    return 0;
+  }
+
+  /// \returns If a target requires an address within a target specific address
+  /// space \p AddressSpace to be converted in order to be used, then return the
+  /// corresponding target specific DWARF address space.
+  ///
+  /// \returns Otherwise return None and no conversion will be emitted in the
+  /// DWARF.
+  virtual Optional<unsigned> getDWARFAddressSpace(unsigned AddressSpace) const {
+    return None;
   }
 
   /// \brief Check the target is valid after it is fully initialized.

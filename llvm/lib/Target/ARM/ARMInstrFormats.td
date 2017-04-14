@@ -261,10 +261,19 @@ def const_pool_asm_imm : Operand<i32> {
 // Note: When EmitPriority == 1, the alias will be used for printing
 class ARMInstAlias<string Asm, dag Result, bit EmitPriority = 0>
       : InstAlias<Asm, Result, EmitPriority>, Requires<[IsARM]>;
+class ARMInstSubst<string Asm, dag Result, bit EmitPriority = 0>
+      : InstAlias<Asm, Result, EmitPriority>,
+        Requires<[IsARM,UseNegativeImmediates]>;
 class  tInstAlias<string Asm, dag Result, bit EmitPriority = 0>
       : InstAlias<Asm, Result, EmitPriority>, Requires<[IsThumb]>;
+class  tInstSubst<string Asm, dag Result, bit EmitPriority = 0>
+      : InstAlias<Asm, Result, EmitPriority>,
+        Requires<[IsThumb,UseNegativeImmediates]>;
 class t2InstAlias<string Asm, dag Result, bit EmitPriority = 0>
       : InstAlias<Asm, Result, EmitPriority>, Requires<[IsThumb2]>;
+class t2InstSubst<string Asm, dag Result, bit EmitPriority = 0>
+      : InstAlias<Asm, Result, EmitPriority>,
+        Requires<[IsThumb2,UseNegativeImmediates]>;
 class VFP2InstAlias<string Asm, dag Result, bit EmitPriority = 0>
       : InstAlias<Asm, Result, EmitPriority>, Requires<[HasVFP2]>;
 class VFP2DPInstAlias<string Asm, dag Result, bit EmitPriority = 0>
@@ -1012,9 +1021,6 @@ class Thumb2DSPPat<dag pattern, dag result> : Pat<pattern, result> {
 }
 class Thumb2DSPMulPat<dag pattern, dag result> : Pat<pattern, result> {
   list<Predicate> Predicates = [IsThumb2, UseMulOps, HasDSP];
-}
-class Thumb2ExtractPat<dag pattern, dag result> : Pat<pattern, result> {
-  list<Predicate> Predicates = [IsThumb2, HasT2ExtractPack];
 }
 //===----------------------------------------------------------------------===//
 // Thumb Instruction Format Definitions.

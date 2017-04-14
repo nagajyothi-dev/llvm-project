@@ -282,8 +282,9 @@ bool TargetInfo::isTypeSigned(IntType T) {
 
 /// adjust - Set forced language options.
 /// Apply changes to the target information with respect to certain
-/// language options which change the target configuration.
-void TargetInfo::adjust(const LangOptions &Opts) {
+/// language options which change the target configuration and adjust
+/// the language based on the target options where applicable.
+void TargetInfo::adjust(LangOptions &Opts) {
   if (Opts.NoBitFieldTypeAlign)
     UseBitFieldTypeAlignment = false;
   if (Opts.ShortWChar)
@@ -410,8 +411,8 @@ bool TargetInfo::isValidGCCRegisterName(StringRef Name) const {
   return false;
 }
 
-StringRef
-TargetInfo::getNormalizedGCCRegisterName(StringRef Name) const {
+StringRef TargetInfo::getNormalizedGCCRegisterName(StringRef Name,
+                                                   bool ReturnCanonical) const {
   assert(isValidGCCRegisterName(Name) && "Invalid register passed in");
 
   // Get rid of any register prefix.
@@ -436,7 +437,7 @@ TargetInfo::getNormalizedGCCRegisterName(StringRef Name) const {
       // Make sure the register that the additional name is for is within
       // the bounds of the register names from above.
       if (AN == Name && ARN.RegNum < Names.size())
-        return Name;
+        return ReturnCanonical ? Names[ARN.RegNum] : Name;
     }
 
   // Now check aliases.

@@ -80,11 +80,14 @@ protected:
         ValueType(Ty), Linkage(Linkage), Visibility(DefaultVisibility),
         UnnamedAddrVal(unsigned(UnnamedAddr::None)),
         DllStorageClass(DefaultStorageClass), ThreadLocal(NotThreadLocal),
-        IntID((Intrinsic::ID)0U), Parent(nullptr) {
+        HasLLVMReservedName(false), IntID((Intrinsic::ID)0U), Parent(nullptr) {
     setName(Name);
   }
 
   Type *ValueType;
+
+  static const unsigned GlobalValueSubClassDataBits = 18;
+
   // All bitfields use unsigned as the underlying type so that MSVC will pack
   // them.
   unsigned Linkage : 4;       // The linkage of this global
@@ -94,13 +97,17 @@ protected:
 
   unsigned ThreadLocal : 3; // Is this symbol "Thread Local", if so, what is
                             // the desired model?
-  static const unsigned GlobalValueSubClassDataBits = 19;
+
+  /// True if the function's name starts with "llvm.".  This corresponds to the
+  /// value of Function::isIntrinsic(), which may be true even if
+  /// Function::intrinsicID() returns Intrinsic::not_intrinsic.
+  unsigned HasLLVMReservedName : 1;
 
 private:
   friend class Constant;
 
   // Give subclasses access to what otherwise would be wasted padding.
-  // (19 + 4 + 2 + 2 + 2 + 3) == 32.
+  // (18 + 4 + 2 + 2 + 2 + 3 + 1) == 32.
   unsigned SubClassData : GlobalValueSubClassDataBits;
 
   void destroyConstantImpl();
@@ -204,9 +211,10 @@ public:
   }
 
   bool hasComdat() const { return getComdat() != nullptr; }
-  Comdat *getComdat();
-  const Comdat *getComdat() const {
-    return const_cast<GlobalValue *>(this)->getComdat();
+  const Comdat *getComdat() const;
+  Comdat *getComdat() {
+    return const_cast<Comdat *>(
+                           static_cast<const GlobalValue *>(this)->getComdat());
   }
 
   VisibilityTypes getVisibility() const { return VisibilityTypes(Visibility); }
@@ -507,10 +515,11 @@ public:
   // increased.
   bool canIncreaseAlignment() const;
 
-  const GlobalObject *getBaseObject() const {
-    return const_cast<GlobalValue *>(this)->getBaseObject();
+  const GlobalObject *getBaseObject() const;
+  GlobalObject *getBaseObject() {
+    return const_cast<GlobalObject *>(
+                       static_cast<const GlobalValue *>(this)->getBaseObject());
   }
-  GlobalObject *getBaseObject();
 
   /// Returns whether this is a reference to an absolute symbol.
   bool isAbsoluteSymbolRef() const;

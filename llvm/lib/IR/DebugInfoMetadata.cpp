@@ -245,16 +245,18 @@ DIBasicType *DIBasicType::getImpl(LLVMContext &Context, unsigned Tag,
 DIDerivedType *DIDerivedType::getImpl(
     LLVMContext &Context, unsigned Tag, MDString *Name, Metadata *File,
     unsigned Line, Metadata *Scope, Metadata *BaseType, uint64_t SizeInBits,
-    uint32_t AlignInBits, uint64_t OffsetInBits, DIFlags Flags,
-    Metadata *ExtraData, StorageType Storage, bool ShouldCreate) {
+    uint32_t AlignInBits, uint64_t OffsetInBits,
+    Optional<unsigned> DWARFAddressSpace, DIFlags Flags, Metadata *ExtraData,
+    StorageType Storage, bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(DIDerivedType,
                         (Tag, Name, File, Line, Scope, BaseType, SizeInBits,
-                         AlignInBits, OffsetInBits, Flags, ExtraData));
+                         AlignInBits, OffsetInBits, DWARFAddressSpace, Flags,
+                         ExtraData));
   Metadata *Ops[] = {File, Scope, Name, BaseType, ExtraData};
   DEFINE_GETIMPL_STORE(
-      DIDerivedType, (Tag, Line, SizeInBits, AlignInBits, OffsetInBits, Flags),
-      Ops);
+      DIDerivedType, (Tag, Line, SizeInBits, AlignInBits, OffsetInBits,
+                      DWARFAddressSpace, Flags), Ops);
 }
 
 DICompositeType *DICompositeType::getImpl(
@@ -347,14 +349,34 @@ DISubroutineType *DISubroutineType::getImpl(LLVMContext &Context, DIFlags Flags,
   DEFINE_GETIMPL_STORE(DISubroutineType, (Flags, CC), Ops);
 }
 
+static const char *ChecksumKindName[DIFile::CSK_Last + 1] = {
+  "CSK_None",
+  "CSK_MD5",
+  "CSK_SHA1"
+};
+
+DIFile::ChecksumKind DIFile::getChecksumKind(StringRef CSKindStr) {
+  return StringSwitch<DIFile::ChecksumKind>(CSKindStr)
+      .Case("CSK_MD5", DIFile::CSK_MD5)
+      .Case("CSK_SHA1", DIFile::CSK_SHA1)
+      .Default(DIFile::CSK_None);
+}
+
+StringRef DIFile::getChecksumKindAsString() const {
+  assert(CSKind <= DIFile::CSK_Last && "Invalid checksum kind");
+  return ChecksumKindName[CSKind];
+}
+
 DIFile *DIFile::getImpl(LLVMContext &Context, MDString *Filename,
-                        MDString *Directory, StorageType Storage,
+                        MDString *Directory, DIFile::ChecksumKind CSKind,
+                        MDString *Checksum, StorageType Storage,
                         bool ShouldCreate) {
   assert(isCanonical(Filename) && "Expected canonical MDString");
   assert(isCanonical(Directory) && "Expected canonical MDString");
-  DEFINE_GETIMPL_LOOKUP(DIFile, (Filename, Directory));
-  Metadata *Ops[] = {Filename, Directory};
-  DEFINE_GETIMPL_STORE_NO_CONSTRUCTOR_ARGS(DIFile, Ops);
+  assert(isCanonical(Checksum) && "Expected canonical MDString");
+  DEFINE_GETIMPL_LOOKUP(DIFile, (Filename, Directory, CSKind, Checksum));
+  Metadata *Ops[] = {Filename, Directory, Checksum};
+  DEFINE_GETIMPL_STORE(DIFile, (CSKind), Ops);
 }
 
 DICompileUnit *DICompileUnit::getImpl(
@@ -363,8 +385,8 @@ DICompileUnit *DICompileUnit::getImpl(
     unsigned RuntimeVersion, MDString *SplitDebugFilename,
     unsigned EmissionKind, Metadata *EnumTypes, Metadata *RetainedTypes,
     Metadata *GlobalVariables, Metadata *ImportedEntities, Metadata *Macros,
-    uint64_t DWOId, bool SplitDebugInlining, StorageType Storage,
-    bool ShouldCreate) {
+    uint64_t DWOId, bool SplitDebugInlining, bool DebugInfoForProfiling,
+    StorageType Storage, bool ShouldCreate) {
   assert(Storage != Uniqued && "Cannot unique DICompileUnit");
   assert(isCanonical(Producer) && "Expected canonical MDString");
   assert(isCanonical(Flags) && "Expected canonical MDString");
@@ -377,7 +399,8 @@ DICompileUnit *DICompileUnit::getImpl(
   return storeImpl(new (array_lengthof(Ops))
                        DICompileUnit(Context, Storage, SourceLanguage,
                                      IsOptimized, RuntimeVersion, EmissionKind,
-                                     DWOId, SplitDebugInlining, Ops),
+                                     DWOId, SplitDebugInlining,
+                                     DebugInfoForProfiling, Ops),
                    Storage);
 }
 
@@ -591,32 +614,37 @@ bool DIExpression::isValid() const {
         return false;
       break;
     }
+    case dwarf::DW_OP_swap: {
+      // Must be more than one implicit element on the stack.
+
+      // FIXME: A better way to implement this would be to add a local variable
+      // that keeps track of the stack depth and introduce something like a
+      // DW_LLVM_OP_implicit_location as a placeholder for the location this
+      // DIExpression is attached to, or else pass the number of implicit stack
+      // elements into isValid.
+      if (getNumElements() == 1)
+        return false;
+      break;
+    }
     case dwarf::DW_OP_constu:
     case dwarf::DW_OP_plus:
     case dwarf::DW_OP_minus:
     case dwarf::DW_OP_deref:
+    case dwarf::DW_OP_xderef:
       break;
     }
   }
   return true;
 }
 
-bool DIExpression::isFragment() const {
-  assert(isValid() && "Expected valid expression");
-  if (unsigned N = getNumElements())
-    if (N >= 3)
-      return getElement(N - 3) == dwarf::DW_OP_LLVM_fragment;
-  return false;
-}
-
-uint64_t DIExpression::getFragmentOffsetInBits() const {
-  assert(isFragment() && "Expected fragment");
-  return getElement(getNumElements() - 2);
-}
-
-uint64_t DIExpression::getFragmentSizeInBits() const {
-  assert(isFragment() && "Expected fragment");
-  return getElement(getNumElements() - 1);
+Optional<DIExpression::FragmentInfo>
+DIExpression::getFragmentInfo(expr_op_iterator Start, expr_op_iterator End) {
+  for (auto I = Start; I != End; ++I)
+    if (I->getOp() == dwarf::DW_OP_LLVM_fragment) {
+      DIExpression::FragmentInfo Info = {I->getArg(1), I->getArg(0)};
+      return Info;
+    }
+  return None;
 }
 
 bool DIExpression::isConstant() const {

@@ -19,15 +19,12 @@
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/Module.h"
-#include "lldb/Core/Stream.h"
-#include "lldb/Core/StreamString.h"
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Core/ValueObjectVariable.h"
 #include "lldb/DataFormatters/DataVisualization.h"
 #include "lldb/DataFormatters/FormatManager.h"
 #include "lldb/DataFormatters/ValueObjectPrinter.h"
 #include "lldb/Expression/ExpressionVariable.h"
-#include "lldb/Host/FileSpec.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/CompileUnit.h"
@@ -45,6 +42,9 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/AnsiTerminal.h"
+#include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/Stream.h"
+#include "lldb/Utility/StreamString.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -64,14 +64,14 @@ enum FileKind { FileError = 0, Basename, Dirname, Fullpath };
 #define ENTRY_CHILDREN(n, t, f, c)                                             \
   {                                                                            \
     n, nullptr, FormatEntity::Entry::Type::t,                                  \
-        FormatEntity::Entry::FormatType::f, 0, llvm::array_lengthof(c), c,     \
-        false                                                                  \
+        FormatEntity::Entry::FormatType::f, 0,                                 \
+        static_cast<uint32_t>(llvm::array_lengthof(c)), c, false               \
   }
 #define ENTRY_CHILDREN_KEEP_SEP(n, t, f, c)                                    \
   {                                                                            \
     n, nullptr, FormatEntity::Entry::Type::t,                                  \
-        FormatEntity::Entry::FormatType::f, 0, llvm::array_lengthof(c), c,     \
-        true                                                                   \
+        FormatEntity::Entry::FormatType::f, 0,                                 \
+        static_cast<uint32_t>(llvm::array_lengthof(c)), c, true                \
   }
 #define ENTRY_STRING(n, s)                                                     \
   {                                                                            \
@@ -1187,7 +1187,8 @@ bool FormatEntity::Format(const Entry &entry, Stream &s,
                                               ? arch.GetTriple().getOS()
                                               : llvm::Triple::UnknownOS;
             if ((ostype == llvm::Triple::FreeBSD) ||
-                (ostype == llvm::Triple::Linux)) {
+                (ostype == llvm::Triple::Linux) ||
+                (ostype == llvm::Triple::NetBSD)) {
               format = "%" PRIu64;
             }
           } else {

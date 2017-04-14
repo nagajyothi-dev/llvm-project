@@ -233,6 +233,7 @@ define <2 x i64> @imulq128(<2 x i64> %y, <2 x i64> %x) {
 ; AVX512DQ-NEXT:    ## kill: %XMM0<def> %XMM0<kill> %ZMM0<def>
 ; AVX512DQ-NEXT:    vpmullq %zmm0, %zmm1, %zmm0
 ; AVX512DQ-NEXT:    ## kill: %XMM0<def> %XMM0<kill> %ZMM0<kill>
+; AVX512DQ-NEXT:    vzeroupper
 ; AVX512DQ-NEXT:    retq
 ;
 ; SKX-LABEL: imulq128:
@@ -724,7 +725,7 @@ define <8 x double> @test_mask_vminpd(<8 x double> %dst, <8 x double> %i,
 ;
 ; AVX512VL-LABEL: test_mask_vminpd:
 ; AVX512VL:       ## BB#0:
-; AVX512VL-NEXT:    vpxord %ymm4, %ymm4, %ymm4
+; AVX512VL-NEXT:    vpxor %ymm4, %ymm4, %ymm4
 ; AVX512VL-NEXT:    vpcmpneqd %ymm4, %ymm3, %k1
 ; AVX512VL-NEXT:    vminpd %zmm2, %zmm1, %zmm0 {%k1}
 ; AVX512VL-NEXT:    retq
@@ -747,7 +748,7 @@ define <8 x double> @test_mask_vminpd(<8 x double> %dst, <8 x double> %i,
 ;
 ; SKX-LABEL: test_mask_vminpd:
 ; SKX:       ## BB#0:
-; SKX-NEXT:    vpxord %ymm4, %ymm4, %ymm4
+; SKX-NEXT:    vpxor %ymm4, %ymm4, %ymm4
 ; SKX-NEXT:    vpcmpneqd %ymm4, %ymm3, %k1
 ; SKX-NEXT:    vminpd %zmm2, %zmm1, %zmm0 {%k1}
 ; SKX-NEXT:    retq
@@ -787,7 +788,7 @@ define <8 x double> @test_mask_vmaxpd(<8 x double> %dst, <8 x double> %i,
 ;
 ; AVX512VL-LABEL: test_mask_vmaxpd:
 ; AVX512VL:       ## BB#0:
-; AVX512VL-NEXT:    vpxord %ymm4, %ymm4, %ymm4
+; AVX512VL-NEXT:    vpxor %ymm4, %ymm4, %ymm4
 ; AVX512VL-NEXT:    vpcmpneqd %ymm4, %ymm3, %k1
 ; AVX512VL-NEXT:    vmaxpd %zmm2, %zmm1, %zmm0 {%k1}
 ; AVX512VL-NEXT:    retq
@@ -810,7 +811,7 @@ define <8 x double> @test_mask_vmaxpd(<8 x double> %dst, <8 x double> %i,
 ;
 ; SKX-LABEL: test_mask_vmaxpd:
 ; SKX:       ## BB#0:
-; SKX-NEXT:    vpxord %ymm4, %ymm4, %ymm4
+; SKX-NEXT:    vpxor %ymm4, %ymm4, %ymm4
 ; SKX-NEXT:    vpcmpneqd %ymm4, %ymm3, %k1
 ; SKX-NEXT:    vmaxpd %zmm2, %zmm1, %zmm0 {%k1}
 ; SKX-NEXT:    retq

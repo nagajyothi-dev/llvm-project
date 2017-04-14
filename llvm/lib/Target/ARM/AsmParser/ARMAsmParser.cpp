@@ -1245,6 +1245,20 @@ public:
     return ARM_AM::getSOImmVal(Value) == -1 &&
       ARM_AM::getSOImmVal(-Value) != -1;
   }
+  bool isThumbModImmNeg1_7() const {
+    if (!isImm()) return false;
+    const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
+    if (!CE) return false;
+    int32_t Value = -(int32_t)CE->getValue();
+    return 0 < Value && Value < 8;
+  }
+  bool isThumbModImmNeg8_255() const {
+    if (!isImm()) return false;
+    const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
+    if (!CE) return false;
+    int32_t Value = -(int32_t)CE->getValue();
+    return 7 < Value && Value < 256;
+  }
   bool isConstantPoolImm() const { return Kind == k_ConstantPoolImmediate; }
   bool isBitfield() const { return Kind == k_BitfieldDescriptor; }
   bool isPostIdxRegShifted() const { return Kind == k_PostIndexRegister; }
@@ -2035,6 +2049,20 @@ public:
     Inst.addOperand(MCOperand::createImm(Enc));
   }
 
+  void addThumbModImmNeg8_255Operands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
+    uint32_t Val = -CE->getValue();
+    Inst.addOperand(MCOperand::createImm(Val));
+  }
+
+  void addThumbModImmNeg1_7Operands(MCInst &Inst, unsigned N) const {
+    assert(N == 1 && "Invalid number of operands!");
+    const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
+    uint32_t Val = -CE->getValue();
+    Inst.addOperand(MCOperand::createImm(Val));
+  }
+
   void addBitfieldOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
     // Munge the lsb/width into a bitfield mask.
@@ -2141,7 +2169,7 @@ public:
     // The operand is actually a t2_so_imm, but we have its bitwise
     // negation in the assembly source, so twiddle it here.
     const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
-    Inst.addOperand(MCOperand::createImm(~CE->getValue()));
+    Inst.addOperand(MCOperand::createImm(~(uint32_t)CE->getValue()));
   }
 
   void addT2SOImmNegOperands(MCInst &Inst, unsigned N) const {
@@ -2149,7 +2177,7 @@ public:
     // The operand is actually a t2_so_imm, but we have its
     // negation in the assembly source, so twiddle it here.
     const MCConstantExpr *CE = dyn_cast<MCConstantExpr>(getImm());
-    Inst.addOperand(MCOperand::createImm(-CE->getValue()));
+    Inst.addOperand(MCOperand::createImm(-(uint32_t)CE->getValue()));
   }
 
   void addImm0_4095NegOperands(MCInst &Inst, unsigned N) const {
@@ -4330,7 +4358,7 @@ ARMAsmParser::parseMSRMaskOperand(OperandVector &Operands) {
 
       // If some specific flag is already set, it means that some letter is
       // present more than once, this is not acceptable.
-      if (FlagsVal == ~0U || (FlagsVal & Flag))
+      if (Flag == ~0U || (FlagsVal & Flag))
         return MatchOperand_NoMatch;
       FlagsVal |= Flag;
     }
@@ -5484,7 +5512,8 @@ bool ARMAsmParser::parsePrefix(ARMMCExpr::VariantKind &RefKind) {
   enum {
     COFF = (1 << MCObjectFileInfo::IsCOFF),
     ELF = (1 << MCObjectFileInfo::IsELF),
-    MACHO = (1 << MCObjectFileInfo::IsMachO)
+    MACHO = (1 << MCObjectFileInfo::IsMachO),
+    WASM = (1 << MCObjectFileInfo::IsWasm),
   };
   static const struct PrefixEntry {
     const char *Spelling;
@@ -5517,6 +5546,9 @@ bool ARMAsmParser::parsePrefix(ARMMCExpr::VariantKind &RefKind) {
     break;
   case MCObjectFileInfo::IsCOFF:
     CurrentFormat = COFF;
+    break;
+  case MCObjectFileInfo::IsWasm:
+    CurrentFormat = WASM;
     break;
   }
 
@@ -6301,10 +6333,6 @@ bool ARMAsmParser::validatetLDMRegList(const MCInst &Inst,
   else if (ListContainsPC && ListContainsLR)
     return Error(Operands[ListNo + HasWritebackToken]->getStartLoc(),
                  "PC and LR may not be in the register list simultaneously");
-  else if (inITBlock() && !lastInITBlock() && ListContainsPC)
-    return Error(Operands[ListNo + HasWritebackToken]->getStartLoc(),
-                 "instruction must be outside of IT block or the last "
-                 "instruction in an IT block");
   return false;
 }
 
@@ -6364,6 +6392,12 @@ bool ARMAsmParser::validateInstruction(MCInst &Inst,
              Inst.getOperand(MCID.findFirstPredOperandIdx()).getImm() !=
                  ARMCC::AL) {
     return Warning(Loc, "predicated instructions should be in IT block");
+  }
+
+  // PC-setting instructions in an IT block, but not the last instruction of
+  // the block, are UNPREDICTABLE.
+  if (inExplicitITBlock() && !lastInITBlock() && isITBlockTerminator(Inst)) {
+    return Error(Loc, "instruction must be outside of IT block or the last instruction in an IT block");
   }
 
   const unsigned Opcode = Inst.getOpcode();
@@ -6676,6 +6710,7 @@ bool ARMAsmParser::validateInstruction(MCInst &Inst,
     break;
   }
   case ARM::MOVi16:
+  case ARM::MOVTi16:
   case ARM::t2MOVi16:
   case ARM::t2MOVTi16:
     {
@@ -8232,7 +8267,7 @@ bool ARMAsmParser::processInstruction(MCInst &Inst,
   case ARM::t2LSRri:
   case ARM::t2ASRri: {
     if (isARMLowRegister(Inst.getOperand(0).getReg()) &&
-        Inst.getOperand(0).getReg() == Inst.getOperand(1).getReg() &&
+        isARMLowRegister(Inst.getOperand(1).getReg()) &&
         Inst.getOperand(5).getReg() == (inITBlock() ? 0 : ARM::CPSR) &&
         !(static_cast<ARMOperand &>(*Operands[3]).isToken() &&
           static_cast<ARMOperand &>(*Operands[3]).getToken() == ".w")) {
@@ -8307,23 +8342,38 @@ bool ARMAsmParser::processInstruction(MCInst &Inst,
       isNarrow = true;
     MCInst TmpInst;
     unsigned newOpc;
-    switch(ARM_AM::getSORegShOp(Inst.getOperand(2).getImm())) {
-    default: llvm_unreachable("unexpected opcode!");
-    case ARM_AM::asr: newOpc = isNarrow ? ARM::tASRri : ARM::t2ASRri; break;
-    case ARM_AM::lsr: newOpc = isNarrow ? ARM::tLSRri : ARM::t2LSRri; break;
-    case ARM_AM::lsl: newOpc = isNarrow ? ARM::tLSLri : ARM::t2LSLri; break;
-    case ARM_AM::ror: newOpc = ARM::t2RORri; isNarrow = false; break;
-    case ARM_AM::rrx: isNarrow = false; newOpc = ARM::t2RRX; break;
-    }
+    unsigned Shift = ARM_AM::getSORegShOp(Inst.getOperand(2).getImm());
     unsigned Amount = ARM_AM::getSORegOffset(Inst.getOperand(2).getImm());
+    bool isMov = false;
+    // MOV rd, rm, LSL #0 is actually a MOV instruction
+    if (Shift == ARM_AM::lsl && Amount == 0) {
+      isMov = true;
+      // The 16-bit encoding of MOV rd, rm, LSL #N is explicitly encoding T2 of
+      // MOV (register) in the ARMv8-A and ARMv8-M manuals, and immediate 0 is
+      // unpredictable in an IT block so the 32-bit encoding T3 has to be used
+      // instead.
+      if (inITBlock()) {
+        isNarrow = false;
+      }
+      newOpc = isNarrow ? ARM::tMOVSr : ARM::t2MOVr;
+    } else {
+      switch(Shift) {
+      default: llvm_unreachable("unexpected opcode!");
+      case ARM_AM::asr: newOpc = isNarrow ? ARM::tASRri : ARM::t2ASRri; break;
+      case ARM_AM::lsr: newOpc = isNarrow ? ARM::tLSRri : ARM::t2LSRri; break;
+      case ARM_AM::lsl: newOpc = isNarrow ? ARM::tLSLri : ARM::t2LSLri; break;
+      case ARM_AM::ror: newOpc = ARM::t2RORri; isNarrow = false; break;
+      case ARM_AM::rrx: isNarrow = false; newOpc = ARM::t2RRX; break;
+      }
+    }
     if (Amount == 32) Amount = 0;
     TmpInst.setOpcode(newOpc);
     TmpInst.addOperand(Inst.getOperand(0)); // Rd
-    if (isNarrow)
+    if (isNarrow && !isMov)
       TmpInst.addOperand(MCOperand::createReg(
           Inst.getOpcode() == ARM::t2MOVSsi ? ARM::CPSR : 0));
     TmpInst.addOperand(Inst.getOperand(1)); // Rn
-    if (newOpc != ARM::t2RRX)
+    if (newOpc != ARM::t2RRX && !isMov)
       TmpInst.addOperand(MCOperand::createImm(Amount));
     TmpInst.addOperand(Inst.getOperand(3)); // CondCode
     TmpInst.addOperand(Inst.getOperand(4));
@@ -8918,6 +8968,9 @@ unsigned ARMAsmParser::checkTargetMatchPredicate(MCInst &Inst) {
     if (isThumbTwo() && Inst.getOperand(OpNo).getReg() == ARM::CPSR &&
         inITBlock())
       return Match_RequiresNotITBlock;
+    // LSL with zero immediate is not allowed in an IT block
+    if (Opc == ARM::tLSLri && Inst.getOperand(3).getImm() == 0 && inITBlock())
+      return Match_RequiresNotITBlock;
   } else if (isThumbOne()) {
     // Some high-register supporting Thumb1 encodings only allow both registers
     // to be from r0-r7 when in Thumb2.
@@ -8930,6 +8983,22 @@ unsigned ARMAsmParser::checkTargetMatchPredicate(MCInst &Inst) {
              isARMLowRegister(Inst.getOperand(0).getReg()) &&
              isARMLowRegister(Inst.getOperand(1).getReg()))
       return Match_RequiresV6;
+  }
+
+  // Before ARMv8 the rules for when SP is allowed in t2MOVr are more complex
+  // than the loop below can handle, so it uses the GPRnopc register class and
+  // we do SP handling here.
+  if (Opc == ARM::t2MOVr && !hasV8Ops())
+  {
+    // SP as both source and destination is not allowed
+    if (Inst.getOperand(0).getReg() == ARM::SP &&
+        Inst.getOperand(1).getReg() == ARM::SP)
+      return Match_RequiresV8;
+    // When flags-setting SP as either source or destination is not allowed
+    if (Inst.getOperand(4).getReg() == ARM::CPSR &&
+        (Inst.getOperand(0).getReg() == ARM::SP ||
+         Inst.getOperand(1).getReg() == ARM::SP))
+      return Match_RequiresV8;
   }
 
   for (unsigned I = 0; I < MCID.NumOperands; ++I)
@@ -8945,7 +9014,7 @@ unsigned ARMAsmParser::checkTargetMatchPredicate(MCInst &Inst) {
 }
 
 namespace llvm {
-template <> inline bool IsCPSRDead<MCInst>(MCInst *Instr) {
+template <> inline bool IsCPSRDead<MCInst>(const MCInst *Instr) {
   return true; // In an assembly source, no need to second-guess
 }
 }
@@ -8975,6 +9044,7 @@ bool ARMAsmParser::isITBlockTerminator(MCInst &Inst) const {
   // operands. We only care about Thumb instructions here, as ARM instructions
   // obviously can't be in an IT block.
   switch (Inst.getOpcode()) {
+  case ARM::tLDMIA:
   case ARM::t2LDMIA:
   case ARM::t2LDMIA_UPD:
   case ARM::t2LDMDB:

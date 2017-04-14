@@ -1,3 +1,7 @@
+// RUN: %clang_builtins %s %librt -o %t && %run %t
+// XFAIL: armhf-target-arch
+// This test fails for armhf (see pr32261)
+
 //===-- unordsf2vfp_test.c - Test __unordsf2vfp ---------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -19,7 +23,7 @@
 
 extern int __unordsf2vfp(float a, float b);
 
-#if __arm__
+#if __arm__ && __VFP_FP__
 int test__unordsf2vfp(float a, float b)
 {
     int actual = __unordsf2vfp(a, b);
@@ -33,7 +37,7 @@ int test__unordsf2vfp(float a, float b)
 
 int main()
 {
-#if __arm__
+#if __arm__ && __VFP_FP__
     if (test__unordsf2vfp(0.0, NAN))
         return 1;
     if (test__unordsf2vfp(NAN, 1.0))

@@ -14,10 +14,10 @@
 
 // Project includes
 #include "lldb/Core/ArchSpec.h"
-#include "lldb/Core/UUID.h"
-#include "lldb/Host/FileSpec.h"
 #include "lldb/Symbol/TypeSystem.h"
 #include "lldb/Target/PathMappingList.h"
+#include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/UUID.h"
 #include "lldb/lldb-forward.h"
 
 // Other libraries and framework includes
@@ -961,6 +961,20 @@ public:
   //------------------------------------------------------------------
   bool RemapSourceFile(llvm::StringRef path, std::string &new_path) const;
   bool RemapSourceFile(const char *, std::string &) const = delete;
+
+  //------------------------------------------------------------------
+  /// Loads this module to memory.
+  ///
+  /// Loads the bits needed to create an executable image to the memory.
+  /// It is useful with bare-metal targets where target does not have the
+  /// ability to start a process itself.
+  ///
+  /// @param[in] target
+  ///     Target where to load the module.
+  ///
+  /// @return
+  //------------------------------------------------------------------
+  Error LoadInMemory(Target &target, bool set_pc);
 
   //----------------------------------------------------------------------
   /// @class LookupInfo Module.h "lldb/Core/Module.h"
