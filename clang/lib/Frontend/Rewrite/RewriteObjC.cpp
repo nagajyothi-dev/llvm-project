@@ -4261,7 +4261,7 @@ void RewriteObjC::RewriteByRefVar(VarDecl *ND) {
     }
     ByrefType += "};\n";
     unsigned nameSize = Name.size();
-    // for block or function pointer declaration. Name is aleady
+    // for block or function pointer declaration. Name is already
     // part of the declaration.
     if (Ty->isBlockPointerType() || Ty->isFunctionPointerType())
       nameSize = 1;
@@ -5052,7 +5052,7 @@ void RewriteObjCFragileABI::Initialize(ASTContext &context) {
   Preamble += "\n#define __OFFSETOFIVAR__(TYPE, MEMBER) ((long long) &((TYPE *)0)->MEMBER)\n";
 }
 
-/// RewriteIvarOffsetComputation - This rutine synthesizes computation of
+/// RewriteIvarOffsetComputation - This routine synthesizes computation of
 /// ivar offset.
 void RewriteObjCFragileABI::RewriteIvarOffsetComputation(ObjCIvarDecl *ivar,
                                                          std::string &Result) {

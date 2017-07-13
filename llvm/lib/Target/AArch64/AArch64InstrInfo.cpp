@@ -17,8 +17,8 @@
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "Utils/AArch64BaseInfo.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -763,6 +763,128 @@ bool AArch64InstrInfo::isAsCheapAsAMove(const MachineInstr &MI) const {
   llvm_unreachable("Unknown opcode to check as cheap as a move!");
 }
 
+bool AArch64InstrInfo::isFalkorShiftExtFast(const MachineInstr &MI) const {
+  switch (MI.getOpcode()) {
+  default:
+    return false;
+
+  case AArch64::ADDWrs:
+  case AArch64::ADDXrs:
+  case AArch64::ADDSWrs:
+  case AArch64::ADDSXrs: {
+    unsigned Imm = MI.getOperand(3).getImm();
+    unsigned ShiftVal = AArch64_AM::getShiftValue(Imm);
+    if (ShiftVal == 0)
+      return true;
+    return AArch64_AM::getShiftType(Imm) == AArch64_AM::LSL && ShiftVal <= 5;
+  }
+
+  case AArch64::ADDWrx:
+  case AArch64::ADDXrx:
+  case AArch64::ADDXrx64:
+  case AArch64::ADDSWrx:
+  case AArch64::ADDSXrx:
+  case AArch64::ADDSXrx64: {
+    unsigned Imm = MI.getOperand(3).getImm();
+    switch (AArch64_AM::getArithExtendType(Imm)) {
+    default:
+      return false;
+    case AArch64_AM::UXTB:
+    case AArch64_AM::UXTH:
+    case AArch64_AM::UXTW:
+    case AArch64_AM::UXTX:
+      return AArch64_AM::getArithShiftValue(Imm) <= 4;
+    }
+  }
+
+  case AArch64::SUBWrs:
+  case AArch64::SUBSWrs: {
+    unsigned Imm = MI.getOperand(3).getImm();
+    unsigned ShiftVal = AArch64_AM::getShiftValue(Imm);
+    return ShiftVal == 0 ||
+           (AArch64_AM::getShiftType(Imm) == AArch64_AM::ASR && ShiftVal == 31);
+  }
+
+  case AArch64::SUBXrs:
+  case AArch64::SUBSXrs: {
+    unsigned Imm = MI.getOperand(3).getImm();
+    unsigned ShiftVal = AArch64_AM::getShiftValue(Imm);
+    return ShiftVal == 0 ||
+           (AArch64_AM::getShiftType(Imm) == AArch64_AM::ASR && ShiftVal == 63);
+  }
+
+  case AArch64::SUBWrx:
+  case AArch64::SUBXrx:
+  case AArch64::SUBXrx64:
+  case AArch64::SUBSWrx:
+  case AArch64::SUBSXrx:
+  case AArch64::SUBSXrx64: {
+    unsigned Imm = MI.getOperand(3).getImm();
+    switch (AArch64_AM::getArithExtendType(Imm)) {
+    default:
+      return false;
+    case AArch64_AM::UXTB:
+    case AArch64_AM::UXTH:
+    case AArch64_AM::UXTW:
+    case AArch64_AM::UXTX:
+      return AArch64_AM::getArithShiftValue(Imm) == 0;
+    }
+  }
+
+  case AArch64::LDRBBroW:
+  case AArch64::LDRBBroX:
+  case AArch64::LDRBroW:
+  case AArch64::LDRBroX:
+  case AArch64::LDRDroW:
+  case AArch64::LDRDroX:
+  case AArch64::LDRHHroW:
+  case AArch64::LDRHHroX:
+  case AArch64::LDRHroW:
+  case AArch64::LDRHroX:
+  case AArch64::LDRQroW:
+  case AArch64::LDRQroX:
+  case AArch64::LDRSBWroW:
+  case AArch64::LDRSBWroX:
+  case AArch64::LDRSBXroW:
+  case AArch64::LDRSBXroX:
+  case AArch64::LDRSHWroW:
+  case AArch64::LDRSHWroX:
+  case AArch64::LDRSHXroW:
+  case AArch64::LDRSHXroX:
+  case AArch64::LDRSWroW:
+  case AArch64::LDRSWroX:
+  case AArch64::LDRSroW:
+  case AArch64::LDRSroX:
+  case AArch64::LDRWroW:
+  case AArch64::LDRWroX:
+  case AArch64::LDRXroW:
+  case AArch64::LDRXroX:
+  case AArch64::PRFMroW:
+  case AArch64::PRFMroX:
+  case AArch64::STRBBroW:
+  case AArch64::STRBBroX:
+  case AArch64::STRBroW:
+  case AArch64::STRBroX:
+  case AArch64::STRDroW:
+  case AArch64::STRDroX:
+  case AArch64::STRHHroW:
+  case AArch64::STRHHroX:
+  case AArch64::STRHroW:
+  case AArch64::STRHroX:
+  case AArch64::STRQroW:
+  case AArch64::STRQroX:
+  case AArch64::STRSroW:
+  case AArch64::STRSroX:
+  case AArch64::STRWroW:
+  case AArch64::STRWroX:
+  case AArch64::STRXroW:
+  case AArch64::STRXroX: {
+    unsigned IsSigned = MI.getOperand(3).getImm();
+    return !IsSigned;
+  }
+  }
+}
+
 bool AArch64InstrInfo::isCoalescableExtInstr(const MachineInstr &MI,
                                              unsigned &SrcReg, unsigned &DstReg,
                                              unsigned &SubIdx) const {
@@ -914,7 +1036,7 @@ static bool UpdateOperandRegClass(MachineInstr &Instr) {
 /// \brief Return the opcode that does not set flags when possible - otherwise
 /// return the original opcode. The caller is responsible to do the actual
 /// substitution and legality checking.
-static unsigned convertFlagSettingOpcode(const MachineInstr &MI) {
+static unsigned convertToNonFlagSettingOpc(const MachineInstr &MI) {
   // Don't convert all compare instructions, because for some the zero register
   // encoding becomes the sp register.
   bool MIDefinesZeroReg = false;
@@ -1023,7 +1145,7 @@ bool AArch64InstrInfo::optimizeCompareInstr(
       return true;
     }
     unsigned Opc = CmpInstr.getOpcode();
-    unsigned NewOpc = convertFlagSettingOpcode(CmpInstr);
+    unsigned NewOpc = convertToNonFlagSettingOpc(CmpInstr);
     if (NewOpc == Opc)
       return false;
     const MCInstrDesc &MCID = get(NewOpc);
@@ -1160,6 +1282,7 @@ static UsedNZCV getUsedNZCV(AArch64CC::CondCode CC) {
     case AArch64CC::HI: // Z clear and C set
     case AArch64CC::LS: // Z set   or  C clear
       UsedFlags.Z = true;
+      LLVM_FALLTHROUGH;
     case AArch64CC::HS: // C set
     case AArch64CC::LO: // C clear
       UsedFlags.C = true;
@@ -1178,6 +1301,7 @@ static UsedNZCV getUsedNZCV(AArch64CC::CondCode CC) {
     case AArch64CC::GT: // Z clear, N and V the same
     case AArch64CC::LE: // Z set,   N and V differ
       UsedFlags.Z = true;
+      LLVM_FALLTHROUGH;
     case AArch64CC::GE: // N and V the same
     case AArch64CC::LT: // N and V differ 
       UsedFlags.N = true;
@@ -2309,7 +2433,7 @@ void AArch64InstrInfo::storeRegToStackSlot(
       PtrInfo, MachineMemOperand::MOStore, MFI.getObjectSize(FI), Align);
   unsigned Opc = 0;
   bool Offset = true;
-  switch (RC->getSize()) {
+  switch (TRI->getSpillSize(*RC)) {
   case 1:
     if (AArch64::FPR8RegClass.hasSubClassEq(RC))
       Opc = AArch64::STRBui;
@@ -2413,7 +2537,7 @@ void AArch64InstrInfo::loadRegFromStackSlot(
 
   unsigned Opc = 0;
   bool Offset = true;
-  switch (RC->getSize()) {
+  switch (TRI->getSpillSize(*RC)) {
   case 1:
     if (AArch64::FPR8RegClass.hasSubClassEq(RC))
       Opc = AArch64::LDRBui;
@@ -2638,7 +2762,8 @@ MachineInstr *AArch64InstrInfo::foldMemoryOperandImpl(
     };
 
     if (DstMO.getSubReg() == 0 && SrcMO.getSubReg() == 0) {
-      assert(getRegClass(DstReg)->getSize() == getRegClass(SrcReg)->getSize() &&
+      assert(TRI.getRegSizeInBits(*getRegClass(DstReg)) ==
+             TRI.getRegSizeInBits(*getRegClass(SrcReg)) &&
              "Mismatched register size in non subreg COPY");
       if (IsSpill)
         storeRegToStackSlot(MBB, InsertPt, SrcReg, SrcMO.isKill(), FrameIndex,
@@ -2724,7 +2849,8 @@ MachineInstr *AArch64InstrInfo::foldMemoryOperandImpl(
       }
 
       if (FillRC) {
-        assert(getRegClass(SrcReg)->getSize() == FillRC->getSize() &&
+        assert(TRI.getRegSizeInBits(*getRegClass(SrcReg)) ==
+                   TRI.getRegSizeInBits(*FillRC) &&
                "Mismatched regclass size on folded subreg COPY");
         loadRegFromStackSlot(MBB, InsertPt, DstReg, FrameIndex, FillRC, &TRI);
         MachineInstr &LoadMI = *--InsertPt;
@@ -3014,7 +3140,7 @@ bool llvm::rewriteAArch64FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
   return false;
 }
 
-void AArch64InstrInfo::getNoopForMachoTarget(MCInst &NopInst) const {
+void AArch64InstrInfo::getNoop(MCInst &NopInst) const {
   NopInst.setOpcode(AArch64::HINT);
   NopInst.addOperand(MCOperand::createImm(0));
 }
@@ -3194,7 +3320,7 @@ static bool getMaddPatterns(MachineInstr &Root,
     // When NZCV is live bail out.
     if (Cmp_NZCV == -1)
       return false;
-    unsigned NewOpc = convertFlagSettingOpcode(Root);
+    unsigned NewOpc = convertToNonFlagSettingOpc(Root);
     // When opcode can't change bail out.
     // CHECKME: do we miss any cases for opcode conversion?
     if (NewOpc == Opc)
@@ -3414,6 +3540,10 @@ static bool getFMAPatterns(MachineInstr &Root,
       Patterns.push_back(MachineCombinerPattern::FMLSv1i32_indexed_OP2);
       Found = true;
     }
+    if (canCombineWithFMUL(MBB, Root.getOperand(1), AArch64::FNMULSrr)) {
+      Patterns.push_back(MachineCombinerPattern::FNMULSUBS_OP1);
+      Found = true;
+    }
     break;
   case AArch64::FSUBDrr:
     if (canCombineWithFMUL(MBB, Root.getOperand(1), AArch64::FMULDrr)) {
@@ -3426,6 +3556,10 @@ static bool getFMAPatterns(MachineInstr &Root,
     } else if (canCombineWithFMUL(MBB, Root.getOperand(2),
                                   AArch64::FMULv1i64_indexed)) {
       Patterns.push_back(MachineCombinerPattern::FMLSv1i64_indexed_OP2);
+      Found = true;
+    }
+    if (canCombineWithFMUL(MBB, Root.getOperand(1), AArch64::FNMULDrr)) {
+      Patterns.push_back(MachineCombinerPattern::FNMULSUBD_OP1);
       Found = true;
     }
     break;
@@ -3482,6 +3616,8 @@ AArch64InstrInfo::isThroughputPattern(MachineCombinerPattern Pattern) const {
   case MachineCombinerPattern::FMULADDD_OP2:
   case MachineCombinerPattern::FMULSUBD_OP1:
   case MachineCombinerPattern::FMULSUBD_OP2:
+  case MachineCombinerPattern::FNMULSUBS_OP1:
+  case MachineCombinerPattern::FNMULSUBD_OP1:
   case MachineCombinerPattern::FMLAv1i32_indexed_OP1:
   case MachineCombinerPattern::FMLAv1i32_indexed_OP2:
   case MachineCombinerPattern::FMLAv1i64_indexed_OP1:
@@ -3535,12 +3671,17 @@ enum class FMAInstKind { Default, Indexed, Accumulator };
 ///  F|MUL I=A,B,0
 ///  F|ADD R,I,C
 ///  ==> F|MADD R,A,B,C
+/// \param MF Containing MachineFunction
+/// \param MRI Register information
+/// \param TII Target information
 /// \param Root is the F|ADD instruction
 /// \param [out] InsInstrs is a vector of machine instructions and will
 /// contain the generated madd instruction
 /// \param IdxMulOpd is index of operand in Root that is the result of
 /// the F|MUL. In the example above IdxMulOpd is 1.
 /// \param MaddOpc the opcode fo the f|madd instruction
+/// \param RC Register class of operands
+/// \param kind of fma instruction (addressing mode) to be generated
 static MachineInstr *
 genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
                  const TargetInstrInfo *TII, MachineInstr &Root,
@@ -3599,6 +3740,9 @@ genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
 ///   ADD R,I,Imm
 ///   ==> ORR  V, ZR, Imm
 ///   ==> MADD R,A,B,V
+/// \param MF Containing MachineFunction
+/// \param MRI Register information
+/// \param TII Target information
 /// \param Root is the ADD instruction
 /// \param [out] InsInstrs is a vector of machine instructions and will
 /// contain the generated madd instruction
@@ -3607,6 +3751,7 @@ genFusedMultiply(MachineFunction &MF, MachineRegisterInfo &MRI,
 /// \param MaddOpc the opcode fo the madd instruction
 /// \param VR is a virtual register that holds the value of an ADD operand
 /// (V in the example above).
+/// \param RC Register class of operands
 static MachineInstr *genMaddR(MachineFunction &MF, MachineRegisterInfo &MRI,
                               const TargetInstrInfo *TII, MachineInstr &Root,
                               SmallVectorImpl<MachineInstr *> &InsInstrs,
@@ -3983,6 +4128,24 @@ void AArch64InstrInfo::genAlternativeCodeSequence(
     MUL = genFusedMultiply(MF, MRI, TII, Root, InsInstrs, 1, Opc, RC);
     break;
   }
+
+  case MachineCombinerPattern::FNMULSUBS_OP1:
+  case MachineCombinerPattern::FNMULSUBD_OP1: {
+    // FNMUL I=A,B,0
+    // FSUB R,I,C
+    // ==> FNMADD R,A,B,C // = -A*B - C
+    // --- Create(FNMADD);
+    if (Pattern == MachineCombinerPattern::FNMULSUBS_OP1) {
+      Opc = AArch64::FNMADDSrrr;
+      RC = &AArch64::FPR32RegClass;
+    } else {
+      Opc = AArch64::FNMADDDrrr;
+      RC = &AArch64::FPR64RegClass;
+    }
+    MUL = genFusedMultiply(MF, MRI, TII, Root, InsInstrs, 1, Opc, RC);
+    break;
+  }
+
   case MachineCombinerPattern::FMULSUBS_OP2:
   case MachineCombinerPattern::FMULSUBD_OP2: {
     // FMUL I=A,B,0
@@ -3998,6 +4161,7 @@ void AArch64InstrInfo::genAlternativeCodeSequence(
     }
     MUL = genFusedMultiply(MF, MRI, TII, Root, InsInstrs, 2, Opc, RC);
     break;
+  }
 
   case MachineCombinerPattern::FMLSv1i32_indexed_OP2:
     Opc = AArch64::FMLSv1i32_indexed;
@@ -4054,7 +4218,6 @@ void AArch64InstrInfo::genAlternativeCodeSequence(
                              FMAInstKind::Accumulator);
     }
     break;
-  }
   } // end switch (Pattern)
   // Record MUL and ADD/SUB for deletion
   DelInstrs.push_back(MUL);
@@ -4064,26 +4227,36 @@ void AArch64InstrInfo::genAlternativeCodeSequence(
 /// \brief Replace csincr-branch sequence by simple conditional branch
 ///
 /// Examples:
-/// 1.
+/// 1. \code
 ///   csinc  w9, wzr, wzr, <condition code>
 ///   tbnz   w9, #0, 0x44
+///    \endcode
 /// to
+///    \code
 ///   b.<inverted condition code>
+///    \endcode
 ///
-/// 2.
+/// 2. \code
 ///   csinc w9, wzr, wzr, <condition code>
 ///   tbz   w9, #0, 0x44
+///    \endcode
 /// to
+///    \code
 ///   b.<condition code>
+///    \endcode
 ///
 /// Replace compare and branch sequence by TBZ/TBNZ instruction when the
 /// compare's constant operand is power of 2.
 ///
 /// Examples:
+///    \code
 ///   and  w8, w8, #0x400
 ///   cbnz w8, L1
+///    \endcode
 /// to
+///    \code
 ///   tbnz w8, #10, L1
+///    \endcode
 ///
 /// \param  MI Conditional Branch
 /// \return True when the simple conditional branch is generated
@@ -4254,6 +4427,13 @@ AArch64InstrInfo::getSerializableBitmaskMachineOperandTargetFlags() const {
       {MO_GOT, "aarch64-got"},
       {MO_NC, "aarch64-nc"},
       {MO_TLS, "aarch64-tls"}};
+  return makeArrayRef(TargetFlags);
+}
+
+ArrayRef<std::pair<MachineMemOperand::Flags, const char *>>
+AArch64InstrInfo::getSerializableMachineMemOperandTargetFlags() const {
+  static const std::pair<MachineMemOperand::Flags, const char *> TargetFlags[] =
+      {{MOSuppressPair, "aarch64-suppress-pair"}};
   return makeArrayRef(TargetFlags);
 }
 

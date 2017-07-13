@@ -24,7 +24,7 @@
 extern "C" void *memset(void *ptr, int value, uptr num);
 
 namespace __lsan {
-#if defined(__i386__)
+#if defined(__i386__) || defined(__arm__)
 static const uptr kMaxAllowedMallocSize = 1UL << 30;
 #elif defined(__mips64) || defined(__aarch64__)
 static const uptr kMaxAllowedMallocSize = 4UL << 30;
@@ -38,8 +38,8 @@ typedef CombinedAllocator<PrimaryAllocator, AllocatorCache,
 static Allocator allocator;
 
 void InitializeAllocator() {
+  SetAllocatorMayReturnNull(common_flags()->allocator_may_return_null);
   allocator.InitLinkerInitialized(
-      common_flags()->allocator_may_return_null,
       common_flags()->allocator_release_to_os_interval_ms);
 }
 
@@ -74,9 +74,9 @@ void *Allocate(const StackTrace &stack, uptr size, uptr alignment,
     size = 1;
   if (size > kMaxAllowedMallocSize) {
     Report("WARNING: LeakSanitizer failed to allocate %zu bytes\n", size);
-    return nullptr;
+    return Allocator::FailureHandler::OnBadRequest();
   }
-  void *p = allocator.Allocate(GetAllocatorCache(), size, alignment, false);
+  void *p = allocator.Allocate(GetAllocatorCache(), size, alignment);
   // Do not rely on the allocator to clear the memory (it's slow).
   if (cleared && allocator.FromPrimary(p))
     memset(p, 0, size);
@@ -99,7 +99,7 @@ void *Reallocate(const StackTrace &stack, void *p, uptr new_size,
   if (new_size > kMaxAllowedMallocSize) {
     Report("WARNING: LeakSanitizer failed to allocate %zu bytes\n", new_size);
     allocator.Deallocate(GetAllocatorCache(), p);
-    return nullptr;
+    return Allocator::FailureHandler::OnBadRequest();
   }
   p = allocator.Reallocate(GetAllocatorCache(), p, new_size, alignment);
   RegisterAllocation(stack, p, new_size);
@@ -115,6 +115,39 @@ uptr GetMallocUsableSize(const void *p) {
   ChunkMetadata *m = Metadata(p);
   if (!m) return 0;
   return m->requested_size;
+}
+
+void *lsan_memalign(uptr alignment, uptr size, const StackTrace &stack) {
+  return Allocate(stack, size, alignment, kAlwaysClearMemory);
+}
+
+void *lsan_malloc(uptr size, const StackTrace &stack) {
+  return Allocate(stack, size, 1, kAlwaysClearMemory);
+}
+
+void lsan_free(void *p) {
+  Deallocate(p);
+}
+
+void *lsan_realloc(void *p, uptr size, const StackTrace &stack) {
+  return Reallocate(stack, p, size, 1);
+}
+
+void *lsan_calloc(uptr nmemb, uptr size, const StackTrace &stack) {
+  if (CheckForCallocOverflow(size, nmemb))
+    return Allocator::FailureHandler::OnBadRequest();
+  size *= nmemb;
+  return Allocate(stack, size, 1, true);
+}
+
+void *lsan_valloc(uptr size, const StackTrace &stack) {
+  if (size == 0)
+    size = GetPageSizeCached();
+  return Allocate(stack, size, GetPageSizeCached(), kAlwaysClearMemory);
+}
+
+uptr lsan_mz_size(const void *p) {
+  return GetMallocUsableSize(p);
 }
 
 ///// Interface to the common LSan module. /////

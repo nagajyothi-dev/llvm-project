@@ -17,13 +17,13 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/LTO/Caching.h"
 #include "llvm/LTO/Config.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/SymbolicFile.h"
 #include "llvm/Support/CodeGen.h"
-#include "llvm/Support/ELF.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -73,7 +73,12 @@ static std::unique_ptr<lto::LTO> createLTO() {
   Conf.Options = InitTargetOptionsFromCodeGenFlags();
   Conf.Options.RelaxELFRelocations = true;
 
-  Conf.RelocModel = Config->Pic ? Reloc::PIC_ : Reloc::Static;
+  if (Config->Relocatable)
+    Conf.RelocModel = None;
+  else if (Config->Pic)
+    Conf.RelocModel = Reloc::PIC_;
+  else
+    Conf.RelocModel = Reloc::Static;
   Conf.CodeModel = GetCodeModelFromCMModel();
   Conf.DisableVerify = Config->DisableVerify;
   Conf.DiagHandler = diagnosticHandler;
@@ -125,14 +130,13 @@ void BitcodeCompiler::add(BitcodeFile &F) {
     // flags an undefined in IR with a definition in ASM as prevailing.
     // Once IRObjectFile is fixed to report only one symbol this hack can
     // be removed.
-    R.Prevailing =
-        !(ObjSym.getFlags() & object::BasicSymbolRef::SF_Undefined) &&
-        B->File == &F;
+    R.Prevailing = !ObjSym.isUndefined() && B->File == &F;
 
     R.VisibleToRegularObj =
         Sym->IsUsedInRegularObj || (R.Prevailing && Sym->includeInDynsym());
     if (R.Prevailing)
       undefine(Sym);
+    R.LinkerRedefined = Config->RenamedSymbols.count(Sym);
   }
   checkError(LTOObj->add(std::move(F.Obj), Resols));
 }

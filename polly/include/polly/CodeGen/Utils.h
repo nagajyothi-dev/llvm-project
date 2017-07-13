@@ -13,16 +13,22 @@
 #ifndef POLLY_CODEGEN_UTILS_H
 #define POLLY_CODEGEN_UTILS_H
 
+#include <utility>
+
 namespace llvm {
 class Pass;
 class Value;
 class BasicBlock;
+class DominatorTree;
+class RegionInfo;
+class LoopInfo;
 } // namespace llvm
 
 namespace polly {
 
 class Scop;
 
+using BBPair = std::pair<llvm::BasicBlock *, llvm::BasicBlock *>;
 /// Execute a Scop conditionally wrt @p RTC.
 ///
 /// In the CFG the optimized code of the Scop is generated next to the
@@ -55,7 +61,8 @@ class Scop;
 /// @param RTC The runtime condition checked before executing the new SCoP.
 ///
 /// @return The 'StartBlock' to which new code can be added.
-llvm::BasicBlock *executeScopConditionally(Scop &S, llvm::Pass *P,
-                                           llvm::Value *RTC);
+BBPair executeScopConditionally(Scop &S, llvm::Value *RTC,
+                                llvm::DominatorTree &DT, llvm::RegionInfo &RI,
+                                llvm::LoopInfo &LI);
 } // namespace polly
 #endif

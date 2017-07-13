@@ -7,10 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/DebugInfo/DWARF/DWARFDebugLoc.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFRelocMap.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -39,27 +40,19 @@ void DWARFDebugLoc::dump(raw_ostream &OS) const {
   }
 }
 
-void DWARFDebugLoc::parse(DataExtractor data, unsigned AddressSize) {
+void DWARFDebugLoc::parse(const DWARFDataExtractor &data) {
   uint32_t Offset = 0;
-  while (data.isValidOffset(Offset+AddressSize-1)) {
+  while (data.isValidOffset(Offset+data.getAddressSize()-1)) {
     Locations.resize(Locations.size() + 1);
     LocationList &Loc = Locations.back();
     Loc.Offset = Offset;
     // 2.6.2 Location Lists
     // A location list entry consists of:
     while (true) {
+      // A beginning and ending address offsets.
       Entry E;
-      RelocAddrMap::const_iterator AI = RelocMap.find(Offset);
-      // 1. A beginning address offset. ...
-      E.Begin = data.getUnsigned(&Offset, AddressSize);
-      if (AI != RelocMap.end())
-        E.Begin += AI->second.second;
-
-      AI = RelocMap.find(Offset);
-      // 2. An ending address offset. ...
-      E.End = data.getUnsigned(&Offset, AddressSize);
-      if (AI != RelocMap.end())
-        E.End += AI->second.second;
+      E.Begin = data.getRelocatedAddress(&Offset);
+      E.End = data.getRelocatedAddress(&Offset);
 
       // The end of any given location list is marked by an end of list entry,
       // which consists of a 0 for the beginning address offset and a 0 for the

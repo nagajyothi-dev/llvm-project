@@ -15,6 +15,7 @@
 #define LLVM_LIB_TARGET_AMDGPU_SIMACHINEFUNCTIONINFO_H
 
 #include "AMDGPUMachineFunction.h"
+#include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 #include "SIRegisterInfo.h"
 #include "llvm/CodeGen/PseudoSourceValue.h"
 #include "llvm/MC/MCRegisterInfo.h"
@@ -87,8 +88,16 @@ class SIMachineFunctionInfo final : public AMDGPUMachineFunction {
   unsigned ScratchRSrcReg;
   unsigned ScratchWaveOffsetReg;
 
+  // This is the current function's incremented size from the kernel's scratch
+  // wave offset register. For an entry function, this is exactly the same as
+  // the ScratchWaveOffsetReg.
+  unsigned FrameOffsetReg;
+
+  // Top of the stack SGPR offset derived from the ScratchWaveOffsetReg.
+  unsigned StackPtrOffsetReg;
+
   // Input registers for non-HSA ABI
-  unsigned PrivateMemoryPtrUserSGPR;
+  unsigned ImplicitBufferPtrUserSGPR;
 
   // Input registers setup for the HSA ABI.
   // User SGPRs in allocation order.
@@ -112,6 +121,8 @@ class SIMachineFunctionInfo final : public AMDGPUMachineFunction {
 
   // Graphics info.
   unsigned PSInputAddr;
+  unsigned PSInputEnable;
+
   bool ReturnsVoid;
 
   // A pair of default/requested minimum/maximum flat work group sizes.
@@ -130,17 +141,12 @@ class SIMachineFunctionInfo final : public AMDGPUMachineFunction {
   AMDGPUBufferPseudoSourceValue BufferPSV;
   AMDGPUImagePseudoSourceValue ImagePSV;
 
-public:
-  // FIXME: Make private
+private:
   unsigned LDSWaveSpillSize;
-  unsigned PSInputEna;
-
-
   unsigned ScratchOffsetReg;
   unsigned NumUserSGPRs;
   unsigned NumSystemSGPRs;
 
-private:
   bool HasSpilledSGPRs;
   bool HasSpilledVGPRs;
   bool HasNonSpillStackObjects;
@@ -173,7 +179,7 @@ private:
   // Private memory buffer
   // Compute directly in sgpr[0:1]
   // Other shaders indirect 64-bits at sgpr[0:1]
-  bool PrivateMemoryInputPtr : 1;
+  bool ImplicitBufferPtr : 1;
 
   MCPhysReg getNextUserSGPR() const {
     assert(NumSystemSGPRs == 0 && "System SGPRs must be added after user SGPRs");
@@ -230,7 +236,7 @@ public:
   unsigned addKernargSegmentPtr(const SIRegisterInfo &TRI);
   unsigned addDispatchID(const SIRegisterInfo &TRI);
   unsigned addFlatScratchInit(const SIRegisterInfo &TRI);
-  unsigned addPrivateMemoryPtr(const SIRegisterInfo &TRI);
+  unsigned addImplicitBufferPtr(const SIRegisterInfo &TRI);
 
   // Add system SGPRs.
   unsigned addWorkGroupIDX() {
@@ -335,8 +341,8 @@ public:
     return WorkItemIDZ;
   }
 
-  bool hasPrivateMemoryInputPtr() const {
-    return PrivateMemoryInputPtr;
+  bool hasImplicitBufferPtr() const {
+    return ImplicitBufferPtr;
   }
 
   unsigned getNumUserSGPRs() const {
@@ -366,17 +372,32 @@ public:
     return ScratchWaveOffsetReg;
   }
 
+  unsigned getFrameOffsetReg() const {
+    return FrameOffsetReg;
+  }
+
+  void setStackPtrOffsetReg(unsigned Reg) {
+    assert(Reg != AMDGPU::NoRegister && "Should never be unset");
+    StackPtrOffsetReg = Reg;
+  }
+
+  unsigned getStackPtrOffsetReg() const {
+    return StackPtrOffsetReg;
+  }
+
   void setScratchWaveOffsetReg(unsigned Reg) {
     assert(Reg != AMDGPU::NoRegister && "Should never be unset");
     ScratchWaveOffsetReg = Reg;
+    if (isEntryFunction())
+      FrameOffsetReg = ScratchWaveOffsetReg;
   }
 
   unsigned getQueuePtrUserSGPR() const {
     return QueuePtrUserSGPR;
   }
 
-  unsigned getPrivateMemoryPtrUserSGPR() const {
-    return PrivateMemoryPtrUserSGPR;
+  unsigned getImplicitBufferPtrUserSGPR() const {
+    return ImplicitBufferPtrUserSGPR;
   }
 
   bool hasSpilledSGPRs() const {
@@ -423,12 +444,20 @@ public:
     return PSInputAddr;
   }
 
+  unsigned getPSInputEnable() const {
+    return PSInputEnable;
+  }
+
   bool isPSInputAllocated(unsigned Index) const {
     return PSInputAddr & (1 << Index);
   }
 
   void markPSInputAllocated(unsigned Index) {
     PSInputAddr |= 1 << Index;
+  }
+
+  void markPSInputEnabled(unsigned Index) {
+    PSInputEnable |= 1 << Index;
   }
 
   bool returnsVoid() const {
@@ -525,6 +554,10 @@ public:
       return AMDGPU::VGPR2;
     }
     llvm_unreachable("unexpected dimension");
+  }
+
+  unsigned getLDSWaveSpillSize() const {
+    return LDSWaveSpillSize;
   }
 
   const AMDGPUBufferPseudoSourceValue *getBufferPSV() const {

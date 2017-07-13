@@ -31,16 +31,111 @@ namespace process_netbsd {
 ///
 /// Changes in the inferior process state are broadcasted.
 class NativeProcessNetBSD : public NativeProcessProtocol {
-  friend Error NativeProcessProtocol::Launch(
-      ProcessLaunchInfo &launch_info, NativeDelegate &native_delegate,
-      MainLoop &mainloop, NativeProcessProtocolSP &process_sp);
+public:
+  class Factory : public NativeProcessProtocol::Factory {
+  public:
+    llvm::Expected<NativeProcessProtocolSP>
+    Launch(ProcessLaunchInfo &launch_info, NativeDelegate &native_delegate,
+           MainLoop &mainloop) const override;
 
-  friend Error NativeProcessProtocol::Attach(
-      lldb::pid_t pid, NativeProcessProtocol::NativeDelegate &native_delegate,
-      MainLoop &mainloop, NativeProcessProtocolSP &process_sp);
+    llvm::Expected<NativeProcessProtocolSP>
+    Attach(lldb::pid_t pid, NativeDelegate &native_delegate,
+           MainLoop &mainloop) const override;
+  };
+
+  // ---------------------------------------------------------------------
+  // NativeProcessProtocol Interface
+  // ---------------------------------------------------------------------
+  Status Resume(const ResumeActionList &resume_actions) override;
+
+  Status Halt() override;
+
+  Status Detach() override;
+
+  Status Signal(int signo) override;
+
+  Status Kill() override;
+
+  Status GetMemoryRegionInfo(lldb::addr_t load_addr,
+                             MemoryRegionInfo &range_info) override;
+
+  Status ReadMemory(lldb::addr_t addr, void *buf, size_t size,
+                    size_t &bytes_read) override;
+
+  Status ReadMemoryWithoutTrap(lldb::addr_t addr, void *buf, size_t size,
+                               size_t &bytes_read) override;
+
+  Status WriteMemory(lldb::addr_t addr, const void *buf, size_t size,
+                     size_t &bytes_written) override;
+
+  Status AllocateMemory(size_t size, uint32_t permissions,
+                        lldb::addr_t &addr) override;
+
+  Status DeallocateMemory(lldb::addr_t addr) override;
+
+  lldb::addr_t GetSharedLibraryInfoAddress() override;
+
+  size_t UpdateThreads() override;
+
+  bool GetArchitecture(ArchSpec &arch) const override;
+
+  Status SetBreakpoint(lldb::addr_t addr, uint32_t size,
+                       bool hardware) override;
+
+  Status GetLoadedModuleFileSpec(const char *module_path,
+                                 FileSpec &file_spec) override;
+
+  Status GetFileLoadAddress(const llvm::StringRef &file_name,
+                            lldb::addr_t &load_addr) override;
+
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+  GetAuxvData() const override;
+
+  // ---------------------------------------------------------------------
+  // Interface used by NativeRegisterContext-derived classes.
+  // ---------------------------------------------------------------------
+  static Status PtraceWrapper(int req, lldb::pid_t pid, void *addr = nullptr,
+                              int data = 0, int *result = nullptr);
+
+protected:
+  // ---------------------------------------------------------------------
+  // NativeProcessProtocol protected interface
+  // ---------------------------------------------------------------------
+
+  Status
+  GetSoftwareBreakpointTrapOpcode(size_t trap_opcode_size_hint,
+                                  size_t &actual_opcode_size,
+                                  const uint8_t *&trap_opcode_bytes) override;
 
 private:
-  NativeProcessNetBSD();
+  MainLoop::SignalHandleUP m_sigchld_handle;
+  ArchSpec m_arch;
+  LazyBool m_supports_mem_region = eLazyBoolCalculate;
+  std::vector<std::pair<MemoryRegionInfo, FileSpec>> m_mem_region_cache;
+
+  // ---------------------------------------------------------------------
+  // Private Instance Methods
+  // ---------------------------------------------------------------------
+  NativeProcessNetBSD(::pid_t pid, int terminal_fd, NativeDelegate &delegate,
+                      const ArchSpec &arch, MainLoop &mainloop);
+
+  bool HasThreadNoLock(lldb::tid_t thread_id);
+
+  NativeThreadNetBSDSP AddThread(lldb::tid_t thread_id);
+
+  void MonitorCallback(lldb::pid_t pid, int signal);
+  void MonitorExited(lldb::pid_t pid, WaitStatus status);
+  void MonitorSIGSTOP(lldb::pid_t pid);
+  void MonitorSIGTRAP(lldb::pid_t pid);
+  void MonitorSignal(lldb::pid_t pid, int signal);
+
+  Status GetSoftwareBreakpointPCOffset(uint32_t &actual_opcode_size);
+  Status FixupBreakpointPCAsNeeded(NativeThreadNetBSD &thread);
+  Status PopulateMemoryRegionCache();
+  void SigchldHandler();
+
+  Status Attach();
+  Status ReinitializeThreads();
 };
 
 } // namespace process_netbsd

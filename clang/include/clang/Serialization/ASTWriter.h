@@ -485,6 +485,7 @@ private:
   void WriteOptimizePragmaOptions(Sema &SemaRef);
   void WriteMSStructPragmaOptions(Sema &SemaRef);
   void WriteMSPointersToMembersPragmaOptions(Sema &SemaRef);
+  void WritePackPragmaOptions(Sema &SemaRef);
   void WriteModuleFileExtension(Sema &SemaRef,
                                 ModuleFileExtensionWriter &Writer);
 
@@ -625,10 +626,6 @@ public:
 
   /// \brief Add a version tuple to the given record
   void AddVersionTuple(const VersionTuple &Version, RecordDataImpl &Record);
-
-  /// \brief Infer the submodule ID that contains an entity at the given
-  /// source location.
-  serialization::SubmoduleID inferSubmoduleIDFromLocation(SourceLocation Loc);
 
   /// \brief Retrieve or create a submodule ID for this module, or return 0 if
   /// the submodule is neither local (a submodle of the currently-written module)

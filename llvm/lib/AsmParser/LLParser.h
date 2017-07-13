@@ -193,6 +193,10 @@ namespace llvm {
         case lltok::kw_ninf: FMF.setNoInfs();          Lex.Lex(); continue;
         case lltok::kw_nsz:  FMF.setNoSignedZeros();   Lex.Lex(); continue;
         case lltok::kw_arcp: FMF.setAllowReciprocal(); Lex.Lex(); continue;
+        case lltok::kw_contract:
+          FMF.setAllowContract(true);
+          Lex.Lex();
+          continue;
         default: return FMF;
         }
       return FMF;
@@ -237,11 +241,14 @@ namespace llvm {
     bool ParseOptionalCallingConv(unsigned &CC);
     bool ParseOptionalAlignment(unsigned &Alignment);
     bool ParseOptionalDerefAttrBytes(lltok::Kind AttrKind, uint64_t &Bytes);
-    bool ParseScopeAndOrdering(bool isAtomic, SynchronizationScope &Scope,
+    bool ParseScopeAndOrdering(bool isAtomic, SyncScope::ID &SSID,
                                AtomicOrdering &Ordering);
+    bool ParseScope(SyncScope::ID &SSID);
     bool ParseOrdering(AtomicOrdering &Ordering);
     bool ParseOptionalStackAlignment(unsigned &Alignment);
     bool ParseOptionalCommaAlign(unsigned &Alignment, bool &AteExtraComma);
+    bool ParseOptionalCommaAddrSpace(unsigned &AddrSpace, LocTy &Loc,
+                                     bool &AteExtraComma);
     bool ParseOptionalCommaInAlloca(bool &IsInAlloca);
     bool parseAllocSizeArguments(unsigned &ElemSizeArg,
                                  Optional<unsigned> &HowManyArg);
@@ -391,8 +398,8 @@ namespace llvm {
     struct ParamInfo {
       LocTy Loc;
       Value *V;
-      AttributeList Attrs;
-      ParamInfo(LocTy loc, Value *v, AttributeList attrs)
+      AttributeSet Attrs;
+      ParamInfo(LocTy loc, Value *v, AttributeSet attrs)
           : Loc(loc), V(v), Attrs(attrs) {}
     };
     bool ParseParameterList(SmallVectorImpl<ParamInfo> &ArgList,
@@ -444,9 +451,9 @@ namespace llvm {
     struct ArgInfo {
       LocTy Loc;
       Type *Ty;
-      AttributeList Attrs;
+      AttributeSet Attrs;
       std::string Name;
-      ArgInfo(LocTy L, Type *ty, AttributeList Attr, const std::string &N)
+      ArgInfo(LocTy L, Type *ty, AttributeSet Attr, const std::string &N)
           : Loc(L), Ty(ty), Attrs(Attr), Name(N) {}
     };
     bool ParseArgumentList(SmallVectorImpl<ArgInfo> &ArgList, bool &isVarArg);

@@ -51,7 +51,8 @@ public:
   /// @{
 
   unsigned getNumberOfRegisters(bool Vector);
-  unsigned getRegisterBitWidth(bool Vector);
+  unsigned getRegisterBitWidth(bool Vector) const;
+  unsigned getLoadStoreVecRegBitWidth(unsigned AS) const;
   unsigned getMaxInterleaveFactor(unsigned VF);
   int getArithmeticInstrCost(
       unsigned Opcode, Type *Ty,
@@ -61,17 +62,21 @@ public:
       TTI::OperandValueProperties Opd2PropInfo = TTI::OP_None,
       ArrayRef<const Value *> Args = ArrayRef<const Value *>());
   int getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index, Type *SubTp);
-  int getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src);
-  int getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy);
+  int getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
+                       const Instruction *I = nullptr);
+  int getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy,
+                         const Instruction *I = nullptr);
   int getVectorInstrCost(unsigned Opcode, Type *Val, unsigned Index);
   int getMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
-                      unsigned AddressSpace);
+                      unsigned AddressSpace, const Instruction *I = nullptr);
   int getMaskedMemoryOpCost(unsigned Opcode, Type *Src, unsigned Alignment,
                             unsigned AddressSpace);
   int getGatherScatterOpCost(unsigned Opcode, Type *DataTy, Value *Ptr,
                              bool VariableMask, unsigned Alignment);
   int getAddressComputationCost(Type *PtrTy, ScalarEvolution *SE,
                                 const SCEV *Ptr);
+
+  unsigned getAtomicMemIntrinsicMaxElementSize() const;
 
   int getIntrinsicInstrCost(Intrinsic::ID IID, Type *RetTy,
                             ArrayRef<Type *> Tys, FastMathFlags FMF,
@@ -88,6 +93,9 @@ public:
   int getInterleavedMemoryOpCostAVX512(unsigned Opcode, Type *VecTy,
                                  unsigned Factor, ArrayRef<unsigned> Indices,
                                  unsigned Alignment, unsigned AddressSpace);
+  int getInterleavedMemoryOpCostAVX2(unsigned Opcode, Type *VecTy,
+                                 unsigned Factor, ArrayRef<unsigned> Indices,
+                                 unsigned Alignment, unsigned AddressSpace);
 
   int getIntImmCost(int64_t);
 
@@ -102,7 +110,7 @@ public:
   bool isLegalMaskedScatter(Type *DataType);
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const;
-
+  bool expandMemCmp(Instruction *I, unsigned &MaxLoadSize);
   bool enableInterleavedAccessVectorization();
 private:
   int getGSScalarCost(unsigned Opcode, Type *DataTy, bool VariableMask,

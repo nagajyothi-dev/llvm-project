@@ -142,6 +142,11 @@ static bool ShouldUpgradeX86Intrinsic(Function *F, StringRef Name) {
       Name.startswith("avx512.mask.packssdw.") || // Added in 5.0
       Name.startswith("avx512.mask.packuswb.") || // Added in 5.0
       Name.startswith("avx512.mask.packusdw.") || // Added in 5.0
+      Name.startswith("avx512.mask.cmp.b") || // Added in 5.0
+      Name.startswith("avx512.mask.cmp.d") || // Added in 5.0
+      Name.startswith("avx512.mask.cmp.q") || // Added in 5.0
+      Name.startswith("avx512.mask.cmp.w") || // Added in 5.0
+      Name.startswith("avx512.mask.ucmp.") || // Added in 5.0
       Name == "avx512.mask.add.pd.128" || // Added in 4.0
       Name == "avx512.mask.add.pd.256" || // Added in 4.0
       Name == "avx512.mask.add.ps.128" || // Added in 4.0
@@ -202,6 +207,9 @@ static bool ShouldUpgradeX86Intrinsic(Function *F, StringRef Name) {
       Name.startswith("sse4a.movnt.") || // Added in 3.9
       Name.startswith("avx.movnt.") || // Added in 3.2
       Name.startswith("avx512.storent.") || // Added in 3.9
+      Name == "sse41.movntdqa" || // Added in 5.0
+      Name == "avx2.movntdqa" || // Added in 5.0
+      Name == "avx512.movntdqa" || // Added in 5.0
       Name == "sse2.storel.dq" || // Added in 3.9
       Name.startswith("sse.storeu.") || // Added in 3.9
       Name.startswith("sse2.storeu.") || // Added in 3.9
@@ -234,6 +242,7 @@ static bool ShouldUpgradeX86Intrinsic(Function *F, StringRef Name) {
       Name == "xop.vpcmov" || // Added in 3.8
       Name == "xop.vpcmov.256" || // Added in 5.0
       Name.startswith("avx512.mask.move.s") || // Added in 4.0
+      Name.startswith("avx512.cvtmask2") || // Added in 5.0
       (Name.startswith("xop.vpcom") && // Added in 3.2
        F->arg_size() == 2))
     return true;
@@ -411,26 +420,31 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
     }
     break;
   }
-  case 'i': {
-    if (Name.startswith("invariant.start")) {
+  case 'i':
+  case 'l': {
+    bool IsLifetimeStart = Name.startswith("lifetime.start");
+    if (IsLifetimeStart || Name.startswith("invariant.start")) {
+      Intrinsic::ID ID = IsLifetimeStart ?
+        Intrinsic::lifetime_start : Intrinsic::invariant_start;
       auto Args = F->getFunctionType()->params();
       Type* ObjectPtr[1] = {Args[1]};
-      if (F->getName() !=
-          Intrinsic::getName(Intrinsic::invariant_start, ObjectPtr)) {
+      if (F->getName() != Intrinsic::getName(ID, ObjectPtr)) {
         rename(F);
-        NewFn = Intrinsic::getDeclaration(
-            F->getParent(), Intrinsic::invariant_start, ObjectPtr);
+        NewFn = Intrinsic::getDeclaration(F->getParent(), ID, ObjectPtr);
         return true;
       }
     }
-    if (Name.startswith("invariant.end")) {
+
+    bool IsLifetimeEnd = Name.startswith("lifetime.end");
+    if (IsLifetimeEnd || Name.startswith("invariant.end")) {
+      Intrinsic::ID ID = IsLifetimeEnd ?
+        Intrinsic::lifetime_end : Intrinsic::invariant_end;
+
       auto Args = F->getFunctionType()->params();
-      Type* ObjectPtr[1] = {Args[2]};
-      if (F->getName() !=
-          Intrinsic::getName(Intrinsic::invariant_end, ObjectPtr)) {
+      Type* ObjectPtr[1] = {Args[IsLifetimeEnd ? 1 : 2]};
+      if (F->getName() != Intrinsic::getName(ID, ObjectPtr)) {
         rename(F);
-        NewFn = Intrinsic::getDeclaration(F->getParent(),
-                                          Intrinsic::invariant_end, ObjectPtr);
+        NewFn = Intrinsic::getDeclaration(F->getParent(), ID, ObjectPtr);
         return true;
       }
     }
@@ -455,6 +469,27 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
         NewFn = Intrinsic::getDeclaration(F->getParent(),
                                           Intrinsic::masked_store,
                                           Tys);
+        return true;
+      }
+    }
+    // Renaming gather/scatter intrinsics with no address space overloading
+    // to the new overload which includes an address space
+    if (Name.startswith("masked.gather.")) {
+      Type *Tys[] = {F->getReturnType(), F->arg_begin()->getType()};
+      if (F->getName() != Intrinsic::getName(Intrinsic::masked_gather, Tys)) {
+        rename(F);
+        NewFn = Intrinsic::getDeclaration(F->getParent(),
+                                          Intrinsic::masked_gather, Tys);
+        return true;
+      }
+    }
+    if (Name.startswith("masked.scatter.")) {
+      auto Args = F->getFunctionType()->params();
+      Type *Tys[] = {Args[0], Args[1]};
+      if (F->getName() != Intrinsic::getName(Intrinsic::masked_scatter, Tys)) {
+        rename(F);
+        NewFn = Intrinsic::getDeclaration(F->getParent(),
+                                          Intrinsic::masked_scatter, Tys);
         return true;
       }
     }
@@ -491,6 +526,7 @@ static bool UpgradeIntrinsicFunction1(Function *F, Function *&NewFn) {
         return true;
       }
     }
+    break;
   }
   case 'o':
     // We only need to change the name to match the mangling including the
@@ -752,12 +788,30 @@ static Value *upgradeIntMinMax(IRBuilder<> &Builder, CallInst &CI,
 }
 
 static Value *upgradeMaskedCompare(IRBuilder<> &Builder, CallInst &CI,
-                                   ICmpInst::Predicate Pred) {
+                                   unsigned CC, bool Signed) {
   Value *Op0 = CI.getArgOperand(0);
   unsigned NumElts = Op0->getType()->getVectorNumElements();
-  Value *Cmp = Builder.CreateICmp(Pred, Op0, CI.getArgOperand(1));
 
-  Value *Mask = CI.getArgOperand(2);
+  Value *Cmp;
+  if (CC == 3) {
+    Cmp = Constant::getNullValue(llvm::VectorType::get(Builder.getInt1Ty(), NumElts));
+  } else if (CC == 7) {
+    Cmp = Constant::getAllOnesValue(llvm::VectorType::get(Builder.getInt1Ty(), NumElts));
+  } else {
+    ICmpInst::Predicate Pred;
+    switch (CC) {
+    default: llvm_unreachable("Unknown condition code");
+    case 0: Pred = ICmpInst::ICMP_EQ;  break;
+    case 1: Pred = Signed ? ICmpInst::ICMP_SLT : ICmpInst::ICMP_ULT; break;
+    case 2: Pred = Signed ? ICmpInst::ICMP_SLE : ICmpInst::ICMP_ULE; break;
+    case 4: Pred = ICmpInst::ICMP_NE;  break;
+    case 5: Pred = Signed ? ICmpInst::ICMP_SGE : ICmpInst::ICMP_UGE; break;
+    case 6: Pred = Signed ? ICmpInst::ICMP_SGT : ICmpInst::ICMP_UGT; break;
+    }
+    Cmp = Builder.CreateICmp(Pred, Op0, CI.getArgOperand(1));
+  }
+
+  Value *Mask = CI.getArgOperand(CI.getNumArgOperands() - 1);
   const auto *C = dyn_cast<Constant>(Mask);
   if (!C || !C->isAllOnesValue())
     Cmp = Builder.CreateAnd(Cmp, getX86MaskVec(Builder, Mask, NumElts));
@@ -798,6 +852,15 @@ static Value* upgradeMaskedMove(IRBuilder<> &Builder, CallInst &CI) {
   Value* Extract2 = Builder.CreateExtractElement(Src, (uint64_t)0);
   Value* Select = Builder.CreateSelect(Cmp, Extract1, Extract2);
   return Builder.CreateInsertElement(A, Select, (uint64_t)0);
+}
+
+
+static Value* UpgradeMaskToInt(IRBuilder<> &Builder, CallInst &CI) {
+  Value* Op = CI.getArgOperand(0);
+  Type* ReturnOp = CI.getType();
+  unsigned NumElts = CI.getType()->getVectorNumElements();
+  Value *Mask = getX86MaskVec(Builder, Op, NumElts);
+  return Builder.CreateSExt(Mask, ReturnOp, "vpmovm2");
 }
 
 /// Upgrade a call to an old intrinsic. All argument and return casting must be
@@ -967,9 +1030,13 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
     } else if (IsX86 && Name.startswith("avx512.mask.pcmp")) {
       // "avx512.mask.pcmpeq." or "avx512.mask.pcmpgt."
       bool CmpEq = Name[16] == 'e';
-      Rep = upgradeMaskedCompare(Builder, *CI,
-                                 CmpEq ? ICmpInst::ICMP_EQ
-                                       : ICmpInst::ICMP_SGT);
+      Rep = upgradeMaskedCompare(Builder, *CI, CmpEq ? 0 : 6, true);
+    } else if (IsX86 && Name.startswith("avx512.mask.cmp")) {
+      unsigned Imm = cast<ConstantInt>(CI->getArgOperand(2))->getZExtValue();
+      Rep = upgradeMaskedCompare(Builder, *CI, Imm, true);
+    } else if (IsX86 && Name.startswith("avx512.mask.ucmp")) {
+      unsigned Imm = cast<ConstantInt>(CI->getArgOperand(2))->getZExtValue();
+      Rep = upgradeMaskedCompare(Builder, *CI, Imm, false);
     } else if (IsX86 && (Name == "sse41.pmaxsb" ||
                          Name == "sse2.pmaxs.w" ||
                          Name == "sse41.pmaxsd" ||
@@ -1836,6 +1903,8 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
       Rep = UpgradeX86MaskedShift(Builder, *CI, IID);
     } else if (IsX86 && Name.startswith("avx512.mask.move.s")) {
       Rep = upgradeMaskedMove(Builder, *CI);
+    } else if (IsX86 && Name.startswith("avx512.cvtmask2")) {
+      Rep = UpgradeMaskToInt(Builder, *CI);
     } else if (IsX86 && Name.startswith("avx512.mask.vpermilvar.")) {
       Intrinsic::ID IID;
       if (Name.endswith("ps.128"))
@@ -1858,6 +1927,20 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
                                { CI->getArgOperand(0), CI->getArgOperand(1) });
       Rep = EmitX86Select(Builder, CI->getArgOperand(3), Rep,
                           CI->getArgOperand(2));
+    } else if (IsX86 && Name.endswith(".movntdqa")) {
+      Module *M = F->getParent();
+      MDNode *Node = MDNode::get(
+          C, ConstantAsMetadata::get(ConstantInt::get(Type::getInt32Ty(C), 1)));
+
+      Value *Ptr = CI->getArgOperand(0);
+      VectorType *VTy = cast<VectorType>(CI->getType());
+
+      // Convert the type of the pointer to a pointer to the stored type.
+      Value *BC =
+          Builder.CreateBitCast(Ptr, PointerType::getUnqual(VTy), "cast");
+      LoadInst *LI = Builder.CreateAlignedLoad(BC, VTy->getBitWidth() / 8);
+      LI->setMetadata(M->getMDKindID("nontemporal"), Node);
+      Rep = LI;
     } else if (IsNVVM && (Name == "abs.i" || Name == "abs.ll")) {
       Value *Arg = CI->getArgOperand(0);
       Value *Neg = Builder.CreateNeg(Arg, "neg");
@@ -2038,7 +2121,9 @@ void llvm::UpgradeIntrinsicCall(CallInst *CI, Function *NewFn) {
   case Intrinsic::invariant_start:
   case Intrinsic::invariant_end:
   case Intrinsic::masked_load:
-  case Intrinsic::masked_store: {
+  case Intrinsic::masked_store:
+  case Intrinsic::masked_gather:
+  case Intrinsic::masked_scatter: {
     SmallVector<Value *, 4> Args(CI->arg_operands().begin(),
                                  CI->arg_operands().end());
     NewCall = Builder.CreateCall(NewFn, Args);

@@ -930,6 +930,18 @@ void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
   }
 }
 
+void MachO::AddFuzzerLinkArgs(const ArgList &Args, ArgStringList &CmdArgs) const {
+
+  // Go up one directory from Clang to find the libfuzzer archive file.
+  StringRef ParentDir = llvm::sys::path::parent_path(getDriver().InstalledDir);
+  SmallString<128> P(ParentDir);
+  llvm::sys::path::append(P, "lib", "libLLVMFuzzer.a");
+  CmdArgs.push_back(Args.MakeArgString(P));
+
+  // Libfuzzer is written in C++ and requires libcxx.
+  AddCXXStdlibLibArgs(Args, CmdArgs);
+}
+
 StringRef Darwin::getPlatformFamily() const {
   switch (TargetPlatform) {
     case DarwinPlatformKind::MacOS:
@@ -1035,10 +1047,14 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
   const SanitizerArgs &Sanitize = getSanitizerArgs();
   if (Sanitize.needsAsanRt())
     AddLinkSanitizerLibArgs(Args, CmdArgs, "asan");
+  if (Sanitize.needsLsanRt())
+    AddLinkSanitizerLibArgs(Args, CmdArgs, "lsan");
   if (Sanitize.needsUbsanRt())
     AddLinkSanitizerLibArgs(Args, CmdArgs, "ubsan");
   if (Sanitize.needsTsanRt())
     AddLinkSanitizerLibArgs(Args, CmdArgs, "tsan");
+  if (Sanitize.needsFuzzer() && !Args.hasArg(options::OPT_dynamiclib))
+    AddFuzzerLinkArgs(Args, CmdArgs);
   if (Sanitize.needsStatsRt()) {
     StringRef OS = isTargetMacOS() ? "osx" : "iossim";
     AddLinkRuntimeLib(Args, CmdArgs,
@@ -1102,6 +1118,27 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
   }
 }
 
+/// Returns the most appropriate macOS target version for the current process.
+///
+/// If the macOS SDK version is the same or earlier than the system version,
+/// then the SDK version is returned. Otherwise the system version is returned.
+static std::string getSystemOrSDKMacOSVersion(StringRef MacOSSDKVersion) {
+  unsigned Major, Minor, Micro;
+  llvm::Triple SystemTriple(llvm::sys::getProcessTriple());
+  if (!SystemTriple.isMacOSX())
+    return MacOSSDKVersion;
+  SystemTriple.getMacOSXVersion(Major, Minor, Micro);
+  VersionTuple SystemVersion(Major, Minor, Micro);
+  bool HadExtra;
+  if (!Driver::GetReleaseVersion(MacOSSDKVersion, Major, Minor, Micro,
+                                 HadExtra))
+    return MacOSSDKVersion;
+  VersionTuple SDKVersion(Major, Minor, Micro);
+  if (SDKVersion > SystemVersion)
+    return SystemVersion.getAsString();
+  return MacOSSDKVersion;
+}
+
 void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   const OptTable &Opts = getDriver().getOpts();
 
@@ -1133,6 +1170,17 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
   Arg *WatchOSVersion =
       Args.getLastArg(options::OPT_mwatchos_version_min_EQ,
                       options::OPT_mwatchos_simulator_version_min_EQ);
+
+  unsigned Major, Minor, Micro;
+  bool HadExtra;
+
+  // iOS 10 is the maximum deployment target for 32-bit targets.
+  if (iOSVersion && getTriple().isArch32Bit() &&
+      Driver::GetReleaseVersion(iOSVersion->getValue(), Major, Minor, Micro,
+                                HadExtra) &&
+      Major > 10)
+    getDriver().Diag(diag::err_invalid_ios_deployment_target)
+        << iOSVersion->getAsString(Args);
 
   // Add a macro to differentiate between m(iphone|tv|watch)os-version-min=X.Y and
   // -m(iphone|tv|watch)simulator-version-min=X.Y.
@@ -1175,6 +1223,14 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     if (char *env = ::getenv("WATCHOS_DEPLOYMENT_TARGET"))
       WatchOSTarget = env;
 
+    // iOS 10 is the maximum deployment target for 32-bit targets.
+    if (!iOSTarget.empty() && getTriple().isArch32Bit() &&
+        Driver::GetReleaseVersion(iOSTarget.c_str(), Major, Minor, Micro,
+                                  HadExtra) &&
+        Major > 10)
+      getDriver().Diag(diag::err_invalid_ios_deployment_target)
+          << std::string("IPHONEOS_DEPLOYMENT_TARGET=") + iOSTarget;
+
     // If there is no command-line argument to specify the Target version and
     // no environment variable defined, see if we can set the default based
     // on -isysroot.
@@ -1194,7 +1250,7 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
                 SDK.startswith("iPhoneSimulator"))
               iOSTarget = Version;
             else if (SDK.startswith("MacOSX"))
-              OSXTarget = Version;
+              OSXTarget = getSystemOrSDKMacOSVersion(Version);
             else if (SDK.startswith("WatchOS") ||
                      SDK.startswith("WatchSimulator"))
               WatchOSTarget = Version;
@@ -1292,8 +1348,6 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     llvm_unreachable("Unable to infer Darwin variant");
 
   // Set the tool chain target information.
-  unsigned Major, Minor, Micro;
-  bool HadExtra;
   if (Platform == MacOS) {
     assert((!iOSVersion && !TvOSVersion && !WatchOSVersion) &&
            "Unknown target platform!");
@@ -1309,6 +1363,13 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
         HadExtra || Major >= 100 || Minor >= 100 || Micro >= 100)
       getDriver().Diag(diag::err_drv_invalid_version_number)
           << iOSVersion->getAsString(Args);
+    // iOS 10 is the maximum deployment target for 32-bit targets. If the
+    // inferred deployment target is iOS 11 or later, set it to 10.99.
+    if (getTriple().isArch32Bit() && Major >= 11) {
+      Major = 10;
+      Minor = 99;
+      Micro = 99;
+    }
   } else if (Platform == TvOS) {
     if (!Driver::GetReleaseVersion(TvOSVersion->getValue(), Major, Minor,
                                    Micro, HadExtra) || HadExtra ||
@@ -1651,6 +1712,29 @@ void MachO::AddLinkRuntimeLibArgs(const ArgList &Args,
   AddLinkRuntimeLib(Args, CmdArgs, CompilerRT, false, true);
 }
 
+bool Darwin::isAlignedAllocationUnavailable() const {
+  switch (TargetPlatform) {
+  case MacOS: // Earlier than 10.13.
+    return TargetVersion < VersionTuple(10U, 13U, 0U);
+  case IPhoneOS:
+  case IPhoneOSSimulator:
+  case TvOS:
+  case TvOSSimulator: // Earlier than 11.0.
+    return TargetVersion < VersionTuple(11U, 0U, 0U);
+  case WatchOS:
+  case WatchOSSimulator: // Earlier than 4.0.
+    return TargetVersion < VersionTuple(4U, 0U, 0U);
+  }
+  llvm_unreachable("Unsupported platform");
+}
+
+void Darwin::addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                                   llvm::opt::ArgStringList &CC1Args,
+                                   Action::OffloadKind DeviceOffloadKind) const {
+  if (isAlignedAllocationUnavailable())
+    CC1Args.push_back("-faligned-alloc-unavailable");
+}
+
 DerivedArgList *
 Darwin::TranslateArgs(const DerivedArgList &Args, StringRef BoundArch,
                       Action::OffloadKind DeviceOffloadKind) const {
@@ -1684,7 +1768,8 @@ Darwin::TranslateArgs(const DerivedArgList &Args, StringRef BoundArch,
       A = *it;
       assert(A->getOption().getID() == options::OPT_static &&
              "missing expected -static argument");
-      it = DAL->getArgs().erase(it);
+      *it = nullptr;
+      ++it;
     }
   }
 
@@ -1891,6 +1976,8 @@ SanitizerMask Darwin::getSupportedSanitizers() const {
   const bool IsX86_64 = getTriple().getArch() == llvm::Triple::x86_64;
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
   Res |= SanitizerKind::Address;
+  Res |= SanitizerKind::Leak;
+  Res |= SanitizerKind::Fuzzer;
   if (isTargetMacOS()) {
     if (!isMacosxVersionLT(10, 9))
       Res |= SanitizerKind::Vptr;

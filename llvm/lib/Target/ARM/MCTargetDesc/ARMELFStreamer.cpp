@@ -21,6 +21,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
@@ -43,12 +44,11 @@
 #include "llvm/Support/ARMBuildAttributes.h"
 #include "llvm/Support/ARMEHABI.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/LEB128.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/TargetParser.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
 #include <climits>
@@ -464,7 +464,7 @@ public:
   void emitUnwindRaw(int64_t Offset, const SmallVectorImpl<uint8_t> &Opcodes);
 
   void ChangeSection(MCSection *Section, const MCExpr *Subsection) override {
-    LastMappingSymbols[getPreviousSection().first] = std::move(LastEMSInfo);
+    LastMappingSymbols[getCurrentSection().first] = std::move(LastEMSInfo);
     MCELFStreamer::ChangeSection(Section, Subsection);
     auto LastMappingSymbol = LastMappingSymbols.find(Section);
     if (LastMappingSymbol != LastMappingSymbols.end()) {
@@ -477,8 +477,8 @@ public:
   /// This function is the one used to emit instruction data into the ELF
   /// streamer. We override it to add the appropriate mapping symbol if
   /// necessary.
-  void EmitInstruction(const MCInst& Inst,
-                       const MCSubtargetInfo &STI) override {
+  void EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI,
+                       bool) override {
     if (IsThumb)
       EmitThumbMappingSymbol();
     else
@@ -545,11 +545,13 @@ public:
   /// ARM streamer overrides it to add the appropriate mapping symbol ($d) if
   /// necessary.
   void EmitValueImpl(const MCExpr *Value, unsigned Size, SMLoc Loc) override {
-    if (const MCSymbolRefExpr *SRE = dyn_cast_or_null<MCSymbolRefExpr>(Value))
+    if (const MCSymbolRefExpr *SRE = dyn_cast_or_null<MCSymbolRefExpr>(Value)) {
       if (SRE->getKind() == MCSymbolRefExpr::VK_ARM_SBREL && !(Size == 4)) {
         getContext().reportError(Loc, "relocated expression must be 32-bit");
         return;
       }
+      getOrCreateDataFragment();
+    }
 
     EmitDataMappingSymbol();
     MCELFStreamer::EmitValueImpl(Value, Size, Loc);

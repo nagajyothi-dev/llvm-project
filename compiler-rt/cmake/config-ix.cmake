@@ -165,13 +165,10 @@ set(ALL_ASAN_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM32} ${ARM64}
     ${MIPS32} ${MIPS64} ${PPC64} ${S390X})
 set(ALL_DFSAN_SUPPORTED_ARCH ${X86_64} ${MIPS64} ${ARM64})
 
-# Darwin does not support 32-bit thread-local storage on ios versions
-# below 9.0. Until the min ios version is bumped to 9.0, lsan will
-# not build for 32-bit darwin targets.
 if(APPLE)
-  set(ALL_LSAN_SUPPORTED_ARCH ${X86_64} ${ARM64})
-else()
   set(ALL_LSAN_SUPPORTED_ARCH ${X86} ${X86_64} ${MIPS64} ${ARM64})
+else()
+  set(ALL_LSAN_SUPPORTED_ARCH ${X86} ${X86_64} ${MIPS64} ${ARM64} ${ARM32})
 endif()
 set(ALL_MSAN_SUPPORTED_ARCH ${X86_64} ${MIPS64} ${ARM64} ${PPC64})
 set(ALL_PROFILE_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM32} ${ARM64} ${PPC64}
@@ -182,7 +179,7 @@ set(ALL_UBSAN_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM32} ${ARM64}
 set(ALL_SAFESTACK_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM64} ${MIPS32} ${MIPS64})
 set(ALL_CFI_SUPPORTED_ARCH ${X86} ${X86_64} ${MIPS64})
 set(ALL_ESAN_SUPPORTED_ARCH ${X86_64} ${MIPS64})
-set(ALL_SCUDO_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM32} ${ARM64})
+set(ALL_SCUDO_SUPPORTED_ARCH ${X86} ${X86_64} ${ARM32} ${ARM64} ${MIPS32} ${MIPS64})
 set(ALL_XRAY_SUPPORTED_ARCH ${X86_64} ${ARM32} ${ARM64} ${MIPS32} ${MIPS64} powerpc64le)
 
 if(APPLE)
@@ -306,9 +303,7 @@ if(APPLE)
         if(DARWIN_${platform}sim_ARCHS)
           list(APPEND SANITIZER_COMMON_SUPPORTED_OS ${platform}sim)
           list(APPEND PROFILE_SUPPORTED_OS ${platform}sim)
-          if(DARWIN_${platform}_SYSROOT_INTERNAL)
-            list(APPEND TSAN_SUPPORTED_OS ${platform}sim)
-          endif()
+          list(APPEND TSAN_SUPPORTED_OS ${platform}sim)
         endif()
         foreach(arch ${DARWIN_${platform}sim_ARCHS})
           list(APPEND COMPILER_RT_SUPPORTED_ARCH ${arch})
@@ -333,6 +328,7 @@ if(APPLE)
         if(DARWIN_${platform}_ARCHS)
           list(APPEND SANITIZER_COMMON_SUPPORTED_OS ${platform})
           list(APPEND PROFILE_SUPPORTED_OS ${platform})
+          list(APPEND TSAN_SUPPORTED_OS ${platform})
         endif()
         foreach(arch ${DARWIN_${platform}_ARCHS})
           list(APPEND COMPILER_RT_SUPPORTED_ARCH ${arch})
@@ -479,17 +475,10 @@ else()
 endif()
 
 if (COMPILER_RT_HAS_SANITIZER_COMMON AND LSAN_SUPPORTED_ARCH AND
-    OS_NAME MATCHES "Linux|FreeBSD")
+    OS_NAME MATCHES "Darwin|Linux|FreeBSD")
   set(COMPILER_RT_HAS_LSAN TRUE)
 else()
   set(COMPILER_RT_HAS_LSAN FALSE)
-endif()
-
-if(APPLE)
-  option(COMPILER_RT_ENABLE_LSAN_OSX "Enable building LSan for OS X - Experimental" Off)
-  if(COMPILER_RT_ENABLE_LSAN_OSX)
-    set(COMPILER_RT_HAS_LSAN TRUE)
-  endif()
 endif()
 
 if (COMPILER_RT_HAS_SANITIZER_COMMON AND MSAN_SUPPORTED_ARCH AND

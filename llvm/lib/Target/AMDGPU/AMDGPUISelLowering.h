@@ -17,6 +17,7 @@
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUISELLOWERING_H
 
 #include "AMDGPU.h"
+#include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/Target/TargetLowering.h"
 
 namespace llvm {
@@ -33,13 +34,15 @@ private:
   /// compare.
   SDValue getFFBH_U32(SelectionDAG &DAG, SDValue Op, const SDLoc &DL) const;
 
+public:
+  static bool isOrEquivalentToAdd(SelectionDAG &DAG, SDValue Op);
+
 protected:
   const AMDGPUSubtarget *Subtarget;
   AMDGPUAS AMDGPUASI;
 
   SDValue LowerEXTRACT_SUBVECTOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerCONCAT_VECTORS(SDValue Op, SelectionDAG &DAG) const;
-  SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
   /// \brief Split a vector store into multiple scalar stores.
   /// \returns The resulting chain.
 
@@ -115,11 +118,6 @@ protected:
                                     SmallVectorImpl<SDValue> &Results) const;
   void analyzeFormalArgumentsCompute(CCState &State,
                               const SmallVectorImpl<ISD::InputArg> &Ins) const;
-  void AnalyzeFormalArguments(CCState &State,
-                              const SmallVectorImpl<ISD::InputArg> &Ins) const;
-  void AnalyzeReturn(CCState &State,
-                     const SmallVectorImpl<ISD::OutputArg> &Outs) const;
-
 public:
   AMDGPUTargetLowering(const TargetMachine &TM, const AMDGPUSubtarget &STI);
 
@@ -127,12 +125,15 @@ public:
     if (getTargetMachine().Options.NoSignedZerosFPMath)
       return true;
 
-    if (const auto *BO = dyn_cast<BinaryWithFlagsSDNode>(Op))
-      return BO->Flags.hasNoSignedZeros();
+    const auto Flags = Op.getNode()->getFlags();
+    if (Flags.isDefined())
+      return Flags.hasNoSignedZeros();
 
     return false;
   }
 
+  static bool allUsesHaveSourceMods(const SDNode *N,
+                                    unsigned CostThreshold = 4);
   bool isFAbsFree(EVT VT) const override;
   bool isFNegFree(EVT VT) const override;
   bool isTruncateFree(EVT Src, EVT Dest) const override;
@@ -161,6 +162,9 @@ public:
   bool aggressivelyPreferBuildVectorSources(EVT VecVT) const override;
   bool isCheapToSpeculateCttz() const override;
   bool isCheapToSpeculateCtlz() const override;
+
+  static CCAssignFn *CCAssignFnForCall(CallingConv::ID CC, bool IsVarArg);
+  static CCAssignFn *CCAssignFnForReturn(CallingConv::ID CC, bool IsVarArg);
 
   SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool isVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
@@ -200,21 +204,37 @@ public:
   /// either zero or one and return them in the \p KnownZero and \p KnownOne
   /// bitsets.
   void computeKnownBitsForTargetNode(const SDValue Op,
-                                     APInt &KnownZero,
-                                     APInt &KnownOne,
+                                     KnownBits &Known,
+                                     const APInt &DemandedElts,
                                      const SelectionDAG &DAG,
                                      unsigned Depth = 0) const override;
 
-  unsigned ComputeNumSignBitsForTargetNode(SDValue Op, const SelectionDAG &DAG,
+  unsigned ComputeNumSignBitsForTargetNode(SDValue Op, const APInt &DemandedElts,
+                                           const SelectionDAG &DAG,
                                            unsigned Depth = 0) const override;
 
   /// \brief Helper function that adds Reg to the LiveIn list of the DAG's
   /// MachineFunction.
   ///
-  /// \returns a RegisterSDNode representing Reg.
-  virtual SDValue CreateLiveInRegister(SelectionDAG &DAG,
-                                       const TargetRegisterClass *RC,
-                                       unsigned Reg, EVT VT) const;
+  /// \returns a RegisterSDNode representing Reg if \p RawReg is true, otherwise
+  /// a copy from the register.
+  SDValue CreateLiveInRegister(SelectionDAG &DAG,
+                               const TargetRegisterClass *RC,
+                               unsigned Reg, EVT VT,
+                               const SDLoc &SL,
+                               bool RawReg = false) const;
+  SDValue CreateLiveInRegister(SelectionDAG &DAG,
+                               const TargetRegisterClass *RC,
+                               unsigned Reg, EVT VT) const {
+    return CreateLiveInRegister(DAG, RC, Reg, VT, SDLoc(DAG.getEntryNode()));
+  }
+
+  // Returns the raw live in register rather than a copy from it.
+  SDValue CreateLiveInRegisterRaw(SelectionDAG &DAG,
+                                  const TargetRegisterClass *RC,
+                                  unsigned Reg, EVT VT) const {
+    return CreateLiveInRegister(DAG, RC, Reg, VT, SDLoc(DAG.getEntryNode()), true);
+  }
 
   enum ImplicitParameter {
     FIRST_IMPLICIT,
@@ -230,6 +250,10 @@ public:
   AMDGPUAS getAMDGPUAS() const {
     return AMDGPUASI;
   }
+
+  MVT getFenceOperandTy(const DataLayout &DL) const override {
+    return MVT::i32;
+  }
 };
 
 namespace AMDGPUISD {
@@ -243,6 +267,7 @@ enum NodeType : unsigned {
 
   // Function call.
   CALL,
+  TRAP,
 
   // Masked control flow nodes.
   IF,
@@ -331,7 +356,6 @@ enum NodeType : unsigned {
   CONST_ADDRESS,
   REGISTER_LOAD,
   REGISTER_STORE,
-  LOAD_INPUT,
   SAMPLE,
   SAMPLEB,
   SAMPLED,
@@ -351,6 +375,9 @@ enum NodeType : unsigned {
   // are known 0.
   FP_TO_FP16,
 
+  // Wrapper around fp16 results that are known to zero the high bits.
+  FP16_ZEXT,
+
   /// This node is for VLIW targets and it is used to represent a vector
   /// that is stored in consecutive registers with the same channel.
   /// For example:
@@ -362,6 +389,8 @@ enum NodeType : unsigned {
   BUILD_VERTICAL_VECTOR,
   /// Pointer to the start of the shader's constant data.
   CONST_DATA_PTR,
+  INIT_EXEC,
+  INIT_EXEC_FROM_INPUT,
   SENDMSG,
   SENDMSGHALT,
   INTERP_MOV,
@@ -374,6 +403,8 @@ enum NodeType : unsigned {
   STORE_MSKOR,
   LOAD_CONSTANT,
   TBUFFER_STORE_FORMAT,
+  TBUFFER_STORE_FORMAT_X3,
+  TBUFFER_LOAD_FORMAT,
   ATOMIC_CMP_SWAP,
   ATOMIC_INC,
   ATOMIC_DEC,

@@ -7,11 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "AMDGPU.h"
 #include "AMDGPUBaseInfo.h"
+#include "AMDGPU.h"
 #include "SIDefines.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Constants.h"
@@ -27,7 +28,6 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -36,19 +36,11 @@
 #include <cstring>
 #include <utility>
 
-#define GET_SUBTARGETINFO_ENUM
-#include "AMDGPUGenSubtargetInfo.inc"
-#undef GET_SUBTARGETINFO_ENUM
-
-#define GET_REGINFO_ENUM
-#include "AMDGPUGenRegisterInfo.inc"
-#undef GET_REGINFO_ENUM
+#include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 
 #define GET_INSTRINFO_NAMED_OPS
-#define GET_INSTRINFO_ENUM
 #include "AMDGPUGenInstrInfo.inc"
 #undef GET_INSTRINFO_NAMED_OPS
-#undef GET_INSTRINFO_ENUM
 
 namespace {
 
@@ -100,11 +92,22 @@ unsigned getVmcntBitWidthHi() { return 2; }
 } // end namespace anonymous
 
 namespace llvm {
+
+static cl::opt<bool> EnablePackedInlinableLiterals(
+    "enable-packed-inlinable-literals",
+    cl::desc("Enable packed inlinable literals (v2f16, v2i16)"),
+    cl::init(false));
+
 namespace AMDGPU {
 
 namespace IsaInfo {
 
 IsaVersion getIsaVersion(const FeatureBitset &Features) {
+  // SI.
+  if (Features.test(FeatureISAVersion6_0_0))
+    return {6, 0, 0};
+  if (Features.test(FeatureISAVersion6_0_1))
+    return {6, 0, 1};
   // CI.
   if (Features.test(FeatureISAVersion7_0_0))
     return {7, 0, 0};
@@ -112,6 +115,8 @@ IsaVersion getIsaVersion(const FeatureBitset &Features) {
     return {7, 0, 1};
   if (Features.test(FeatureISAVersion7_0_2))
     return {7, 0, 2};
+  if (Features.test(FeatureISAVersion7_0_3))
+    return {7, 0, 3};
 
   // VI.
   if (Features.test(FeatureISAVersion8_0_0))
@@ -132,6 +137,10 @@ IsaVersion getIsaVersion(const FeatureBitset &Features) {
     return {9, 0, 0};
   if (Features.test(FeatureISAVersion9_0_1))
     return {9, 0, 1};
+  if (Features.test(FeatureISAVersion9_0_2))
+    return {9, 0, 2};
+  if (Features.test(FeatureISAVersion9_0_3))
+    return {9, 0, 3};
 
   if (!Features.test(FeatureGCN) || Features.test(FeatureSouthernIslands))
     return {0, 0, 0};
@@ -328,33 +337,6 @@ void initDefaultAMDKernelCodeT(amd_kernel_code_t &Header,
   Header.private_segment_alignment = 4;
 }
 
-MCSection *getHSATextSection(MCContext &Ctx) {
-  return Ctx.getELFSection(".hsatext", ELF::SHT_PROGBITS,
-                           ELF::SHF_ALLOC | ELF::SHF_WRITE |
-                           ELF::SHF_EXECINSTR |
-                           ELF::SHF_AMDGPU_HSA_AGENT |
-                           ELF::SHF_AMDGPU_HSA_CODE);
-}
-
-MCSection *getHSADataGlobalAgentSection(MCContext &Ctx) {
-  return Ctx.getELFSection(".hsadata_global_agent", ELF::SHT_PROGBITS,
-                           ELF::SHF_ALLOC | ELF::SHF_WRITE |
-                           ELF::SHF_AMDGPU_HSA_GLOBAL |
-                           ELF::SHF_AMDGPU_HSA_AGENT);
-}
-
-MCSection *getHSADataGlobalProgramSection(MCContext &Ctx) {
-  return  Ctx.getELFSection(".hsadata_global_program", ELF::SHT_PROGBITS,
-                            ELF::SHF_ALLOC | ELF::SHF_WRITE |
-                            ELF::SHF_AMDGPU_HSA_GLOBAL);
-}
-
-MCSection *getHSARodataReadonlyAgentSection(MCContext &Ctx) {
-  return Ctx.getELFSection(".hsarodata_readonly_agent", ELF::SHT_PROGBITS,
-                           ELF::SHF_ALLOC | ELF::SHF_AMDGPU_HSA_READONLY |
-                           ELF::SHF_AMDGPU_HSA_AGENT);
-}
-
 bool isGroupSegment(const GlobalValue *GV, AMDGPUAS AS) {
   return GV->getType()->getAddressSpace() == AS.LOCAL_ADDRESS;
 }
@@ -504,6 +486,7 @@ unsigned getInitialPSInputAddr(const Function &F) {
 bool isShader(CallingConv::ID cc) {
   switch(cc) {
     case CallingConv::AMDGPU_VS:
+    case CallingConv::AMDGPU_HS:
     case CallingConv::AMDGPU_GS:
     case CallingConv::AMDGPU_PS:
     case CallingConv::AMDGPU_CS:
@@ -517,6 +500,21 @@ bool isCompute(CallingConv::ID cc) {
   return !isShader(cc) || cc == CallingConv::AMDGPU_CS;
 }
 
+bool isEntryFunctionCC(CallingConv::ID CC) {
+  switch (CC) {
+  case CallingConv::AMDGPU_KERNEL:
+  case CallingConv::SPIR_KERNEL:
+  case CallingConv::AMDGPU_VS:
+  case CallingConv::AMDGPU_GS:
+  case CallingConv::AMDGPU_PS:
+  case CallingConv::AMDGPU_CS:
+  case CallingConv::AMDGPU_HS:
+    return true;
+  default:
+    return false;
+  }
+}
+
 bool isSI(const MCSubtargetInfo &STI) {
   return STI.getFeatureBits()[AMDGPU::FeatureSouthernIslands];
 }
@@ -527,6 +525,38 @@ bool isCI(const MCSubtargetInfo &STI) {
 
 bool isVI(const MCSubtargetInfo &STI) {
   return STI.getFeatureBits()[AMDGPU::FeatureVolcanicIslands];
+}
+
+bool isGFX9(const MCSubtargetInfo &STI) {
+  return STI.getFeatureBits()[AMDGPU::FeatureGFX9];
+}
+
+bool isSGPR(unsigned Reg, const MCRegisterInfo* TRI) {
+  const MCRegisterClass SGPRClass = TRI->getRegClass(AMDGPU::SReg_32RegClassID);
+  const unsigned FirstSubReg = TRI->getSubReg(Reg, 1);
+  return SGPRClass.contains(FirstSubReg != 0 ? FirstSubReg : Reg) ||
+    Reg == AMDGPU::SCC;
+}
+
+bool isRegIntersect(unsigned Reg0, unsigned Reg1, const MCRegisterInfo* TRI) {
+
+  if (Reg0 == Reg1) {
+    return true;
+  }
+
+  unsigned SubReg0 = TRI->getSubReg(Reg0, 1);
+  if (SubReg0 == 0) {
+    return TRI->getSubRegIndex(Reg1, Reg0) > 0;
+  }
+
+  for (unsigned Idx = 2; SubReg0 > 0; ++Idx) {
+    if (isRegIntersect(Reg1, SubReg0, TRI)) {
+      return true;
+    }
+    SubReg0 = TRI->getSubReg(Reg0, Idx);
+  }
+
+  return false;
 }
 
 unsigned getMCReg(unsigned Reg, const MCSubtargetInfo &STI) {
@@ -706,6 +736,9 @@ bool isInlinableLiteral16(int16_t Literal, bool HasInv2Pi) {
 bool isInlinableLiteralV216(int32_t Literal, bool HasInv2Pi) {
   assert(HasInv2Pi);
 
+  if (!EnablePackedInlinableLiterals)
+    return false;
+
   int16_t Lo16 = static_cast<int16_t>(Literal);
   int16_t Hi16 = static_cast<int16_t>(Literal >> 16);
   return Lo16 == Hi16 && isInlinableLiteral16(Lo16, HasInv2Pi);
@@ -772,13 +805,11 @@ AMDGPUAS getAMDGPUAS(Triple T) {
   AMDGPUAS AS;
   if (Env == "amdgiz" || Env == "amdgizcl") {
     AS.FLAT_ADDRESS     = 0;
-    AS.CONSTANT_ADDRESS = 4;
     AS.PRIVATE_ADDRESS  = 5;
-    AS.REGION_ADDRESS   = 2;
+    AS.REGION_ADDRESS   = 4;
   }
   else {
     AS.FLAT_ADDRESS     = 4;
-    AS.CONSTANT_ADDRESS = 2;
     AS.PRIVATE_ADDRESS  = 0;
     AS.REGION_ADDRESS   = 5;
    }

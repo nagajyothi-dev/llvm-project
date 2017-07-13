@@ -27,16 +27,27 @@ void __xray_set_log_impl(XRayLogImpl Impl) XRAY_NEVER_INSTRUMENT {
       Impl.handle_arg0 == nullptr || Impl.flush_log == nullptr) {
     __sanitizer::SpinMutexLock Guard(&XRayImplMutex);
     GlobalXRayImpl.reset();
+    __xray_remove_handler();
+    __xray_remove_handler_arg1();
     return;
   }
 
   __sanitizer::SpinMutexLock Guard(&XRayImplMutex);
   GlobalXRayImpl.reset(new XRayLogImpl);
   *GlobalXRayImpl = Impl;
+  __xray_set_handler(Impl.handle_arg0);
 }
 
-XRayLogInitStatus __xray_init(size_t BufferSize, size_t MaxBuffers, void *Args,
-                              size_t ArgsSize) XRAY_NEVER_INSTRUMENT {
+void __xray_remove_log_impl() XRAY_NEVER_INSTRUMENT {
+  __sanitizer::SpinMutexLock Guard(&XRayImplMutex);
+  GlobalXRayImpl.reset();
+  __xray_remove_handler();
+  __xray_remove_handler_arg1();
+}
+
+XRayLogInitStatus __xray_log_init(size_t BufferSize, size_t MaxBuffers,
+                                  void *Args,
+                                  size_t ArgsSize) XRAY_NEVER_INSTRUMENT {
   __sanitizer::SpinMutexLock Guard(&XRayImplMutex);
   if (!GlobalXRayImpl)
     return XRayLogInitStatus::XRAY_LOG_UNINITIALIZED;

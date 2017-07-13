@@ -39,11 +39,11 @@ endif()
 
 add_llvm_target(AArch64CodeGen
   AArch64A57FPLoadBalancing.cpp
-  AArch64AddressTypePromotion.cpp
   AArch64AdvSIMDScalarPass.cpp
   AArch64AsmPrinter.cpp
   AArch64CleanupLocalDynamicTLSPass.cpp
   AArch64CollectLOH.cpp
+  AArch64CondBrTuning.cpp
   AArch64ConditionalCompares.cpp
   AArch64DeadRegisterDefinitionsPass.cpp
   AArch64ExpandPseudoInsts.cpp

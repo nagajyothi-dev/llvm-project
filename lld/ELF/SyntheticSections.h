@@ -27,6 +27,8 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/MC/StringTableBuilder.h"
 
+#include <set>
+
 namespace lld {
 namespace elf {
 
@@ -51,7 +53,7 @@ public:
   virtual bool empty() const { return false; }
   uint64_t getVA() const;
 
-  static bool classof(const InputSectionBase *D) {
+  static bool classof(const SectionBase *D) {
     return D->kind() == InputSectionBase::Synthetic;
   }
 };
@@ -63,7 +65,6 @@ struct CieRecord {
 
 // Section for .eh_frame.
 template <class ELFT> class EhFrameSection final : public SyntheticSection {
-  typedef typename ELFT::uint uintX_t;
   typedef typename ELFT::Shdr Elf_Shdr;
   typedef typename ELFT::Rel Elf_Rel;
   typedef typename ELFT::Rela Elf_Rela;
@@ -97,7 +98,7 @@ private:
   template <class RelTy>
   bool isFdeLive(EhSectionPiece &Piece, ArrayRef<RelTy> Rels);
 
-  uintX_t getFdePc(uint8_t *Buf, size_t Off, uint8_t Enc);
+  uint64_t getFdePc(uint8_t *Buf, size_t Off, uint8_t Enc);
 
   std::vector<CieRecord *> Cies;
 
@@ -105,33 +106,31 @@ private:
   llvm::DenseMap<std::pair<ArrayRef<uint8_t>, SymbolBody *>, CieRecord> CieMap;
 };
 
-template <class ELFT> class GotSection final : public SyntheticSection {
-  typedef typename ELFT::uint uintX_t;
-
+class GotSection : public SyntheticSection {
 public:
   GotSection();
-  void writeTo(uint8_t *Buf) override;
   size_t getSize() const override { return Size; }
   void finalizeContents() override;
   bool empty() const override;
+  void writeTo(uint8_t *Buf) override;
 
   void addEntry(SymbolBody &Sym);
   bool addDynTlsEntry(SymbolBody &Sym);
   bool addTlsIndex();
-  uintX_t getGlobalDynAddr(const SymbolBody &B) const;
-  uintX_t getGlobalDynOffset(const SymbolBody &B) const;
+  uint64_t getGlobalDynAddr(const SymbolBody &B) const;
+  uint64_t getGlobalDynOffset(const SymbolBody &B) const;
 
-  uintX_t getTlsIndexVA() { return this->getVA() + TlsIndexOff; }
+  uint64_t getTlsIndexVA() { return this->getVA() + TlsIndexOff; }
   uint32_t getTlsIndexOff() const { return TlsIndexOff; }
 
   // Flag to force GOT to be in output if we have relocations
   // that relies on its address.
   bool HasGotOffRel = false;
 
-private:
+protected:
   size_t NumEntries = 0;
   uint32_t TlsIndexOff = -1;
-  uintX_t Size = 0;
+  uint64_t Size = 0;
 };
 
 // .note.gnu.build-id section.
@@ -162,11 +161,11 @@ public:
   BssSection(StringRef Name);
   void writeTo(uint8_t *) override {}
   bool empty() const override { return getSize() == 0; }
-  size_t reserveSpace(uint32_t Alignment, size_t Size);
+  size_t reserveSpace(uint64_t Size, uint32_t Alignment);
   size_t getSize() const override { return Size; }
 
 private:
-  size_t Size = 0;
+  uint64_t Size = 0;
 };
 
 class MipsGotSection final : public SyntheticSection {
@@ -341,7 +340,6 @@ template <class ELFT> class DynamicSection final : public SyntheticSection {
   typedef typename ELFT::Rela Elf_Rela;
   typedef typename ELFT::Shdr Elf_Shdr;
   typedef typename ELFT::Sym Elf_Sym;
-  typedef typename ELFT::uint uintX_t;
 
   // The .dynamic section contains information for the dynamic linker.
   // The section consists of fixed size entries, which consist of
@@ -377,13 +375,12 @@ public:
 private:
   void addEntries();
   void add(Entry E) { Entries.push_back(E); }
-  uintX_t Size = 0;
+  uint64_t Size = 0;
 };
 
 template <class ELFT> class RelocationSection final : public SyntheticSection {
   typedef typename ELFT::Rel Elf_Rel;
   typedef typename ELFT::Rela Elf_Rela;
-  typedef typename ELFT::uint uintX_t;
 
 public:
   RelocationSection(StringRef Name, bool Sort);
@@ -406,35 +403,36 @@ struct SymbolTableEntry {
   size_t StrTabOffset;
 };
 
-template <class ELFT> class SymbolTableSection final : public SyntheticSection {
+class SymbolTableBaseSection : public SyntheticSection {
 public:
-  typedef typename ELFT::Sym Elf_Sym;
-  typedef typename ELFT::uint uintX_t;
-
-  SymbolTableSection(StringTableSection &StrTabSec);
-
+  SymbolTableBaseSection(StringTableSection &StrTabSec);
   void finalizeContents() override;
   void postThunkContents() override;
-  void writeTo(uint8_t *Buf) override;
-  size_t getSize() const override { return getNumSymbols() * sizeof(Elf_Sym); }
+  size_t getSize() const override { return getNumSymbols() * Entsize; }
   void addSymbol(SymbolBody *Body);
   unsigned getNumSymbols() const { return Symbols.size() + 1; }
   size_t getSymbolIndex(SymbolBody *Body);
   ArrayRef<SymbolTableEntry> getSymbols() const { return Symbols; }
 
-private:
+protected:
   // A vector of symbols and their string table offsets.
   std::vector<SymbolTableEntry> Symbols;
 
   StringTableSection &StrTabSec;
 };
 
+template <class ELFT>
+class SymbolTableSection final : public SymbolTableBaseSection {
+  typedef typename ELFT::Sym Elf_Sym;
+
+public:
+  SymbolTableSection(StringTableSection &StrTabSec);
+  void writeTo(uint8_t *Buf) override;
+};
+
 // Outputs GNU Hash section. For detailed explanation see:
 // https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections
-template <class ELFT>
 class GnuHashTableSection final : public SyntheticSection {
-  typedef typename ELFT::uint uintX_t;
-
 public:
   GnuHashTableSection();
   void finalizeContents() override;
@@ -446,7 +444,7 @@ public:
   void addSymbols(std::vector<SymbolTableEntry> &Symbols);
 
 private:
-  size_t getShift2() const { return ELFT::Is64Bits ? 6 : 5; }
+  size_t getShift2() const { return Config->Is64 ? 6 : 5; }
 
   void writeBloomFilter(uint8_t *Buf);
   void writeHashTable(uint8_t *Buf);
@@ -505,26 +503,28 @@ class GdbIndexSection final : public SyntheticSection {
   const unsigned SymTabEntrySize = 2 * OffsetTypeSize;
 
 public:
-  GdbIndexSection();
+  GdbIndexSection(std::vector<GdbIndexChunk> &&Chunks);
   void finalizeContents() override;
   void writeTo(uint8_t *Buf) override;
   size_t getSize() const override;
   bool empty() const override;
 
-  // Pairs of [CU Offset, CU length].
-  std::vector<std::pair<uint64_t, uint64_t>> CompilationUnits;
-
-  llvm::StringTableBuilder StringPool;
-
+  // Symbol table is a hash table for types and names.
+  // It is the area of gdb index.
   GdbHashTab SymbolTable;
 
-  // The CU vector portion of the constant pool.
-  std::vector<std::vector<std::pair<uint32_t, uint8_t>>> CuVectors;
+  // CU vector is a part of constant pool area of section.
+  std::vector<std::set<uint32_t>> CuVectors;
 
-  std::vector<AddressEntry> AddressArea;
+  // String pool is also a part of constant pool, it follows CU vectors.
+  llvm::StringTableBuilder StringPool;
+
+  // Each chunk contains information gathered from a debug sections of single
+  // object and used to build different areas of gdb index.
+  std::vector<GdbIndexChunk> Chunks;
 
 private:
-  void readDwarf(InputSection *Sec);
+  void buildIndex();
 
   uint32_t CuTypesOffset;
   uint32_t SymTabOffset;
@@ -537,6 +537,8 @@ private:
   bool Finalized = false;
 };
 
+template <class ELFT> GdbIndexSection *createGdbIndex();
+
 // --eh-frame-hdr option tells linker to construct a header for all the
 // .eh_frame sections. This header is placed to a section named .eh_frame_hdr
 // and also to a PT_GNU_EH_FRAME segment.
@@ -547,8 +549,6 @@ private:
 // http://www.airs.com/blog/archives/460 (".eh_frame")
 // http://www.airs.com/blog/archives/462 (".eh_frame_hdr")
 template <class ELFT> class EhFrameHeader final : public SyntheticSection {
-  typedef typename ELFT::uint uintX_t;
-
 public:
   EhFrameHeader();
   void writeTo(uint8_t *Buf) override;
@@ -652,7 +652,6 @@ private:
   void finalizeTailMerge();
   void finalizeNoTailMerge();
 
-  bool Finalized = false;
   llvm::StringTableBuilder Builder;
   std::vector<MergeInputSection *> Sections;
 };
@@ -715,7 +714,7 @@ class MipsRldMapSection : public SyntheticSection {
 public:
   MipsRldMapSection();
   size_t getSize() const override { return Config->Wordsize; }
-  void writeTo(uint8_t *Buf) override;
+  void writeTo(uint8_t *Buf) override {}
 };
 
 class ARMExidxSentinelSection : public SyntheticSection {
@@ -749,7 +748,8 @@ private:
 template <class ELFT> InputSection *createCommonSection();
 InputSection *createInterpSection();
 template <class ELFT> MergeInputSection *createCommentSection();
-template <class ELFT>
+void decompressAndMergeSections();
+
 SymbolBody *addSyntheticLocal(StringRef Name, uint8_t Type, uint64_t Value,
                               uint64_t Size, InputSectionBase *Section);
 
@@ -760,9 +760,13 @@ struct InX {
   static BssSection *BssRelRo;
   static BuildIdSection *BuildId;
   static InputSection *Common;
+  static SyntheticSection *Dynamic;
   static StringTableSection *DynStrTab;
+  static SymbolTableBaseSection *DynSymTab;
+  static GnuHashTableSection *GnuHashTab;
   static InputSection *Interp;
   static GdbIndexSection *GdbIndex;
+  static GotSection *Got;
   static GotPltSection *GotPlt;
   static IgotPltSection *IgotPlt;
   static MipsGotSection *MipsGot;
@@ -771,36 +775,27 @@ struct InX {
   static PltSection *Iplt;
   static StringTableSection *ShStrTab;
   static StringTableSection *StrTab;
+  static SymbolTableBaseSection *SymTab;
 };
 
 template <class ELFT> struct In : public InX {
-  static DynamicSection<ELFT> *Dynamic;
-  static SymbolTableSection<ELFT> *DynSymTab;
   static EhFrameHeader<ELFT> *EhFrameHdr;
-  static GnuHashTableSection<ELFT> *GnuHashTab;
-  static GotSection<ELFT> *Got;
   static EhFrameSection<ELFT> *EhFrame;
   static HashTableSection<ELFT> *HashTab;
   static RelocationSection<ELFT> *RelaDyn;
   static RelocationSection<ELFT> *RelaPlt;
   static RelocationSection<ELFT> *RelaIplt;
-  static SymbolTableSection<ELFT> *SymTab;
   static VersionDefinitionSection<ELFT> *VerDef;
   static VersionTableSection<ELFT> *VerSym;
   static VersionNeedSection<ELFT> *VerNeed;
 };
 
-template <class ELFT> DynamicSection<ELFT> *In<ELFT>::Dynamic;
-template <class ELFT> SymbolTableSection<ELFT> *In<ELFT>::DynSymTab;
 template <class ELFT> EhFrameHeader<ELFT> *In<ELFT>::EhFrameHdr;
-template <class ELFT> GnuHashTableSection<ELFT> *In<ELFT>::GnuHashTab;
-template <class ELFT> GotSection<ELFT> *In<ELFT>::Got;
 template <class ELFT> EhFrameSection<ELFT> *In<ELFT>::EhFrame;
 template <class ELFT> HashTableSection<ELFT> *In<ELFT>::HashTab;
 template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaDyn;
 template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaPlt;
 template <class ELFT> RelocationSection<ELFT> *In<ELFT>::RelaIplt;
-template <class ELFT> SymbolTableSection<ELFT> *In<ELFT>::SymTab;
 template <class ELFT> VersionDefinitionSection<ELFT> *In<ELFT>::VerDef;
 template <class ELFT> VersionTableSection<ELFT> *In<ELFT>::VerSym;
 template <class ELFT> VersionNeedSection<ELFT> *In<ELFT>::VerNeed;

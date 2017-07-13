@@ -2578,6 +2578,13 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
     D->setPrevUpperBoundVariable(Record.readSubExpr());
     D->setDistInc(Record.readSubExpr());
     D->setPrevEnsureUpperBound(Record.readSubExpr());
+    D->setCombinedLowerBoundVariable(Record.readSubExpr());
+    D->setCombinedUpperBoundVariable(Record.readSubExpr());
+    D->setCombinedEnsureUpperBound(Record.readSubExpr());
+    D->setCombinedInit(Record.readSubExpr());
+    D->setCombinedCond(Record.readSubExpr());
+    D->setCombinedNextLowerBound(Record.readSubExpr());
+    D->setCombinedNextUpperBound(Record.readSubExpr());
   }
   SmallVector<Expr *, 4> Sub;
   unsigned CollapsedNum = D->getCollapsedNumber();
@@ -2947,6 +2954,7 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
     }
 
+    ASTContext &Context = getContext();
     Stmt *S = nullptr;
     bool Finished = false;
     bool IsStmtReference = false;

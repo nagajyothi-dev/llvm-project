@@ -1,4 +1,4 @@
-//===-- IndirectCallPromotion.cpp - Promote indirect calls to direct calls ===//
+//===-- IndirectCallPromotion.cpp - Optimizations based on value profiling ===//
 //
 //                      The LLVM Compiler Infrastructure
 //
@@ -17,6 +17,8 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/IndirectCallPromotionAnalysis.h"
 #include "llvm/Analysis/IndirectCallSiteVisitor.h"
 #include "llvm/IR/BasicBlock.h"
@@ -40,6 +42,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/PGOInstrumentation.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -65,13 +68,13 @@ static cl::opt<bool> DisableICP("disable-icp", cl::init(false), cl::Hidden,
 // For debug use only.
 static cl::opt<unsigned>
     ICPCutOff("icp-cutoff", cl::init(0), cl::Hidden, cl::ZeroOrMore,
-              cl::desc("Max number of promotions for this compilaiton"));
+              cl::desc("Max number of promotions for this compilation"));
 
 // If ICPCSSkip is non zero, the first ICPCSSkip callsites will be skipped.
 // For debug use only.
 static cl::opt<unsigned>
     ICPCSSkip("icp-csskip", cl::init(0), cl::Hidden, cl::ZeroOrMore,
-              cl::desc("Skip Callsite up to this number for this compilaiton"));
+              cl::desc("Skip Callsite up to this number for this compilation"));
 
 // Set if the pass is called in LTO optimization. The difference for LTO mode
 // is the pass won't prefix the source module name to the internal linkage
@@ -639,7 +642,12 @@ static bool promoteIndirectCalls(Module &M, bool InLTO, bool SamplePGO) {
   if (DisableICP)
     return false;
   InstrProfSymtab Symtab;
-  Symtab.create(M, InLTO);
+  if (Error E = Symtab.create(M, InLTO)) {
+    std::string SymtabFailure = toString(std::move(E));
+    DEBUG(dbgs() << "Failed to create symtab: " << SymtabFailure << "\n");
+    (void)SymtabFailure;
+    return false;
+  }
   bool Changed = false;
   for (auto &F : M) {
     if (F.isDeclaration())

@@ -23,6 +23,7 @@
 #include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
@@ -154,7 +155,7 @@ public:
     /// typedef void* __builtin_va_list;
     VoidPtrBuiltinVaList,
 
-    /// __builtin_va_list as defind by the AArch64 ABI
+    /// __builtin_va_list as defined by the AArch64 ABI
     /// http://infocenter.arm.com/help/topic/com.arm.doc.ihi0055a/IHI0055A_aapcs64.pdf
     AArch64ABIBuiltinVaList,
 
@@ -168,7 +169,7 @@ public:
     PowerABIBuiltinVaList,
 
     /// __builtin_va_list as defined by the x86-64 ABI:
-    /// http://www.x86-64.org/documentation/abi.pdf
+    /// http://refspecs.linuxbase.org/elf/x86_64-abi-0.21.pdf
     X86_64ABIBuiltinVaList,
 
     /// __builtin_va_list as defined by ARM AAPCS ABI
@@ -952,6 +953,14 @@ public:
 
   const LangAS::Map &getAddressSpaceMap() const {
     return *AddrSpaceMap;
+  }
+
+  /// \brief Return an AST address space which can be used opportunistically
+  /// for constant global memory. It must be possible to convert pointers into
+  /// this address space to LangAS::Default. If no such address space exists,
+  /// this may return None, and such optimizations will be disabled.
+  virtual llvm::Optional<unsigned> getConstantAddressSpace() const {
+    return LangAS::Default;
   }
 
   /// \brief Retrieve the name of the platform as it is used in the

@@ -21,6 +21,8 @@
 using namespace llvm;
 using namespace polly;
 
+static const int MaxArraysInAliasScops = 10;
+
 /// Get a self referencing id metadata node.
 ///
 /// The MDNode looks like this (if arg0/arg1 are not null):
@@ -58,11 +60,19 @@ void ScopAnnotator::buildAliasScopes(Scop &S) {
   AliasScopeMap.clear();
   OtherAliasScopeListMap.clear();
 
+  // The construction of alias scopes is quadratic in the number of arrays
+  // involved. In case of too many arrays, skip the construction of alias
+  // information to avoid quadratic increases in compile time and code size.
+  if (std::distance(S.array_begin(), S.array_end()) > MaxArraysInAliasScops)
+    return;
+
   std::string AliasScopeStr = "polly.alias.scope.";
-  for (const ScopArrayInfo *Array : S.arrays())
+  for (const ScopArrayInfo *Array : S.arrays()) {
+    assert(Array->getBasePtr() && "Base pointer must be present");
     AliasScopeMap[Array->getBasePtr()] =
         getID(Ctx, AliasScopeDomain,
               MDString::get(Ctx, (AliasScopeStr + Array->getName()).c_str()));
+  }
 
   for (const ScopArrayInfo *Array : S.arrays()) {
     MDNode *AliasScopeList = MDNode::get(Ctx, {});

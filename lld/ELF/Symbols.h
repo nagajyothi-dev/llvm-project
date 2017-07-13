@@ -65,12 +65,15 @@ public:
     return SymbolKind == LazyArchiveKind || SymbolKind == LazyObjectKind;
   }
   bool isShared() const { return SymbolKind == SharedKind; }
-  bool isInCurrentDSO() const { return !isUndefined() && !isShared(); }
+  bool isInCurrentDSO() const {
+    return !isUndefined() && !isShared() && !isLazy();
+  }
   bool isLocal() const { return IsLocal; }
   bool isPreemptible() const;
   StringRef getName() const { return Name; }
   uint8_t getVisibility() const { return StOther & 0x3; }
   void parseSymbolVersion();
+  void copy(SymbolBody *Other);
 
   bool isInGot() const { return GotIndex != -1U; }
   bool isInPlt() const { return PltIndex != -1U; }
@@ -78,7 +81,7 @@ public:
   uint64_t getVA(int64_t Addend = 0) const;
 
   uint64_t getGotOffset() const;
-  template <class ELFT> typename ELFT::uint getGotVA() const;
+  uint64_t getGotVA() const;
   uint64_t getGotPltOffset() const;
   uint64_t getGotPltVA() const;
   uint64_t getPltVA() const;
@@ -217,7 +220,7 @@ public:
         Verdef(Verdef), ElfSym(ElfSym) {
     // IFuncs defined in DSOs are treated as functions by the static linker.
     if (isGnuIFunc())
-      Type = llvm::ELF::STT_FUNC;
+      this->Type = llvm::ELF::STT_FUNC;
     this->File = File;
   }
 
@@ -240,7 +243,7 @@ public:
 
   // CopyRelSec and CopyRelSecOff are significant only when NeedsCopy is true.
   InputSection *CopyRelSec;
-  size_t CopyRelSecOff;
+  uint64_t CopyRelSecOff;
 
 private:
   template <class ELFT> const typename ELFT::Sym &getSym() const {
@@ -302,22 +305,30 @@ public:
 // Some linker-generated symbols need to be created as
 // DefinedRegular symbols.
 struct ElfSym {
-  // The content for _etext and etext symbols.
-  static DefinedRegular *Etext;
+  // __bss_start
+  static DefinedRegular *Bss;
+
+  // etext and _etext
+  static DefinedRegular *Etext1;
   static DefinedRegular *Etext2;
 
-  // The content for _edata and edata symbols.
-  static DefinedRegular *Edata;
+  // edata and _edata
+  static DefinedRegular *Edata1;
   static DefinedRegular *Edata2;
 
-  // The content for _end and end symbols.
-  static DefinedRegular *End;
+  // end and _end
+  static DefinedRegular *End1;
   static DefinedRegular *End2;
 
-  // The content for _gp_disp/__gnu_local_gp symbols for MIPS target.
+  // The _GLOBAL_OFFSET_TABLE_ symbol is defined by target convention to
+  // be at some offset from the base of the .got section, usually 0 or
+  // the end of the .got.
+  static DefinedRegular *GlobalOffsetTable;
+
+  // _gp, _gp_disp and __gnu_local_gp symbols. Only for MIPS.
+  static DefinedRegular *MipsGp;
   static DefinedRegular *MipsGpDisp;
   static DefinedRegular *MipsLocalGp;
-  static DefinedRegular *MipsGp;
 };
 
 // A real symbol object, SymbolBody, is usually stored within a Symbol. There's

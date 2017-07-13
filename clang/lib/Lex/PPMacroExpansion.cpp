@@ -1125,6 +1125,7 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       .Case("attribute_overloadable", true)
       .Case("attribute_unavailable_with_message", true)
       .Case("attribute_unused_on_fields", true)
+      .Case("attribute_diagnose_if_objc", true)
       .Case("blocks", LangOpts.Blocks)
       .Case("c_thread_safety_attributes", true)
       .Case("cxx_exceptions", LangOpts.CXXExceptions)
@@ -1314,6 +1315,8 @@ static bool HasExtension(const Preprocessor &PP, StringRef Extension) {
            .Case("cxx_binary_literals", true)
            .Case("cxx_init_captures", LangOpts.CPlusPlus11)
            .Case("cxx_variable_templates", LangOpts.CPlusPlus)
+           // Miscellaneous language extensions
+           .Case("overloadable_unmarked", true)
            .Default(false);
 }
 
@@ -1422,7 +1425,7 @@ static bool EvaluateHasIncludeCommon(Token &Tok,
   const DirectoryLookup *CurDir;
   const FileEntry *File =
       PP.LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, LookupFromFile,
-                    CurDir, nullptr, nullptr, nullptr);
+                    CurDir, nullptr, nullptr, nullptr, nullptr);
 
   // Get the result value.  A result of true means the file exists.
   return File != nullptr;
@@ -1453,7 +1456,7 @@ static bool EvaluateHasIncludeNext(Token &Tok,
   } else if (PP.isInPrimaryFile()) {
     Lookup = nullptr;
     PP.Diag(Tok, diag::pp_include_next_in_primary);
-  } else if (PP.getCurrentSubmodule()) {
+  } else if (PP.getCurrentLexerSubmodule()) {
     // Start looking up in the directory *after* the one in which the current
     // file would be found, if any.
     assert(PP.getCurrentLexer() && "#include_next directive in macro?");
@@ -1746,6 +1749,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
           return llvm::StringSwitch<bool>(II->getName())
                       .Case("__make_integer_seq", LangOpts.CPlusPlus)
                       .Case("__type_pack_element", LangOpts.CPlusPlus)
+                      .Case("__builtin_available", true)
                       .Default(false);
         }
       });

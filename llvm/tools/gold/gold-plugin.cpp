@@ -21,7 +21,9 @@
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/LTO/Caching.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Object/Error.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -100,7 +102,7 @@ static ld_plugin_add_input_file add_input_file = nullptr;
 static ld_plugin_set_extra_library_path set_extra_library_path = nullptr;
 static ld_plugin_get_view get_view = nullptr;
 static bool IsExecutable = false;
-static Optional<Reloc::Model> RelocationModel;
+static Optional<Reloc::Model> RelocationModel = None;
 static std::string output_name = "";
 static std::list<claimed_file> Modules;
 static DenseMap<int, void *> FDToLeaderHandle;
@@ -280,6 +282,8 @@ ld_plugin_status onload(ld_plugin_tv *tv) {
     case LDPT_LINKER_OUTPUT:
       switch (tv->tv_u.tv_val) {
       case LDPO_REL: // .o
+        IsExecutable = false;
+        break;
       case LDPO_DYN: // .so
         IsExecutable = false;
         RelocationModel = Reloc::PIC_;
@@ -463,7 +467,7 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
           EC == object::object_error::bitcode_section_not_found)
         *claimed = 0;
       else
-        message(LDPL_ERROR,
+        message(LDPL_FATAL,
                 "LLVM gold plugin has failed to create LTO module: %s",
                 EI.message().c_str());
     });
@@ -473,7 +477,7 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
 
   std::unique_ptr<InputFile> Obj = std::move(*ObjOrErr);
 
-  Modules.resize(Modules.size() + 1);
+  Modules.emplace_back();
   claimed_file &cf = Modules.back();
 
   cf.handle = file->handle;
@@ -496,8 +500,6 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
                sys::path::filename(Obj->getSourceFileName()).str();
 
   for (auto &Sym : Obj->symbols()) {
-    uint32_t Symflags = Sym.getFlags();
-
     cf.syms.push_back(ld_plugin_symbol());
     ld_plugin_symbol &sym = cf.syms.back();
     sym.version = nullptr;
@@ -523,20 +525,20 @@ static ld_plugin_status claim_file_hook(const ld_plugin_input_file *file,
       break;
     }
 
-    if (Symflags & object::BasicSymbolRef::SF_Undefined) {
+    if (Sym.isUndefined()) {
       sym.def = LDPK_UNDEF;
-      if (Symflags & object::BasicSymbolRef::SF_Weak)
+      if (Sym.isWeak())
         sym.def = LDPK_WEAKUNDEF;
-    } else if (Symflags & object::BasicSymbolRef::SF_Common)
+    } else if (Sym.isCommon())
       sym.def = LDPK_COMMON;
-    else if (Symflags & object::BasicSymbolRef::SF_Weak)
+    else if (Sym.isWeak())
       sym.def = LDPK_WEAKDEF;
     else
       sym.def = LDPK_DEF;
 
     sym.size = 0;
     sym.comdat_key = nullptr;
-    int CI = check(Sym.getComdatIndex());
+    int CI = Sym.getComdatIndex();
     if (CI != -1) {
       StringRef C = Obj->getComdatTable()[CI];
       sym.comdat_key = strdup(C.str().c_str());
@@ -726,7 +728,7 @@ static std::unique_ptr<LTO> createLTO() {
   Conf.Options.RelaxELFRelocations = false;
 
   Conf.MAttrs = MAttrs;
-  Conf.RelocModel = *RelocationModel;
+  Conf.RelocModel = RelocationModel;
   Conf.CGOptLevel = getCGOptLevel();
   Conf.DisableVerify = options::DisableVerify;
   Conf.OptLevel = options::OptLevel;

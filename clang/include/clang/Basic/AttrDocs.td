@@ -244,6 +244,36 @@ An example of how to use ``alloc_size``
   }];
 }
 
+def AllocAlignDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Use ``__attribute__((alloc_align(<alignment>))`` on a function
+declaration to specify that the return value of the function (which must be a
+pointer type) is at least as aligned as the value of the indicated parameter. The 
+parameter is given by its index in the list of formal parameters; the first
+parameter has index 1 unless the function is a C++ non-static member function,
+in which case the first parameter has index 2 to account for the implicit ``this``
+parameter.
+
+.. code-block:: c++
+
+  // The returned pointer has the alignment specified by the first parameter.
+  void *a(size_t align) __attribute__((alloc_align(1)));
+
+  // The returned pointer has the alignment specified by the second parameter.
+  void *b(void *v, size_t align) __attribute__((alloc_align(2)));
+
+  // The returned pointer has the alignment specified by the second visible
+  // parameter, however it must be adjusted for the implicit 'this' parameter.
+  void *Foo::b(void *v, size_t align) __attribute__((alloc_align(3)));
+
+Note that this attribute merely informs the compiler that a function always
+returns a sufficiently aligned pointer. It does not cause the compiler to 
+emit code to enforce that alignment.  The behavior is undefined if the returned
+poitner is not sufficiently aligned.
+  }];
+}
+
 def EnableIfDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -575,19 +605,26 @@ semantics:
   for ``T`` and ``U`` to be incompatible.
 
 The declaration of ``overloadable`` functions is restricted to function
-declarations and definitions.  Most importantly, if any function with a given
-name is given the ``overloadable`` attribute, then all function declarations
-and definitions with that name (and in that scope) must have the
-``overloadable`` attribute.  This rule even applies to redeclarations of
-functions whose original declaration had the ``overloadable`` attribute, e.g.,
+declarations and definitions.  If a function is marked with the ``overloadable``
+attribute, then all declarations and definitions of functions with that name,
+except for at most one (see the note below about unmarked overloads), must have
+the ``overloadable`` attribute.  In addition, redeclarations of a function with
+the ``overloadable`` attribute must have the ``overloadable`` attribute, and
+redeclarations of a function without the ``overloadable`` attribute must *not*
+have the ``overloadable`` attribute. e.g.,
 
 .. code-block:: c
 
   int f(int) __attribute__((overloadable));
   float f(float); // error: declaration of "f" must have the "overloadable" attribute
+  int f(int); // error: redeclaration of "f" must have the "overloadable" attribute
 
   int g(int) __attribute__((overloadable));
   int g(int) { } // error: redeclaration of "g" must also have the "overloadable" attribute
+
+  int h(int);
+  int h(int) __attribute__((overloadable)); // error: declaration of "h" must not
+                                            // have the "overloadable" attribute
 
 Functions marked ``overloadable`` must have prototypes.  Therefore, the
 following code is ill-formed:
@@ -621,7 +658,28 @@ caveats to this use of name mangling:
   linkage specification, it's name *will* be mangled in the same way as it
   would in C.
 
-Query for this feature with ``__has_extension(attribute_overloadable)``.
+For the purpose of backwards compatibility, at most one function with the same
+name as other ``overloadable`` functions may omit the ``overloadable``
+attribute. In this case, the function without the ``overloadable`` attribute
+will not have its name mangled.
+
+For example:
+
+.. code-block:: c
+
+  // Notes with mangled names assume Itanium mangling.
+  int f(int);
+  int f(double) __attribute__((overloadable));
+  void foo() {
+    f(5); // Emits a call to f (not _Z1fi, as it would with an overload that
+          // was marked with overloadable).
+    f(1.0); // Emits a call to _Z1fd.
+  }
+
+Support for unmarked overloads is not present in some versions of clang. You may
+query for it using ``__has_extension(overloadable_unmarked)``.
+
+Query for this attribute with ``__has_attribute(overloadable)``.
   }];
 }
 
@@ -1236,6 +1294,19 @@ The semantics are as follows:
 - The parameter sets the interrupt mask for the function corresponding to the
   interrupt level specified. If no mask is specified the interrupt mask
   defaults to "eic".
+  }];
+}
+
+def MicroMipsDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the GNU style ``__attribute__((micromips))`` and
+``__attribute__((nomicromips))`` attributes on MIPS targets. These attributes
+may be attached to a function definition and instructs the backend to generate
+or not to generate microMIPS code for that function.
+
+These attributes override the `-mmicromips` and `-mno-micromips` options
+on the command line.
   }];
 }
 
@@ -2186,6 +2257,21 @@ s6.11.5 for details.
   }];
 }
 
+def OpenCLIntelReqdSubGroupSizeDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "__attribute__((intel_reqd_sub_group_size))";
+  let Content = [{
+The optional attribute intel_reqd_sub_group_size can be used to indicate that
+the kernel must be compiled and executed with the specified subgroup size. When
+this attribute is present, get_max_sub_group_size() is guaranteed to return the
+specified integer value. This is important for the correctness of many subgroup
+algorithms, and in some cases may be used by the compiler to generate more optimal
+code. See `cl_intel_required_subgroup_size
+<https://www.khronos.org/registry/OpenCL/extensions/intel/cl_intel_required_subgroup_size.txt>`
+for details.
+  }];
+}
+
 def OpenCLAccessDocs : Documentation {
   let Category = DocCatStmt;
   let Heading = "__read_only, __write_only, __read_write (read_only, write_only, read_write)";
@@ -2624,6 +2710,40 @@ hardware design, touch the red zone.
   The exception handler should only be used for exceptions which push an
   error code and all other exceptions must use the interrupt handler.
   The system will crash if the wrong handler is used.
+  }];
+}
+
+def AnyX86NoCallerSavedRegistersDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Use this attribute to indicate that the specified function has no
+caller-saved registers. That is, all registers are callee-saved except for
+registers used for passing parameters to the function or returning parameters
+from the function.
+The compiler saves and restores any modified registers that were not used for 
+passing or returning arguments to the function.
+
+The user can call functions specified with the 'no_caller_saved_registers'
+attribute from an interrupt handler without saving and restoring all
+call-clobbered registers.
+
+Note that 'no_caller_saved_registers' attribute is not a calling convention.
+In fact, it only overrides the decision of which registers should be saved by
+the caller, but not how the parameters are passed from the caller to the callee.
+
+For example:
+
+  .. code-block:: c
+
+    __attribute__ ((no_caller_saved_registers, fastcall))
+    void f (int arg1, int arg2) {
+      ...
+    }
+
+  In this case parameters 'arg1' and 'arg2' will be passed in registers.
+  In this case, on 32-bit x86 targets, the function 'f' will use ECX and EDX as
+  register parameters. However, it will not assume any scratch registers and
+  should save and restore any modified registers except for ECX and EDX.
   }];
 }
 

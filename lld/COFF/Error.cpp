@@ -29,7 +29,6 @@ namespace lld {
 static std::mutex Mu;
 
 namespace coff {
-StringRef Argv0;
 uint64_t ErrorCount;
 raw_ostream *ErrorOS;
 
@@ -45,7 +44,7 @@ static LLVM_ATTRIBUTE_NORETURN void exitLld(int Val) {
 }
 
 static void print(StringRef S, raw_ostream::Colors C) {
-  *ErrorOS << Argv0 + ": ";
+  *ErrorOS << Config->Argv[0] << ": ";
   if (Config->ColorDiagnostics) {
     ErrorOS->changeColor(C, true);
     *ErrorOS << S;
@@ -58,7 +57,8 @@ static void print(StringRef S, raw_ostream::Colors C) {
 void log(const Twine &Msg) {
   if (Config->Verbose) {
     std::lock_guard<std::mutex> Lock(Mu);
-    outs() << Argv0 << ": " << Msg << "\n";
+    outs() << Config->Argv[0] << ": " << Msg << "\n";
+    outs().flush();
   }
 }
 
@@ -77,7 +77,7 @@ void error(const Twine &Msg) {
   } else if (ErrorCount == Config->ErrorLimit) {
     print("error: ", raw_ostream::RED);
     *ErrorOS << "too many errors emitted, stopping now"
-             << " (use -error-limit=0 to see all errors)\n";
+             << " (use /ERRORLIMIT:0 to see all errors)\n";
     exitLld(1);
   }
 

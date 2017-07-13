@@ -25,6 +25,8 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
     TIDReg(AMDGPU::NoRegister),
     ScratchRSrcReg(AMDGPU::NoRegister),
     ScratchWaveOffsetReg(AMDGPU::NoRegister),
+    FrameOffsetReg(AMDGPU::NoRegister),
+    StackPtrOffsetReg(AMDGPU::NoRegister),
     PrivateSegmentBufferUserSGPR(AMDGPU::NoRegister),
     DispatchPtrUserSGPR(AMDGPU::NoRegister),
     QueuePtrUserSGPR(AMDGPU::NoRegister),
@@ -41,13 +43,13 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
     WorkGroupInfoSystemSGPR(AMDGPU::NoRegister),
     PrivateSegmentWaveByteOffsetSystemSGPR(AMDGPU::NoRegister),
     PSInputAddr(0),
+    PSInputEnable(0),
     ReturnsVoid(true),
     FlatWorkGroupSizes(0, 0),
     WavesPerEU(0, 0),
     DebuggerWorkGroupIDStackObjectIndices({{0, 0, 0}}),
     DebuggerWorkItemIDStackObjectIndices({{0, 0, 0}}),
     LDSWaveSpillSize(0),
-    PSInputEna(0),
     NumUserSGPRs(0),
     NumSystemSGPRs(0),
     HasSpilledSGPRs(false),
@@ -72,42 +74,68 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
     WorkItemIDX(false),
     WorkItemIDY(false),
     WorkItemIDZ(false),
-    PrivateMemoryInputPtr(false) {
+    ImplicitBufferPtr(false) {
   const SISubtarget &ST = MF.getSubtarget<SISubtarget>();
   const Function *F = MF.getFunction();
+  FlatWorkGroupSizes = ST.getFlatWorkGroupSizes(*F);
+  WavesPerEU = ST.getWavesPerEU(*F);
 
-  PSInputAddr = AMDGPU::getInitialPSInputAddr(*F);
+  if (!isEntryFunction()) {
+    // Non-entry functions have no special inputs for now, other registers
+    // required for scratch access.
+    ScratchRSrcReg = AMDGPU::SGPR0_SGPR1_SGPR2_SGPR3;
+    ScratchWaveOffsetReg = AMDGPU::SGPR4;
+    FrameOffsetReg = AMDGPU::SGPR5;
+    StackPtrOffsetReg = AMDGPU::SGPR32;
+    return;
+  }
 
-  const MachineFrameInfo &FrameInfo = MF.getFrameInfo();
-
-  if (!AMDGPU::isShader(F->getCallingConv())) {
+  CallingConv::ID CC = F->getCallingConv();
+  if (CC == CallingConv::AMDGPU_KERNEL || CC == CallingConv::SPIR_KERNEL) {
     KernargSegmentPtr = true;
     WorkGroupIDX = true;
     WorkItemIDX = true;
+  } else if (CC == CallingConv::AMDGPU_PS) {
+    PSInputAddr = AMDGPU::getInitialPSInputAddr(*F);
   }
 
-  if (F->hasFnAttribute("amdgpu-work-group-id-y") || ST.debuggerEmitPrologue())
+  if (ST.debuggerEmitPrologue()) {
+    // Enable everything.
     WorkGroupIDY = true;
-
-  if (F->hasFnAttribute("amdgpu-work-group-id-z") || ST.debuggerEmitPrologue())
     WorkGroupIDZ = true;
-
-  if (F->hasFnAttribute("amdgpu-work-item-id-y") || ST.debuggerEmitPrologue())
     WorkItemIDY = true;
-
-  if (F->hasFnAttribute("amdgpu-work-item-id-z") || ST.debuggerEmitPrologue())
     WorkItemIDZ = true;
+  } else {
+    if (F->hasFnAttribute("amdgpu-work-group-id-y"))
+      WorkGroupIDY = true;
+
+    if (F->hasFnAttribute("amdgpu-work-group-id-z"))
+      WorkGroupIDZ = true;
+
+    if (F->hasFnAttribute("amdgpu-work-item-id-y"))
+      WorkItemIDY = true;
+
+    if (F->hasFnAttribute("amdgpu-work-item-id-z"))
+      WorkItemIDZ = true;
+  }
 
   // X, XY, and XYZ are the only supported combinations, so make sure Y is
   // enabled if Z is.
   if (WorkItemIDZ)
     WorkItemIDY = true;
 
+  const MachineFrameInfo &FrameInfo = MF.getFrameInfo();
   bool MaySpill = ST.isVGPRSpillingEnabled(*F);
-  bool HasStackObjects = FrameInfo.hasStackObjects();
+  bool HasStackObjects = FrameInfo.hasStackObjects() || FrameInfo.hasCalls();
 
-  if (HasStackObjects || MaySpill)
+  if (HasStackObjects || MaySpill) {
     PrivateSegmentWaveByteOffset = true;
+
+    // HS and GS always have the scratch wave offset in SGPR5 on GFX9.
+    if (ST.getGeneration() >= AMDGPUSubtarget::GFX9 &&
+        (CC == CallingConv::AMDGPU_HS || CC == CallingConv::AMDGPU_GS))
+      PrivateSegmentWaveByteOffsetSystemSGPR = AMDGPU::SGPR5;
+  }
 
   if (ST.isAmdCodeObjectV2(MF)) {
     if (HasStackObjects || MaySpill)
@@ -123,18 +151,14 @@ SIMachineFunctionInfo::SIMachineFunctionInfo(const MachineFunction &MF)
       DispatchID = true;
   } else if (ST.isMesaGfxShader(MF)) {
     if (HasStackObjects || MaySpill)
-      PrivateMemoryInputPtr = true;
+      ImplicitBufferPtr = true;
   }
 
   // We don't need to worry about accessing spills with flat instructions.
   // TODO: On VI where we must use flat for global, we should be able to omit
   // this if it is never used for generic access.
-  if (HasStackObjects && ST.getGeneration() >= SISubtarget::SEA_ISLANDS &&
-      ST.isAmdHsaOS())
+  if (HasStackObjects && ST.hasFlatAddressSpace() && ST.isAmdHsaOS())
     FlatScratchInit = true;
-
-  FlatWorkGroupSizes = ST.getFlatWorkGroupSizes(*F);
-  WavesPerEU = ST.getWavesPerEU(*F);
 }
 
 unsigned SIMachineFunctionInfo::addPrivateSegmentBuffer(
@@ -180,11 +204,11 @@ unsigned SIMachineFunctionInfo::addFlatScratchInit(const SIRegisterInfo &TRI) {
   return FlatScratchInitUserSGPR;
 }
 
-unsigned SIMachineFunctionInfo::addPrivateMemoryPtr(const SIRegisterInfo &TRI) {
-  PrivateMemoryPtrUserSGPR = TRI.getMatchingSuperReg(
+unsigned SIMachineFunctionInfo::addImplicitBufferPtr(const SIRegisterInfo &TRI) {
+  ImplicitBufferPtrUserSGPR = TRI.getMatchingSuperReg(
     getNextUserSGPR(), AMDGPU::sub0, &AMDGPU::SReg_64RegClass);
   NumUserSGPRs += 2;
-  return PrivateMemoryPtrUserSGPR;
+  return ImplicitBufferPtrUserSGPR;
 }
 
 /// Reserve a slice of a VGPR to support spilling for FrameIndex \p FI.

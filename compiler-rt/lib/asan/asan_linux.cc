@@ -77,6 +77,11 @@ void *AsanDoesNotSupportStaticLinkage() {
   return &_DYNAMIC;  // defined in link.h
 }
 
+uptr FindDynamicShadowStart() {
+  UNREACHABLE("FindDynamicShadowStart is not available");
+  return 0;
+}
+
 void AsanApplyToGlobals(globals_op_fptr op, const void *needle) {
   UNIMPLEMENTED();
 }
@@ -111,7 +116,7 @@ static void ReportIncompatibleRT() {
 }
 
 void AsanCheckDynamicRTPrereqs() {
-  if (!ASAN_DYNAMIC)
+  if (!ASAN_DYNAMIC || !flags()->verify_asan_link_order)
     return;
 
   // Ensure that dynamic RT is the first DSO in the list
@@ -140,9 +145,9 @@ void AsanCheckIncompatibleRT() {
       // system libraries, causing crashes later in ASan initialization.
       MemoryMappingLayout proc_maps(/*cache_enabled*/true);
       char filename[128];
-      while (proc_maps.Next(nullptr, nullptr, nullptr, filename,
-                            sizeof(filename), nullptr)) {
-        if (IsDynamicRTName(filename)) {
+      MemoryMappedSegment segment(filename, sizeof(filename));
+      while (proc_maps.Next(&segment)) {
+        if (IsDynamicRTName(segment.filename)) {
           Report("Your application is linked against "
                  "incompatible ASan runtimes.\n");
           Die();
