@@ -399,6 +399,27 @@ namespace {
         return isInt<Width>(CN->getSExtValue());
       return isSExtAbsoluteSymbolRef(Width, N);
     }
+
+    // Indicates we should prefer to use a non-temporal load for this load.
+    bool useNonTemporalLoad(LoadSDNode *N) const {
+      if (!N->isNonTemporal())
+        return false;
+
+      unsigned StoreSize = N->getMemoryVT().getStoreSize();
+
+      if (N->getAlignment() < StoreSize)
+        return false;
+
+      switch (StoreSize) {
+      default: llvm_unreachable("Unsupported store size");
+      case 16:
+        return Subtarget->hasSSE41();
+      case 32:
+        return Subtarget->hasAVX2();
+      case 64:
+        return Subtarget->hasAVX512();
+      }
+    }
   };
 }
 
@@ -1055,7 +1076,10 @@ static bool foldMaskAndShiftToScale(SelectionDAG &DAG, SDValue N,
 
   // Scale the leading zero count down based on the actual size of the value.
   // Also scale it down based on the size of the shift.
-  MaskLZ -= (64 - X.getSimpleValueType().getSizeInBits()) + ShiftAmt;
+  unsigned ScaleDown = (64 - X.getSimpleValueType().getSizeInBits()) + ShiftAmt;
+  if (MaskLZ < ScaleDown)
+    return true;
+  MaskLZ -= ScaleDown;
 
   // The final check is to ensure that any masked out high bits of X are
   // already known to be zero. Otherwise, the mask has a semantic impact

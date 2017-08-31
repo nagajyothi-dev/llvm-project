@@ -10,11 +10,13 @@ set(IRSources
   AsmWriterTest.cpp
   AttributesTest.cpp
   BasicBlockTest.cpp
+  CFGBuilder.cpp
   ConstantRangeTest.cpp
   ConstantsTest.cpp
   DebugInfoTest.cpp
   DebugTypeODRUniquingTest.cpp
   DominatorTreeTest.cpp
+  DominatorTreeBatchUpdatesTest.cpp
   FunctionTest.cpp
   PassBuilderCallbacksTest.cpp
   IRBuilderTest.cpp

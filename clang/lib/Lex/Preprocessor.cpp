@@ -630,6 +630,8 @@ static diag::kind getFutureCompatDiagKind(const IdentifierInfo &II,
     return llvm::StringSwitch<diag::kind>(II.getName())
 #define CXX11_KEYWORD(NAME, FLAGS)                                             \
         .Case(#NAME, diag::warn_cxx11_keyword)
+#define CXX2A_KEYWORD(NAME, FLAGS)                                             \
+        .Case(#NAME, diag::warn_cxx2a_keyword)
 #include "clang/Basic/TokenKinds.def"
         ;
 
@@ -711,14 +713,6 @@ bool Preprocessor::HandleIdentifier(Token &Identifier) {
     // Don't diagnose this keyword again in this translation unit.
     II.setIsFutureCompatKeyword(false);
   }
-
-  // C++ 2.11p2: If this is an alternative representation of a C++ operator,
-  // then we act as if it is the actual operator and not the textual
-  // representation of it.
-  if (II.isCPlusPlusOperatorKeyword() &&
-      !(getLangOpts().MSVCCompat &&
-        getSourceManager().isInSystemHeader(Identifier.getLocation())))
-    Identifier.setIdentifierInfo(nullptr);
 
   // If this is an extension token, diagnose its use.
   // We avoid diagnosing tokens that originate from macro definitions.

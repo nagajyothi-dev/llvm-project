@@ -44,6 +44,7 @@ int pthread_setspecific(unsigned key, const void *v);
 
 namespace std {
   struct nothrow_t;
+  enum class align_val_t: size_t;
 }
 
 #if !SANITIZER_MAC
@@ -203,13 +204,19 @@ INTERCEPTOR(int, mprobe, void *ptr) {
 #define OPERATOR_NEW_BODY(nothrow)                         \
   ENSURE_LSAN_INITED;                                      \
   GET_STACK_TRACE_MALLOC;                                  \
-  void *res = Allocate(stack, size, 1, kAlwaysClearMemory);\
-  if (!nothrow && UNLIKELY(!res)) DieOnFailure::OnOOM();\
+  void *res = lsan_malloc(size, stack);                    \
+  if (!nothrow && UNLIKELY(!res)) DieOnFailure::OnOOM();   \
+  return res;
+#define OPERATOR_NEW_BODY_ALIGN(nothrow)                   \
+  ENSURE_LSAN_INITED;                                      \
+  GET_STACK_TRACE_MALLOC;                                  \
+  void *res = lsan_memalign((uptr)align, size, stack);     \
+  if (!nothrow && UNLIKELY(!res)) DieOnFailure::OnOOM();   \
   return res;
 
 #define OPERATOR_DELETE_BODY \
   ENSURE_LSAN_INITED;        \
-  Deallocate(ptr);
+  lsan_free(ptr);
 
 // On OS X it's not enough to just provide our own 'operator new' and
 // 'operator delete' implementations, because they're going to be in the runtime
@@ -229,6 +236,18 @@ void *operator new(size_t size, std::nothrow_t const&)
 INTERCEPTOR_ATTRIBUTE
 void *operator new[](size_t size, std::nothrow_t const&)
 { OPERATOR_NEW_BODY(true /*nothrow*/); }
+INTERCEPTOR_ATTRIBUTE
+void *operator new(size_t size, std::align_val_t align)
+{ OPERATOR_NEW_BODY_ALIGN(false /*nothrow*/); }
+INTERCEPTOR_ATTRIBUTE
+void *operator new[](size_t size, std::align_val_t align)
+{ OPERATOR_NEW_BODY_ALIGN(false /*nothrow*/); }
+INTERCEPTOR_ATTRIBUTE
+void *operator new(size_t size, std::align_val_t align, std::nothrow_t const&)
+{ OPERATOR_NEW_BODY_ALIGN(true /*nothrow*/); }
+INTERCEPTOR_ATTRIBUTE
+void *operator new[](size_t size, std::align_val_t align, std::nothrow_t const&)
+{ OPERATOR_NEW_BODY_ALIGN(true /*nothrow*/); }
 
 INTERCEPTOR_ATTRIBUTE
 void operator delete(void *ptr) NOEXCEPT { OPERATOR_DELETE_BODY; }
@@ -238,6 +257,30 @@ INTERCEPTOR_ATTRIBUTE
 void operator delete(void *ptr, std::nothrow_t const&) { OPERATOR_DELETE_BODY; }
 INTERCEPTOR_ATTRIBUTE
 void operator delete[](void *ptr, std::nothrow_t const &)
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete(void *ptr, size_t size) NOEXCEPT
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete[](void *ptr, size_t size) NOEXCEPT
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete(void *ptr, std::align_val_t) NOEXCEPT
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete[](void *ptr, std::align_val_t) NOEXCEPT
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete(void *ptr, std::align_val_t, std::nothrow_t const&)
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete[](void *ptr, std::align_val_t, std::nothrow_t const&)
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete(void *ptr, size_t size, std::align_val_t) NOEXCEPT
+{ OPERATOR_DELETE_BODY; }
+INTERCEPTOR_ATTRIBUTE
+void operator delete[](void *ptr, size_t size, std::align_val_t) NOEXCEPT
 { OPERATOR_DELETE_BODY; }
 
 #else  // SANITIZER_MAC
@@ -352,6 +395,11 @@ INTERCEPTOR(int, pthread_join, void *th, void **ret) {
   return res;
 }
 
+INTERCEPTOR(void, _exit, int status) {
+  if (status == 0 && HasReportedLeaks()) status = common_flags()->exitcode;
+  REAL(_exit)(status);
+}
+
 namespace __lsan {
 
 void InitializeInterceptors() {
@@ -371,6 +419,7 @@ void InitializeInterceptors() {
   LSAN_MAYBE_INTERCEPT_MALLOPT;
   INTERCEPT_FUNCTION(pthread_create);
   INTERCEPT_FUNCTION(pthread_join);
+  INTERCEPT_FUNCTION(_exit);
 
   if (pthread_key_create(&g_thread_finalize_key, &thread_finalize)) {
     Report("LeakSanitizer: failed to create thread key.\n");
