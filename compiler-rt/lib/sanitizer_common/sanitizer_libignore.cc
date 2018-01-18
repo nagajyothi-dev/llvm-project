@@ -9,7 +9,7 @@
 
 #include "sanitizer_platform.h"
 
-#if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_MAC
+#if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_MAC || SANITIZER_NETBSD
 
 #include "sanitizer_libignore.h"
 #include "sanitizer_flags.h"
@@ -78,10 +78,12 @@ void LibIgnore::OnLibraryLoaded(const char *name) {
                 lib->templ, mod.full_name());
         lib->loaded = true;
         lib->name = internal_strdup(mod.full_name());
-        const uptr idx = atomic_load(&loaded_count_, memory_order_relaxed);
-        code_ranges_[idx].begin = range.beg;
-        code_ranges_[idx].end = range.end;
-        atomic_store(&loaded_count_, idx + 1, memory_order_release);
+        const uptr idx =
+            atomic_load(&ignored_ranges_count_, memory_order_relaxed);
+        CHECK_LT(idx, kMaxLibs);
+        ignored_code_ranges_[idx].begin = range.beg;
+        ignored_code_ranges_[idx].end = range.end;
+        atomic_store(&ignored_ranges_count_, idx + 1, memory_order_release);
         break;
       }
     }
@@ -92,6 +94,29 @@ void LibIgnore::OnLibraryLoaded(const char *name) {
       Die();
     }
   }
+
+  // Track instrumented ranges.
+  if (track_instrumented_libs_) {
+    for (const auto &mod : modules) {
+      if (!mod.instrumented())
+        continue;
+      for (const auto &range : mod.ranges()) {
+        if (!range.executable)
+          continue;
+        if (IsPcInstrumented(range.beg) && IsPcInstrumented(range.end - 1))
+          continue;
+        VReport(1, "Adding instrumented range %p-%p from library '%s'\n",
+                range.beg, range.end, mod.full_name());
+        const uptr idx =
+            atomic_load(&instrumented_ranges_count_, memory_order_relaxed);
+        CHECK_LT(idx, kMaxLibs);
+        instrumented_code_ranges_[idx].begin = range.beg;
+        instrumented_code_ranges_[idx].end = range.end;
+        atomic_store(&instrumented_ranges_count_, idx + 1,
+                     memory_order_release);
+      }
+    }
+  }
 }
 
 void LibIgnore::OnLibraryUnloaded() {
@@ -100,4 +125,5 @@ void LibIgnore::OnLibraryUnloaded() {
 
 } // namespace __sanitizer
 
-#endif // #if SANITIZER_FREEBSD || SANITIZER_LINUX
+#endif  // SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_MAC ||
+        // SANITIZER_NETBSD

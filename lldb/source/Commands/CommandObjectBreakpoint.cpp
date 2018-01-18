@@ -18,9 +18,7 @@
 #include "lldb/Breakpoint/Breakpoint.h"
 #include "lldb/Breakpoint/BreakpointIDList.h"
 #include "lldb/Breakpoint/BreakpointLocation.h"
-#include "lldb/Core/RegularExpression.h"
-#include "lldb/Core/StreamString.h"
-#include "lldb/Host/StringConvert.h"
+#include "lldb/Host/OptionParser.h"
 #include "lldb/Interpreter/CommandCompletions.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
@@ -33,6 +31,8 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/ThreadSpec.h"
+#include "lldb/Utility/RegularExpression.h"
+#include "lldb/Utility/StreamString.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -60,7 +60,9 @@ static OptionDefinition g_breakpoint_set_options[] = {
   "multiple times to specify multiple shared libraries." },
   { LLDB_OPT_SET_ALL,              false, "ignore-count",           'i', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeCount,               "Set the number of times this breakpoint is skipped before stopping." },
   { LLDB_OPT_SET_ALL,              false, "one-shot",               'o', OptionParser::eNoArgument,       nullptr, nullptr, 0,                                         eArgTypeNone,                "The breakpoint is deleted the first time it causes a stop." },
+  { LLDB_OPT_SET_ALL,              false, "auto-continue",          'G', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeBoolean,             "The breakpoint will auto-continue after running its commands." },
   { LLDB_OPT_SET_ALL,              false, "condition",              'c', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeExpression,          "The breakpoint stops only if this condition expression evaluates to true." },
+  { LLDB_OPT_SET_ALL,              false, "command",                'd', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeCommand,             "A command to run when the breakpoint is hit, can be provided more than once, the commands will get run in order left to right." },
   { LLDB_OPT_SET_ALL,              false, "thread-index",           'x', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeThreadIndex,         "The breakpoint stops only for the thread whose indeX matches this argument." },
   { LLDB_OPT_SET_ALL,              false, "thread-id",              't', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeThreadID,            "The breakpoint stops only for the thread whose TID matches this argument." },
   { LLDB_OPT_SET_ALL,              false, "thread-name",            'T', OptionParser::eRequiredArgument, nullptr, nullptr, 0,                                         eArgTypeThreadName,          "The breakpoint stops only for the thread whose thread name matches this "
@@ -178,9 +180,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -208,6 +210,10 @@ public:
         m_condition.assign(option_arg);
         break;
 
+      case 'd':
+        m_commands.push_back(option_arg);
+        break;
+        
       case 'D':
         m_use_dummy = true;
         break;
@@ -255,6 +261,15 @@ public:
         m_func_names.push_back(option_arg);
         m_func_name_type_mask |= eFunctionNameTypeFull;
         break;
+        
+      case 'G' : {
+        bool success;
+        m_auto_continue = Args::StringToBoolean(option_arg, true, &success);
+        if (!success)
+          error.SetErrorStringWithFormat(
+              "Invalid boolean value for auto-continue option: '%s'",
+              option_arg.str().c_str());
+      } break;
 
       case 'h': {
         bool success;
@@ -445,6 +460,8 @@ public:
       m_exception_extra_args.Clear();
       m_move_to_nearest_code = eLazyBoolCalculate;
       m_source_regex_func_names.clear();
+      m_commands.clear();
+      m_auto_continue = false;
     }
 
     llvm::ArrayRef<OptionDefinition> GetDefinitions() override {
@@ -482,6 +499,8 @@ public:
     Args m_exception_extra_args;
     LazyBool m_move_to_nearest_code;
     std::unordered_set<std::string> m_source_regex_func_names;
+    std::vector<std::string> m_commands;
+    bool m_auto_continue;
   };
 
 protected:
@@ -662,7 +681,7 @@ protected:
                .get();
     } break;
     case eSetTypeException: {
-      Error precond_error;
+      Status precond_error;
       bp = target
                ->CreateExceptionBreakpoint(
                    m_options.m_exception_language, m_options.m_catch_bp,
@@ -705,7 +724,7 @@ protected:
         bp->GetOptions()->SetCondition(m_options.m_condition.c_str());
 
       if (!m_options.m_breakpoint_names.empty()) {
-        Error name_error;
+        Status name_error;
         for (auto name : m_options.m_breakpoint_names) {
           bp->AddName(name.c_str(), name_error);
           if (name_error.Fail()) {
@@ -719,6 +738,18 @@ protected:
       }
 
       bp->SetOneShot(m_options.m_one_shot);
+      bp->SetAutoContinue(m_options.m_auto_continue);
+      
+      if (!m_options.m_commands.empty())
+      {
+          auto cmd_data = llvm::make_unique<BreakpointOptions::CommandData>();
+        
+          for (std::string &str : m_options.m_commands)
+            cmd_data->user_source.AppendString(str); 
+
+          cmd_data->stop_on_error = true;
+          bp->GetOptions()->SetCommandDataCallback(cmd_data);
+      }
     }
 
     if (bp) {
@@ -802,6 +833,7 @@ static OptionDefinition g_breakpoint_modify_options[] = {
   { LLDB_OPT_SET_1,   false, "enable",       'e', OptionParser::eNoArgument,       nullptr, nullptr, 0, eArgTypeNone,        "Enable the breakpoint." },
   { LLDB_OPT_SET_2,   false, "disable",      'd', OptionParser::eNoArgument,       nullptr, nullptr, 0, eArgTypeNone,        "Disable the breakpoint." },
   { LLDB_OPT_SET_ALL, false, "dummy-breakpoints", 'D', OptionParser::eNoArgument,  nullptr, nullptr, 0, eArgTypeNone,        "Sets Dummy breakpoints - i.e. breakpoints set before a file is provided, which prime new targets." },
+  { LLDB_OPT_SET_ALL, false, "auto-continue",     'G', OptionParser::eRequiredArgument, nullptr, nullptr, 0, eArgTypeBoolean, "The breakpoint will auto-continue after running its commands." },
     // clang-format on
 };
 
@@ -844,9 +876,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -865,6 +897,17 @@ public:
         m_enable_passed = true;
         m_enable_value = true;
         break;
+      case 'G': {
+        bool value, success;
+        value = Args::StringToBoolean(option_arg, false, &success);
+        if (success) {
+          m_auto_continue_passed = true;
+          m_auto_continue = value;
+        } else
+          error.SetErrorStringWithFormat(
+              "invalid boolean value '%s' passed for -G option",
+              option_arg.str().c_str());
+      } break;
       case 'i':
         if (option_arg.getAsInteger(0, m_ignore_count))
           error.SetErrorStringWithFormat("invalid ignore count '%s'",
@@ -938,6 +981,8 @@ public:
       m_condition_passed = false;
       m_one_shot_passed = false;
       m_use_dummy = false;
+      m_auto_continue = false;
+      m_auto_continue_passed = false;
     }
 
     llvm::ArrayRef<OptionDefinition> GetDefinitions() override {
@@ -962,6 +1007,8 @@ public:
     bool m_condition_passed;
     bool m_one_shot_passed;
     bool m_use_dummy;
+    bool m_auto_continue;
+    bool m_auto_continue_passed;
   };
 
 protected:
@@ -1013,6 +1060,9 @@ protected:
 
               if (m_options.m_condition_passed)
                 location->SetCondition(m_options.m_condition.c_str());
+                
+              if (m_options.m_auto_continue_passed)
+                location->SetAutoContinue(m_options.m_auto_continue);
             }
           } else {
             if (m_options.m_thread_id_passed)
@@ -1035,6 +1085,9 @@ protected:
 
             if (m_options.m_condition_passed)
               bp->SetCondition(m_options.m_condition.c_str());
+            
+            if (m_options.m_auto_continue_passed)
+              bp->SetAutoContinue(m_options.m_auto_continue);
           }
         }
       }
@@ -1305,9 +1358,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -1452,9 +1505,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -1611,9 +1664,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -1751,9 +1804,9 @@ public:
     return llvm::makeArrayRef(g_breakpoint_name_options);
   }
 
-  Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                       ExecutionContext *execution_context) override {
-    Error error;
+  Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                        ExecutionContext *execution_context) override {
+    Status error;
     const int short_option = g_breakpoint_name_options[option_idx].short_option;
 
     switch (short_option) {
@@ -1864,8 +1917,8 @@ protected:
         lldb::break_id_t bp_id =
             valid_bp_ids.GetBreakpointIDAtIndex(index).GetBreakpointID();
         BreakpointSP bp_sp = breakpoints.FindBreakpointByID(bp_id);
-        Error error; // We don't need to check the error here, since the option
-                     // parser checked it...
+        Status error; // We don't need to check the error here, since the option
+                      // parser checked it...
         bp_sp->AddName(m_name_options.m_name.GetCurrentValue(), error);
       }
     }
@@ -2093,9 +2146,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -2103,7 +2156,7 @@ public:
         m_filename.assign(option_arg);
         break;
       case 'N': {
-        Error name_error;
+        Status name_error;
         if (!BreakpointID::StringIsBreakpointName(llvm::StringRef(option_arg),
                                                   name_error)) {
           error.SetErrorStringWithFormat("Invalid breakpoint name: %s",
@@ -2150,8 +2203,8 @@ protected:
 
     FileSpec input_spec(m_options.m_filename, true);
     BreakpointIDList new_bps;
-    Error error = target->CreateBreakpointsFromFile(input_spec,
-                                                    m_options.m_names, new_bps);
+    Status error = target->CreateBreakpointsFromFile(
+        input_spec, m_options.m_names, new_bps);
 
     if (!error.Success()) {
       result.AppendError(error.AsCString());
@@ -2223,9 +2276,9 @@ public:
 
     ~CommandOptions() override = default;
 
-    Error SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
-                         ExecutionContext *execution_context) override {
-      Error error;
+    Status SetOptionValue(uint32_t option_idx, llvm::StringRef option_arg,
+                          ExecutionContext *execution_context) override {
+      Status error;
       const int short_option = m_getopt_table[option_idx].val;
 
       switch (short_option) {
@@ -2281,7 +2334,7 @@ protected:
         return false;
       }
     }
-    Error error = target->SerializeBreakpointsToFile(
+    Status error = target->SerializeBreakpointsToFile(
         FileSpec(m_options.m_filename, true), valid_bp_ids, m_options.m_append);
     if (!error.Success()) {
       result.AppendErrorWithFormat("error serializing breakpoints: %s.",

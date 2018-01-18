@@ -4,6 +4,12 @@ add_lldb_unittest(LLDBCoreTests
   DataExtractorTest.cpp
   ListenerTest.cpp
   ScalarTest.cpp
-  StructuredDataTest.cpp
-  TimerTest.cpp
+  StateTest.cpp
+  StreamCallbackTest.cpp
+
+  LINK_LIBS
+    lldbCore
+    lldbHost
+  LINK_COMPONENTS
+    Support
   )

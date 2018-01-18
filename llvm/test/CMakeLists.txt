@@ -1,6 +1,14 @@
-if(LLVM_BUILD_EXAMPLES)
-  set(ENABLE_EXAMPLES 1)
-endif()
+llvm_canonicalize_cmake_booleans(
+  LLVM_TOOL_LTO_BUILD
+  HAVE_OCAMLOPT
+  HAVE_OCAML_OUNIT
+  LLVM_INCLUDE_GO_TESTS
+  LLVM_USE_INTEL_JITEVENTS
+  HAVE_LIBZ
+  HAVE_LIBXAR
+  LLVM_ENABLE_DIA_SDK
+  LLVM_ENABLE_FFI
+  BUILD_SHARED_LIBS)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.in
@@ -37,8 +45,10 @@ set(LLVM_TEST_DEPENDS
           llvm-config
           llvm-cov
           llvm-cxxdump
+          llvm-cvtres
           llvm-diff
           llvm-dis
+          llvm-dlltool
           llvm-dsymutil
           llvm-dwarfdump
           llvm-dwp
@@ -49,13 +59,17 @@ set(LLVM_TEST_DEPENDS
           llvm-mc
           llvm-mcmarkup
           llvm-modextract
+          llvm-mt
           llvm-nm
+          llvm-objcopy
           llvm-objdump
           llvm-opt-report
-          llvm-pdbdump
+          llvm-pdbutil
           llvm-profdata
           llvm-ranlib
+          llvm-rc
           llvm-readobj
+          llvm-readelf
           llvm-rtdyld
           llvm-size
           llvm-split

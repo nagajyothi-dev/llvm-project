@@ -4,9 +4,11 @@ set(files
   ammintrin.h
   arm_acle.h
   armintr.h
+  arm64intr.h
   avx2intrin.h
   avx512bwintrin.h
   avx512cdintrin.h
+  avx512vpopcntdqintrin.h
   avx512dqintrin.h
   avx512erintrin.h
   avx512fintrin.h
@@ -28,6 +30,7 @@ set(files
   __clang_cuda_intrinsics.h
   __clang_cuda_math_forward_declares.h
   __clang_cuda_runtime_wrapper.h
+  clzerointrin.h
   cpuid.h
   clflushoptintrin.h
   emmintrin.h
@@ -44,6 +47,7 @@ set(files
   inttypes.h
   iso646.h
   limits.h
+  lwpintrin.h
   lzcntintrin.h
   mm3dnow.h
   mmintrin.h

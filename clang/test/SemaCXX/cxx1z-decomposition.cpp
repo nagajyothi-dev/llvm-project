@@ -65,4 +65,15 @@ void for_range() {
   }
 }
 
+int error_recovery() {
+  auto [foobar]; // expected-error {{requires an initializer}}
+  return foobar_; // expected-error {{undeclared identifier 'foobar_'}}
+}
+
+// PR32172
+template <class T> void dependent_foreach(T t) {
+  for (auto [a,b,c] : t)
+    a,b,c;
+}
+
 // FIXME: by-value array copies

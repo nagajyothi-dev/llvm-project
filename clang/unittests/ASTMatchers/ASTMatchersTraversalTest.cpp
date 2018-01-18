@@ -222,9 +222,23 @@ TEST(HasDeclaration, HasDeclarationOfEnumType) {
 }
 
 TEST(HasDeclaration, HasGetDeclTraitTest) {
-  EXPECT_TRUE(internal::has_getDecl<TypedefType>::value);
-  EXPECT_TRUE(internal::has_getDecl<RecordType>::value);
-  EXPECT_FALSE(internal::has_getDecl<TemplateSpecializationType>::value);
+  static_assert(internal::has_getDecl<TypedefType>::value,
+                "Expected TypedefType to have a getDecl.");
+  static_assert(internal::has_getDecl<RecordType>::value,
+                "Expected RecordType to have a getDecl.");
+  static_assert(!internal::has_getDecl<TemplateSpecializationType>::value,
+                "Expected TemplateSpecializationType to *not* have a getDecl.");
+}
+
+TEST(HasDeclaration, ElaboratedType) {
+  EXPECT_TRUE(matches(
+      "namespace n { template <typename T> struct X {}; }"
+      "void f(n::X<int>);",
+      parmVarDecl(hasType(qualType(hasDeclaration(cxxRecordDecl()))))));
+  EXPECT_TRUE(matches(
+      "namespace n { template <typename T> struct X {}; }"
+      "void f(n::X<int>);",
+      parmVarDecl(hasType(elaboratedType(hasDeclaration(cxxRecordDecl()))))));
 }
 
 TEST(HasDeclaration, HasDeclarationOfTypeWithDecl) {
@@ -239,12 +253,25 @@ TEST(HasDeclaration, HasDeclarationOfTemplateSpecializationType) {
   EXPECT_TRUE(matches("template <typename T> class A {}; A<int> a;",
                       varDecl(hasType(templateSpecializationType(
                         hasDeclaration(namedDecl(hasName("A"))))))));
+  EXPECT_TRUE(matches("template <typename T> class A {};"
+                      "template <typename T> class B { A<T> a; };",
+                      fieldDecl(hasType(templateSpecializationType(
+                        hasDeclaration(namedDecl(hasName("A"))))))));
+  EXPECT_TRUE(matches("template <typename T> class A {}; A<int> a;",
+                      varDecl(hasType(templateSpecializationType(
+                          hasDeclaration(cxxRecordDecl()))))));
 }
 
 TEST(HasDeclaration, HasDeclarationOfCXXNewExpr) {
   EXPECT_TRUE(
       matches("int *A = new int();",
               cxxNewExpr(hasDeclaration(functionDecl(parameterCountIs(1))))));
+}
+
+TEST(HasDeclaration, HasDeclarationOfTypeAlias) {
+  EXPECT_TRUE(matches("template <typename T> using C = T; C<int> c;",
+                      varDecl(hasType(templateSpecializationType(
+                          hasDeclaration(typeAliasTemplateDecl()))))));
 }
 
 TEST(HasUnqualifiedDesugaredType, DesugarsUsing) {
@@ -688,7 +715,7 @@ TEST(TemplateTypeParmDecl, VarTemplatePartialSpecializationDecl) {
       "};\n"
       "template<typename U>\n"
       "template<typename U2>\n"
-      "int Struct<U>::field<char> = 123;\n";
+      "int Struct<U>::field<U2*> = 123;\n";
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
@@ -703,7 +730,7 @@ TEST(TemplateTypeParmDecl, ClassTemplatePartialSpecializationDecl) {
       "};\n"
       "template<typename U>\n"
       "template<typename U2>\n"
-      "struct Class<U>::Struct<int> {};\n";
+      "struct Class<U>::Struct<U2*> {};\n";
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
@@ -782,14 +809,18 @@ TEST(HasAnyConstructorInitializer, ForField) {
   static const char Code[] =
     "class Baz { };"
       "class Foo {"
-      "  Foo() : foo_() { }"
+      "  Foo() : foo_(), bar_() { }"
       "  Baz foo_;"
-      "  Baz bar_;"
+      "  struct {"
+      "    Baz bar_;"
+      "  };"
       "};";
   EXPECT_TRUE(matches(Code, cxxConstructorDecl(hasAnyConstructorInitializer(
     forField(hasType(recordDecl(hasName("Baz"))))))));
   EXPECT_TRUE(matches(Code, cxxConstructorDecl(hasAnyConstructorInitializer(
     forField(hasName("foo_"))))));
+  EXPECT_TRUE(matches(Code, cxxConstructorDecl(hasAnyConstructorInitializer(
+    forField(hasName("bar_"))))));
   EXPECT_TRUE(notMatches(Code, cxxConstructorDecl(hasAnyConstructorInitializer(
     forField(hasType(recordDecl(hasName("Bar"))))))));
 }
@@ -2204,8 +2235,7 @@ TEST(Matcher, HasAnyDeclaration) {
                                        functionDecl(hasName("bar"))))));
 }
 
-TEST(SubstTemplateTypeParmType, HasReplacementType)
-{
+TEST(SubstTemplateTypeParmType, HasReplacementType) {
   std::string Fragment = "template<typename T>"
                          "double F(T t);"
                          "int i;"
@@ -2219,6 +2249,14 @@ TEST(SubstTemplateTypeParmType, HasReplacementType)
                  "double F();"
                  "double j = F<5>();",
                  substTemplateTypeParmType(hasReplacementType(qualType()))));
+}
+
+TEST(ClassTemplateSpecializationDecl, HasSpecializedTemplate) {
+  auto Matcher = classTemplateSpecializationDecl(
+      hasSpecializedTemplate(classTemplateDecl()));
+  EXPECT_TRUE(
+      matches("template<typename T> class A {}; typedef A<int> B;", Matcher));
+  EXPECT_TRUE(notMatches("template<typename T> class A {};", Matcher));
 }
 
 } // namespace ast_matchers

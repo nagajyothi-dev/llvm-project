@@ -65,10 +65,12 @@ MCSymbol *DebugHandlerBase::getLabelAfterInsn(const MachineInstr *MI) {
 
 int DebugHandlerBase::fragmentCmp(const DIExpression *P1,
                                   const DIExpression *P2) {
-  unsigned l1 = P1->getFragmentOffsetInBits();
-  unsigned l2 = P2->getFragmentOffsetInBits();
-  unsigned r1 = l1 + P1->getFragmentSizeInBits();
-  unsigned r2 = l2 + P2->getFragmentSizeInBits();
+  auto Fragment1 = *P1->getFragmentInfo();
+  auto Fragment2 = *P2->getFragmentInfo();
+  unsigned l1 = Fragment1.OffsetInBits;
+  unsigned l2 = Fragment2.OffsetInBits;
+  unsigned r1 = l1 + Fragment1.SizeInBits;
+  unsigned r2 = l2 + Fragment2.SizeInBits;
   if (r1 <= l2)
     return -1;
   else if (r2 <= l1)
@@ -113,12 +115,35 @@ uint64_t DebugHandlerBase::getBaseTypeSize(const DITypeRef TyRef) {
   return getBaseTypeSize(BaseType);
 }
 
+static bool hasDebugInfo(const MachineModuleInfo *MMI,
+                         const MachineFunction *MF) {
+  if (!MMI->hasDebugInfo())
+    return false;
+  auto *SP = MF->getFunction()->getSubprogram();
+  if (!SP)
+    return false;
+  assert(SP->getUnit());
+  auto EK = SP->getUnit()->getEmissionKind();
+  if (EK == DICompileUnit::NoDebug)
+    return false;
+  return true;
+}
+
 void DebugHandlerBase::beginFunction(const MachineFunction *MF) {
+  PrevInstBB = nullptr;
+
+  if (!Asm || !hasDebugInfo(MMI, MF)) {
+    skippedNonDebugFunction();
+    return;
+  }
+
   // Grab the lexical scopes for the function, if we don't have any of those
   // then we're not going to be able to do anything.
   LScopes.initialize(*MF);
-  if (LScopes.empty())
+  if (LScopes.empty()) {
+    beginFunctionImpl(MF);
     return;
+  }
 
   // Make sure that each lexical scope will have a begin/end label.
   identifyScopeMarkers();
@@ -165,6 +190,7 @@ void DebugHandlerBase::beginFunction(const MachineFunction *MF) {
 
   PrevInstLoc = DebugLoc();
   PrevLabel = Asm->getFunctionBegin();
+  beginFunctionImpl(MF);
 }
 
 void DebugHandlerBase::beginInstruction(const MachineInstr *MI) {
@@ -198,9 +224,9 @@ void DebugHandlerBase::endInstruction() {
     return;
 
   assert(CurMI != nullptr);
-  // Don't create a new label after DBG_VALUE instructions.
-  // They don't generate code.
-  if (!CurMI->isDebugValue()) {
+  // Don't create a new label after DBG_VALUE and other instructions that don't
+  // generate code.
+  if (!CurMI->isMetaInstruction()) {
     PrevLabel = nullptr;
     PrevInstBB = CurMI->getParent();
   }
@@ -226,6 +252,8 @@ void DebugHandlerBase::endInstruction() {
 }
 
 void DebugHandlerBase::endFunction(const MachineFunction *MF) {
+  if (hasDebugInfo(MMI, MF))
+    endFunctionImpl(MF);
   DbgValues.clear();
   LabelsBeforeInsn.clear();
   LabelsAfterInsn.clear();

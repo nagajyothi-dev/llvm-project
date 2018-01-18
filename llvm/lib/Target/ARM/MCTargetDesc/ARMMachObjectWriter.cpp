@@ -7,10 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "MCTargetDesc/ARMMCTargetDesc.h"
 #include "MCTargetDesc/ARMBaseInfo.h"
 #include "MCTargetDesc/ARMFixupKinds.h"
+#include "MCTargetDesc/ARMMCTargetDesc.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/MC/MCAsmLayout.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
@@ -21,7 +22,6 @@
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MachO.h"
 using namespace llvm;
 
 namespace {
@@ -322,11 +322,10 @@ bool ARMMachObjectWriter::requiresExternRelocation(MachObjectWriter *Writer,
   default:
     return false;
   case MachO::ARM_RELOC_BR24:
-    // PC pre-adjustment of 8 for these instructions.
-    Value -= 8;
-    // ARM BL/BLX has a 25-bit offset.
-    Range = 0x1ffffff;
-    break;
+    // An ARM call might be to a Thumb function, in which case the offset may
+    // not be encodable in the instruction and we must use an external
+    // relocation that explicitly mentions the function.
+    return true;
   case MachO::ARM_THUMB_RELOC_BR22:
     // PC pre-adjustment of 4 for these instructions.
     Value -= 4;

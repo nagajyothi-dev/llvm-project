@@ -88,7 +88,8 @@ bool ParseFrameDescription(const char *frame_descr,
   char *p;
   // This string is created by the compiler and has the following form:
   // "n alloc_1 alloc_2 ... alloc_n"
-  // where alloc_i looks like "offset size len ObjectName".
+  // where alloc_i looks like "offset size len ObjectName"
+  // or                       "offset size len ObjectName:line".
   uptr n_objects = (uptr)internal_simple_strtoll(frame_descr, &p, 10);
   if (n_objects == 0)
     return false;
@@ -101,7 +102,14 @@ bool ParseFrameDescription(const char *frame_descr,
       return false;
     }
     p++;
-    StackVarDescr var = {beg, size, p, len};
+    char *colon_pos = internal_strchr(p, ':');
+    uptr line = 0;
+    uptr name_len = len;
+    if (colon_pos != nullptr && colon_pos < p + len) {
+      name_len = colon_pos - p;
+      line = (uptr)internal_simple_strtoll(colon_pos + 1, nullptr, 10);
+    }
+    StackVarDescr var = {beg, size, p, name_len, line};
     vars->push_back(var);
     p += len;
   }
@@ -133,9 +141,9 @@ class ScopedInErrorReport {
 
       // Can't use Report() here because of potential deadlocks
       // in nested signal handlers.
-      const char msg[] = "AddressSanitizer: nested bug in the same thread, "
-                         "aborting.\n";
-      WriteToFile(kStderrFd, msg, sizeof(msg));
+      static const char msg[] =
+          "AddressSanitizer: nested bug in the same thread, aborting.\n";
+      CatastrophicErrorWrite(msg, sizeof(msg) - 1);
 
       internal__exit(common_flags()->exitcode);
     }
@@ -179,6 +187,8 @@ class ScopedInErrorReport {
     if (common_flags()->print_cmdline)
       PrintCmdline();
 
+    if (common_flags()->print_module_map == 2) PrintModuleMap();
+
     // Copy the message buffer so that we could start logging without holding a
     // lock that gets aquired during printing.
     InternalScopedBuffer<char> buffer_copy(kErrorMessageBufferSize);
@@ -192,6 +202,14 @@ class ScopedInErrorReport {
 
     if (error_report_callback) {
       error_report_callback(buffer_copy.data());
+    }
+
+    if (halt_on_error_ && common_flags()->abort_on_error) {
+      // On Android the message is truncated to 512 characters.
+      // FIXME: implement "compact" error format, possibly without, or with
+      // highly compressed stack traces?
+      // FIXME: or just use the summary line as abort message?
+      SetAbortMessage(buffer_copy.data());
     }
 
     // In halt_on_error = false mode, reset the current error object (before
@@ -486,9 +504,6 @@ void __sanitizer_ptr_cmp(void *a, void *b) {
 }
 } // extern "C"
 
-#if !SANITIZER_SUPPORTS_WEAK_HOOKS
 // Provide default implementation of __asan_on_error that does nothing
 // and may be overriden by user.
-SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE NOINLINE
-void __asan_on_error() {}
-#endif
+SANITIZER_INTERFACE_WEAK_DEF(void, __asan_on_error, void) {}

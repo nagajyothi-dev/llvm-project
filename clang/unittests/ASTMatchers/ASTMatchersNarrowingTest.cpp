@@ -1108,26 +1108,35 @@ TEST(ConstructorDeclaration, IsExplicit) {
 }
 
 TEST(ConstructorDeclaration, Kinds) {
-  EXPECT_TRUE(matches("struct S { S(); };",
-                      cxxConstructorDecl(isDefaultConstructor())));
-  EXPECT_TRUE(notMatches("struct S { S(); };",
-                         cxxConstructorDecl(isCopyConstructor())));
-  EXPECT_TRUE(notMatches("struct S { S(); };",
-                         cxxConstructorDecl(isMoveConstructor())));
+  EXPECT_TRUE(matches(
+      "struct S { S(); };",
+      cxxConstructorDecl(isDefaultConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(); };",
+      cxxConstructorDecl(isCopyConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(); };",
+      cxxConstructorDecl(isMoveConstructor(), unless(isImplicit()))));
 
-  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
-                         cxxConstructorDecl(isDefaultConstructor())));
-  EXPECT_TRUE(matches("struct S { S(const S&); };",
-                      cxxConstructorDecl(isCopyConstructor())));
-  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
-                         cxxConstructorDecl(isMoveConstructor())));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(const S&); };",
+      cxxConstructorDecl(isDefaultConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(matches(
+      "struct S { S(const S&); };",
+      cxxConstructorDecl(isCopyConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(const S&); };",
+      cxxConstructorDecl(isMoveConstructor(), unless(isImplicit()))));
 
-  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
-                         cxxConstructorDecl(isDefaultConstructor())));
-  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
-                         cxxConstructorDecl(isCopyConstructor())));
-  EXPECT_TRUE(matches("struct S { S(S&&); };",
-                      cxxConstructorDecl(isMoveConstructor())));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(S&&); };",
+      cxxConstructorDecl(isDefaultConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(notMatches(
+      "struct S { S(S&&); };",
+      cxxConstructorDecl(isCopyConstructor(), unless(isImplicit()))));
+  EXPECT_TRUE(matches(
+      "struct S { S(S&&); };",
+      cxxConstructorDecl(isMoveConstructor(), unless(isImplicit()))));
 }
 
 TEST(ConstructorDeclaration, IsUserProvided) {
@@ -1402,6 +1411,16 @@ TEST(Member, BitFields) {
                          fieldDecl(isBitField(), hasName("b"))));
   EXPECT_TRUE(matches("class C { int a : 2; int b : 4; };",
                       fieldDecl(isBitField(), hasBitWidth(2), hasName("a"))));
+}
+
+TEST(Member, InClassInitializer) {
+  EXPECT_TRUE(
+      matches("class C { int a = 2; int b; };",
+              fieldDecl(hasInClassInitializer(integerLiteral(equals(2))),
+                        hasName("a"))));
+  EXPECT_TRUE(
+      notMatches("class C { int a = 2; int b; };",
+                 fieldDecl(hasInClassInitializer(anything()), hasName("b"))));
 }
 
 TEST(Member, UnderstandsAccess) {

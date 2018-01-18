@@ -15,6 +15,7 @@
 #include "DwarfDebug.h"
 #include "DwarfExpression.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/DIE.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -26,7 +27,6 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MachineLocation.h"
-#include "llvm/Support/Dwarf.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
@@ -149,7 +149,7 @@ void AsmPrinter::emitDwarfSymbolReference(const MCSymbol *Label,
   if (!ForceOffset) {
     // On COFF targets, we have to emit the special .secrel32 directive.
     if (MAI->needsDwarfSectionOffsetDirective()) {
-      OutStreamer->EmitCOFFSecRel32(Label);
+      OutStreamer->EmitCOFFSecRel32(Label, /*Offset=*/0);
       return;
     }
 

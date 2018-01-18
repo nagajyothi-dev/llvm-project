@@ -255,7 +255,7 @@ class Replacements {
 
   /// \brief Merges \p Replaces into the current replacements. \p Replaces
   /// refers to code after applying the current replacements.
-  Replacements merge(const Replacements &Replaces) const;
+  LLVM_NODISCARD Replacements merge(const Replacements &Replaces) const;
 
   // Returns the affected ranges in the changed code.
   std::vector<Range> getAffectedRanges() const;
@@ -329,12 +329,6 @@ llvm::Expected<std::string> applyAllReplacements(StringRef Code,
 struct TranslationUnitReplacements {
   /// Name of the main source for the translation unit.
   std::string MainSourceFile;
-
-  /// A freeform chunk of text to describe the context of the replacements.
-  /// Will be printed, for example, when detecting conflicts during replacement
-  /// deduplication.
-  std::string Context;
-
   std::vector<Replacement> Replacements;
 };
 

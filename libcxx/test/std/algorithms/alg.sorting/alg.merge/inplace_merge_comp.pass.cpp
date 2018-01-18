@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <random>
 #include <cassert>
 
 #include "test_macros.h"
@@ -32,31 +33,33 @@ struct indirect_less
 };
 
 struct S {
-	S() : i_(0) {}
-	S(int i) : i_(i) {}
+    S() : i_(0) {}
+    S(int i) : i_(i) {}
 
-	S(const S&  rhs) : i_(rhs.i_) {}
-	S(      S&& rhs) : i_(rhs.i_) { rhs.i_ = -1; }
+    S(const S&  rhs) : i_(rhs.i_) {}
+    S(      S&& rhs) : i_(rhs.i_) { rhs.i_ = -1; }
 
-	S& operator =(const S&  rhs) { i_ = rhs.i_;              return *this; }
-	S& operator =(      S&& rhs) { i_ = rhs.i_; rhs.i_ = -2; assert(this != &rhs); return *this; }
-	S& operator =(int i)         { i_ = i;                   return *this; }
+    S& operator =(const S&  rhs) { i_ = rhs.i_;              return *this; }
+    S& operator =(      S&& rhs) { i_ = rhs.i_; rhs.i_ = -2; assert(this != &rhs); return *this; }
+    S& operator =(int i)         { i_ = i;                   return *this; }
 
-	bool operator  <(const S&  rhs) const { return i_ < rhs.i_; }
-	bool operator  >(const S&  rhs) const { return i_ > rhs.i_; }
-	bool operator ==(const S&  rhs) const { return i_ == rhs.i_; }
-	bool operator ==(int i)         const { return i_ == i; }
+    bool operator  <(const S&  rhs) const { return i_ < rhs.i_; }
+    bool operator  >(const S&  rhs) const { return i_ > rhs.i_; }
+    bool operator ==(const S&  rhs) const { return i_ == rhs.i_; }
+    bool operator ==(int i)         const { return i_ == i; }
 
-	void set(int i) { i_ = i; }
+    void set(int i) { i_ = i; }
 
-	int i_;
-	};
+    int i_;
+    };
 
 
 #endif  // TEST_STD_VER >= 11
 
 #include "test_iterators.h"
 #include "counting_predicates.hpp"
+
+std::mt19937 randomness;
 
 template <class Iter>
 void
@@ -67,7 +70,7 @@ test_one(unsigned N, unsigned M)
     value_type* ia = new value_type[N];
     for (unsigned i = 0; i < N; ++i)
         ia[i] = i;
-    std::random_shuffle(ia, ia+N);
+    std::shuffle(ia, ia+N, randomness);
     std::sort(ia, ia+M, std::greater<value_type>());
     std::sort(ia+M, ia+N, std::greater<value_type>());
     binary_counting_predicate<std::greater<value_type>, value_type, value_type> pred((std::greater<value_type>()));
@@ -130,7 +133,7 @@ int main()
     std::unique_ptr<int>* ia = new std::unique_ptr<int>[N];
     for (int i = 0; i < N; ++i)
         ia[i].reset(new int(i));
-    std::random_shuffle(ia, ia+N);
+    std::shuffle(ia, ia+N, randomness);
     std::sort(ia, ia+M, indirect_less());
     std::sort(ia+M, ia+N, indirect_less());
     std::inplace_merge(ia, ia+M, ia+N, indirect_less());

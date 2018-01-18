@@ -22,6 +22,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 using namespace clang;
 using namespace sema;
@@ -137,6 +138,56 @@ static bool checkExprMemoryConstraintCompat(Sema &S, Expr *E,
   return false;
 }
 
+// Extracting the register name from the Expression value,
+// if there is no register name to extract, returns ""
+static StringRef extractRegisterName(const Expr *Expression,
+                                     const TargetInfo &Target) {
+  Expression = Expression->IgnoreImpCasts();
+  if (const DeclRefExpr *AsmDeclRef = dyn_cast<DeclRefExpr>(Expression)) {
+    // Handle cases where the expression is a variable
+    const VarDecl *Variable = dyn_cast<VarDecl>(AsmDeclRef->getDecl());
+    if (Variable && Variable->getStorageClass() == SC_Register) {
+      if (AsmLabelAttr *Attr = Variable->getAttr<AsmLabelAttr>())
+        if (Target.isValidGCCRegisterName(Attr->getLabel()))
+          return Target.getNormalizedGCCRegisterName(Attr->getLabel(), true);
+    }
+  }
+  return "";
+}
+
+// Checks if there is a conflict between the input and output lists with the
+// clobbers list. If there's a conflict, returns the location of the
+// conflicted clobber, else returns nullptr
+static SourceLocation
+getClobberConflictLocation(MultiExprArg Exprs, StringLiteral **Constraints,
+                           StringLiteral **Clobbers, int NumClobbers,
+                           const TargetInfo &Target, ASTContext &Cont) {
+  llvm::StringSet<> InOutVars;
+  // Collect all the input and output registers from the extended asm
+  // statement in order to check for conflicts with the clobber list
+  for (unsigned int i = 0; i < Exprs.size(); ++i) {
+    StringRef Constraint = Constraints[i]->getString();
+    StringRef InOutReg = Target.getConstraintRegister(
+        Constraint, extractRegisterName(Exprs[i], Target));
+    if (InOutReg != "")
+      InOutVars.insert(InOutReg);
+  }
+  // Check for each item in the clobber list if it conflicts with the input
+  // or output
+  for (int i = 0; i < NumClobbers; ++i) {
+    StringRef Clobber = Clobbers[i]->getString();
+    // We only check registers, therefore we don't check cc and memory
+    // clobbers
+    if (Clobber == "cc" || Clobber == "memory")
+      continue;
+    Clobber = Target.getNormalizedGCCRegisterName(Clobber, true);
+    // Go over the output's registers we collected
+    if (InOutVars.count(Clobber))
+      return Clobbers[i]->getLocStart();
+  }
+  return SourceLocation();
+}
+
 StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                                  bool IsVolatile, unsigned NumOutputs,
                                  unsigned NumInputs, IdentifierInfo **Names,
@@ -226,6 +277,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
       if (RequireCompleteType(OutputExpr->getLocStart(), Exprs[i]->getType(),
                               diag::err_dereference_incomplete_type))
         return StmtError();
+      LLVM_FALLTHROUGH;
     default:
       return StmtError(Diag(OutputExpr->getLocStart(),
                             diag::err_asm_invalid_lvalue_in_output)
@@ -543,6 +595,13 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     return StmtError();
   }
 
+  // Check for conflicts between clobber list and input or output lists
+  SourceLocation ConstraintLoc =
+      getClobberConflictLocation(Exprs, Constraints, Clobbers, NumClobbers,
+                                 Context.getTargetInfo(), Context);
+  if (ConstraintLoc.isValid())
+    return Diag(ConstraintLoc, diag::error_inoutput_conflict_with_clobber);
+  
   return NS;
 }
 
@@ -565,8 +624,9 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
   Info.clear();
 
   if (IsUnevaluatedContext)
-    PushExpressionEvaluationContext(UnevaluatedAbstract,
-                                    ReuseLambdaContextDecl);
+    PushExpressionEvaluationContext(
+        ExpressionEvaluationContext::UnevaluatedAbstract,
+        ReuseLambdaContextDecl);
 
   ExprResult Result = ActOnIdExpression(getCurScope(), SS, TemplateKWLoc, Id,
                                         /*trailing lparen*/ false,
@@ -617,22 +677,33 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   SmallVector<StringRef, 2> Members;
   Member.split(Members, ".");
 
-  LookupResult BaseResult(*this, &Context.Idents.get(Base), SourceLocation(),
-                          LookupOrdinaryName);
+  NamedDecl *FoundDecl = nullptr;
 
-  if (!LookupName(BaseResult, getCurScope()))
+  // MS InlineAsm uses 'this' as a base
+  if (getLangOpts().CPlusPlus && Base.equals("this")) {
+    if (const Type *PT = getCurrentThisType().getTypePtrOrNull())
+      FoundDecl = PT->getPointeeType()->getAsTagDecl();
+  } else {
+    LookupResult BaseResult(*this, &Context.Idents.get(Base), SourceLocation(),
+                            LookupOrdinaryName);
+    if (LookupName(BaseResult, getCurScope()) && BaseResult.isSingleResult())
+      FoundDecl = BaseResult.getFoundDecl();
+  }
+
+  if (!FoundDecl)
     return true;
-  
-  if(!BaseResult.isSingleResult())
-    return true;
-  NamedDecl *FoundDecl = BaseResult.getFoundDecl();
+
   for (StringRef NextMember : Members) {
     const RecordType *RT = nullptr;
     if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
       RT = VD->getType()->getAs<RecordType>();
     else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl)) {
       MarkAnyDeclReferenced(TD->getLocation(), TD, /*OdrUse=*/false);
-      RT = TD->getUnderlyingType()->getAs<RecordType>();
+      // MS InlineAsm often uses struct pointer aliases as a base
+      QualType QT = TD->getUnderlyingType();
+      if (const auto *PT = QT->getAs<PointerType>())
+        QT = PT->getPointeeType();
+      RT = QT->getAs<RecordType>();
     } else if (TypeDecl *TD = dyn_cast<TypeDecl>(FoundDecl))
       RT = TD->getTypeForDecl()->getAs<RecordType>();
     else if (FieldDecl *TD = dyn_cast<FieldDecl>(FoundDecl))

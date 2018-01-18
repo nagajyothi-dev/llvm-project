@@ -4,12 +4,14 @@ add_clang_library(clangTidyReadabilityModule
   AvoidConstParamsInDecls.cpp
   BracesAroundStatementsCheck.cpp
   ContainerSizeEmptyCheck.cpp
+  DeleteNullPointerCheck.cpp
   DeletedDefaultCheck.cpp
   ElseAfterReturnCheck.cpp
   FunctionSizeCheck.cpp
   IdentifierNamingCheck.cpp
-  ImplicitBoolCastCheck.cpp
+  ImplicitBoolConversionCheck.cpp
   InconsistentDeclarationParameterNameCheck.cpp
+  MisleadingIndentationCheck.cpp
   MisplacedArrayIndexCheck.cpp
   NamedParameterCheck.cpp
   NamespaceCommentCheck.cpp
@@ -23,6 +25,7 @@ add_clang_library(clangTidyReadabilityModule
   RedundantSmartptrGetCheck.cpp
   RedundantStringInitCheck.cpp
   SimplifyBooleanExprCheck.cpp
+  StaticAccessedThroughInstanceCheck.cpp
   StaticDefinitionInAnonymousNamespaceCheck.cpp
   UniqueptrDeleteReleaseCheck.cpp
 

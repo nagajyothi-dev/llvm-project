@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-linux -emit-llvm -fsanitize=null %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-NULL --check-prefix=ITANIUM
 // RUN: %clang_cc1 -std=c++11 -triple x86_64-windows -emit-llvm -fsanitize=null %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-NULL --check-prefix=MSABI
-// RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-linux -emit-llvm -fsanitize=vptr %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-VPTR --check-prefix=ITANIUM
-// RUN: %clang_cc1 -std=c++11 -triple x86_64-windows -emit-llvm -fsanitize=vptr %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-VPTR --check-prefix=MSABI
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-linux -emit-llvm -fsanitize=null,vptr %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-VPTR --check-prefix=ITANIUM
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-windows -emit-llvm -fsanitize=null,vptr %s -o - | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-VPTR --check-prefix=MSABI
 struct T {
   virtual ~T() {}
   virtual int v() { return 1; }
@@ -21,7 +21,7 @@ int get_v(T* t) {
   // CHECK-NULL-NOT: load {{.*}} (%struct.T*{{.*}})**, {{.*}} (%struct.T*{{.*}})***
   // CHECK-NULL: [[UBSAN_CMP_RES:%[0-9]+]] = icmp ne %struct.T* %{{[_a-z0-9]+}}, null
   // CHECK-NULL-NEXT: br i1 [[UBSAN_CMP_RES]], label %{{.*}}, label %{{.*}}
-  // CHECK-NULL: call void @__ubsan_handle_type_mismatch_abort
+  // CHECK-NULL: call void @__ubsan_handle_type_mismatch_v1_abort
   // Second, we check that vtable is actually loaded once the type check is done.
   // CHECK-NULL: load {{.*}} (%struct.T*{{.*}})**, {{.*}} (%struct.T*{{.*}})***
   return t->v();

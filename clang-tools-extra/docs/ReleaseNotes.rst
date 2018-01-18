@@ -1,5 +1,5 @@
 ===================================================
-Extra Clang Tools 4.0.0 (In-Progress) Release Notes
+Extra Clang Tools 6.0.0 (In-Progress) Release Notes
 ===================================================
 
 .. contents::
@@ -10,15 +10,15 @@ Written by the `LLVM Team <http://llvm.org/>`_
 
 .. warning::
 
-   These are in-progress notes for the upcoming Extra Clang Tools 4.0 release.
-   You may prefer the `Extra Clang Tools 3.9 Release Notes
-   <http://llvm.org/releases/3.9.0/tools/clang/tools/extra/docs/ReleaseNotes.html>`_.
+   These are in-progress notes for the upcoming Extra Clang Tools 6 release.
+   Release notes for previous releases can be found on
+   `the Download Page <http://releases.llvm.org/download.html>`_.
 
 Introduction
 ============
 
 This document contains the release notes for the Extra Clang Tools, part of the
-Clang release 4.0.0. Here we describe the status of the Extra Clang Tools in
+Clang release 6.0.0. Here we describe the status of the Extra Clang Tools in
 some detail, including major improvements from the previous release and new
 feature work. All LLVM releases may be downloaded from the `LLVM releases web
 site <http://llvm.org/releases/>`_.
@@ -32,7 +32,7 @@ main Clang web page, this document applies to the *next* release, not
 the current one. To see the release notes for a specific release, please
 see the `releases page <http://llvm.org/releases/>`_.
 
-What's New in Extra Clang Tools 4.0.0?
+What's New in Extra Clang Tools 6.0.0?
 ======================================
 
 Some of the major new features and improvements to Extra Clang Tools are listed
@@ -52,150 +52,96 @@ The improvements are...
 Improvements to clang-rename
 ----------------------------
 
-- Emacs integration was added.
+The improvements are...
 
 Improvements to clang-tidy
 --------------------------
 
-- New `cppcoreguidelines-slicing
-  <http://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines-slicing.html>`_ check
+- Renamed checks to use correct term "implicit conversion" instead of "implicit
+  cast" and modified messages and option names accordingly:
 
-  Flags slicing of member variables or vtable.
+    * **performance-implicit-cast-in-loop** was renamed to
+      `performance-implicit-conversion-in-loop
+      <http://clang.llvm.org/extra/clang-tidy/checks/performance-implicit-conversion-in-loop.html>`_
+    * **readability-implicit-bool-cast** was renamed to
+      `readability-implicit-bool-conversion
+      <http://clang.llvm.org/extra/clang-tidy/checks/readability-implicit-bool-conversion.html>`_;
+      the check's options were renamed as follows:
+      ``AllowConditionalIntegerCasts`` -> ``AllowIntegerConditions``,
+      ``AllowConditionalPointerCasts`` -> ``AllowPointerConditions``.
 
-- New `cppcoreguidelines-special-member-functions
-  <http://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines-special-member-functions.html>`_ check
+- New `android-cloexec-accept
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-accept.html>`_ check
 
-  Flags classes where some, but not all, special member functions are user-defined.
+  Detects usage of ``accept()``.
 
-- The UseCERTSemantics option for the `misc-move-constructor-init
-  <http://clang.llvm.org/extra/clang-tidy/checks/misc-move-constructor-init.html>`_ check
-  has been removed as it duplicated the `modernize-pass-by-value
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-pass-by-value.html>`_ check.
+- New `android-cloexec-accept4
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-accept4.html>`_ check
 
-- New `misc-move-forwarding-reference
-  <http://clang.llvm.org/extra/clang-tidy/checks/misc-move-forwarding-reference.html>`_ check
+  Checks if the required file flag ``SOCK_CLOEXEC`` is present in the argument of
+  ``accept4()``.
 
-  Warns when ``std::move`` is applied to a forwarding reference instead of
-  ``std::forward``.
+- New `android-cloexec-dup
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-dup.html>`_ check
 
-- `misc-pointer-and-integral-operation` check was removed.
+  Detects usage of ``dup()``.
 
-- New `misc-use-after-move
-  <http://clang.llvm.org/extra/clang-tidy/checks/misc-use-after-move.html>`_ check
+- New `android-cloexec-inotify-init
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-inotify-init.html>`_ check
 
-  Warns if an object is used after it has been moved, without an intervening
-  reinitialization.
+  Detects usage of ``inotify_init()``.
 
-- New `cppcoreguidelines-no-malloc
-  <http://clang.llvm.org/extra/clang-tidy/checks/cppcoreguidelines-no-malloc.html>`_ check
-  warns if C-style memory management is used and suggests the use of RAII.
+- New `android-cloexec-epoll-create1
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-epoll-create1.html>`_ check
 
-- `modernize-make-unique
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-make-unique.html>`_
-  and `modernize-make-shared
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-make-shared.html>`_
-  now handle calls to the smart pointer's ``reset()`` method.
+  Checks if the required file flag ``EPOLL_CLOEXEC`` is present in the argument of
+  ``epoll_create1()``.
 
-- The `modernize-pass-by-value
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-pass-by-value.html>`_ check
-  now has a ValuesOnly option to only warn about parameters that are passed by
-  value but not moved.
+- New `android-cloexec-epoll-create
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-epoll-create.html>`_ check
 
-- The `modernize-use-auto
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-auto.html>`_ check
-  now warns about variable declarations that are initialized with a cast, or by
-  calling a templated function that behaves as a cast.
+  Detects usage of ``epoll_create()``.
 
-- The modernize-use-default check has been renamed to `modernize-use-equals-default
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-equals-default.html>`_.
-  
-- New `modernize-use-default-member-init
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-default-member-init.html>`_ check
+- New `android-cloexec-memfd_create
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-memfd_create.html>`_ check
 
-  Converts a default constructor's member initializers into default member initializers.
-  Removes member initializers that are the same as a default member initializer.
+  Checks if the required file flag ``MFD_CLOEXEC`` is present in the argument
+  of ``memfd_create()``.
 
-- New `modernize-use-equals-delete
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-equals-delete.html>`_ check
+- New `bugprone-integer-division
+  <http://clang.llvm.org/extra/clang-tidy/checks/bugprone-integer-division.html>`_ check
 
-  Adds ``= delete`` to unimplemented private special member functions.
+  Finds cases where integer division in a floating point context is likely to
+  cause unintended loss of precision.
 
-- New `modernize-use-transparent-functors
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-transparent-functors.html>`_ check
+- New `hicpp-exception-baseclass
+  <http://clang.llvm.org/extra/clang-tidy/checks/hicpp-exception-baseclass.html>`_ check
 
-  Replaces uses of non-transparent functors with transparent ones where applicable.
+  Ensures that all exception will be instances of ``std::exception`` and classes 
+  that are derived from it.
 
-- New `mpi-buffer-deref
-  <http://clang.llvm.org/extra/clang-tidy/checks/mpi-buffer-deref.html>`_ check
+- New `android-cloexec-inotify-init1
+  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-inotify-init1.html>`_ check
 
-  Flags buffers which are insufficiently dereferenced when passed to an MPI function call.
+  Checks if the required file flag ``IN_CLOEXEC`` is present in the argument of
+  ``inotify_init1()``.
 
-- New `mpi-type-mismatch
-  <http://clang.llvm.org/extra/clang-tidy/checks/mpi-type-mismatch.html>`_ check
+- New `readability-static-accessed-through-instance
+  <http://clang.llvm.org/extra/clang-tidy/checks/readability-static-accessed-through-instance.html>`_ check
 
-  Flags MPI function calls with a buffer type and MPI data type mismatch.
+  Finds member expressions that access static members through instances and
+  replaces them with uses of the appropriate qualified-id.
 
-- New `performance-inefficient-string-concatenation
-  <http://clang.llvm.org/extra/clang-tidy/checks/performance-inefficient-string-concatenation.html>`_ check
+- Added `modernize-use-emplace.IgnoreImplicitConstructors
+  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-emplace.html#cmdoption-arg-IgnoreImplicitConstructors>`_
+  option.
 
-  Warns about the performance overhead arising from concatenating strings using
-  the ``operator+``, instead of ``operator+=``.
-
-- New `performance-type-promotion-in-math-fn
-  <http://clang.llvm.org/extra/clang-tidy/checks/performance-type-promotion-in-math-fn.html>`_ check
-
-  Replaces uses of C-style standard math functions with double parameters and float
-  arguments with an equivalent function that takes a float parameter.
-
-- `readability-container-size-empty
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-container-size-empty.html>`_ check
-  supports arbitrary containers with with suitable ``empty()`` and ``size()``
-  methods.
-
-- New `readability-misplaced-array-index
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-misplaced-array-index.html>`_ check
-
-  Warns when there is array index before the [] instead of inside it.
-
-- New `readability-non-const-parameter
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-non-const-parameter.html>`_ check
-
-  Flags function parameters of a pointer type that could be changed to point to
-  a constant type instead.
-
-- New `readability-redundant-declaration
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-redundant-declaration.html>`_ check
-
-  Finds redundant variable and function declarations.
-
-- New `readability-redundant-function-ptr-dereference
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-redundant-function-ptr-dereference.html>`_ check
-
-  Finds redundant function pointer dereferences.
-
-- New `readability-redundant-member-init
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-redundant-member-init.html>`_ check
-
-  Flags member initializations that are unnecessary because the same default
-  constructor would be called if they were not present.
-
-- The `readability-redundant-string-cstr
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-redundant-string-cstr.html>`_ check
-  now warns about redundant calls to data() too.
-
-Fixed bugs:
-
-- `modernize-make-unique
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-make-unique.html>`_
-  and `modernize-make-shared
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-make-shared.html>`_
-  Calling ``make_{unique|shared}`` from within a member function of a type
-  with a private or protected constructor would be ill-formed.
+- Added alias `hicpp-braces-around-statements <http://clang.llvm.org/extra/clang-tidy/checks/hicpp-braces-around-statements.html>`_ 
 
 Improvements to include-fixer
 -----------------------------
 
-- Emacs integration was added.
+The improvements are...
 
 Improvements to modularize
 --------------------------

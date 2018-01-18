@@ -13,12 +13,21 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+namespace llvm {
+namespace codeview {
+union DebugInfo;
+}
+}
+
 namespace lld {
 namespace coff {
+class OutputSection;
 class SymbolTable;
 
-void createPDB(llvm::StringRef Path, SymbolTable *Symtab,
-               llvm::ArrayRef<uint8_t> SectionTable);
+void createPDB(SymbolTable *Symtab,
+               llvm::ArrayRef<OutputSection *> OutputSections,
+               llvm::ArrayRef<uint8_t> SectionTable,
+               const llvm::codeview::DebugInfo &BuildId);
 }
 }
 
