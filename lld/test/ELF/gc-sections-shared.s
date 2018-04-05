@@ -19,15 +19,6 @@
 # CHECK-NEXT:     Section: Undefined (0x0)
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Symbol {
-# CHECK-NEXT:     Name: bar
-# CHECK-NEXT:     Value:
-# CHECK-NEXT:     Size:
-# CHECK-NEXT:     Binding: Global
-# CHECK-NEXT:     Type:
-# CHECK-NEXT:     Other:
-# CHECK-NEXT:     Section: .text
-# CHECK-NEXT:   }
-# CHECK-NEXT:   Symbol {
 # CHECK-NEXT:     Name: bar2
 # CHECK-NEXT:     Value:
 # CHECK-NEXT:     Size:
@@ -47,7 +38,7 @@
 # CHECK-NEXT:   }
 # CHECK-NEXT: ]
 
-# CHECK: NEEDED SharedLibrary ({{.*}}.so)
+# CHECK: NEEDED Shared library: [{{.*}}.so]
 
 .section .text.foo, "ax"
 .globl foo

@@ -137,6 +137,9 @@ def SExt : EnumAttr<"signext">;
 /// +1 bias 0 means unaligned (different from alignstack=(1)).
 def StackAlignment : EnumAttr<"alignstack">;
 
+/// Function can be speculated.
+def Speculatable : EnumAttr<"speculatable">;
+
 /// Stack protection.
 def StackProtect : EnumAttr<"ssp">;
 
@@ -145,6 +148,9 @@ def StackProtectReq : EnumAttr<"sspreq">;
 
 /// Strong Stack protection.
 def StackProtectStrong : EnumAttr<"sspstrong">;
+
+/// Function was called in a scope requiring strict floating point semantics.
+def StrictFP : EnumAttr<"strictfp">;
 
 /// Hidden pointer to structure to return.
 def StructRet : EnumAttr<"sret">;
@@ -211,3 +217,5 @@ def : MergeRule<"setAND<UnsafeFPMathAttr>">;
 def : MergeRule<"setOR<NoImplicitFloatAttr>">;
 def : MergeRule<"setOR<NoJumpTablesAttr>">;
 def : MergeRule<"adjustCallerSSPLevel">;
+def : MergeRule<"adjustCallerStackProbes">;
+def : MergeRule<"adjustCallerStackProbeSize">;

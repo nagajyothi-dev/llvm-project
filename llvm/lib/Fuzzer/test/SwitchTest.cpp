@@ -2,11 +2,11 @@
 // License. See LICENSE.TXT for details.
 
 // Simple test for a fuzzer. The fuzzer must find the interesting switch value.
-#include <cstdint>
-#include <cstdlib>
-#include <cstdio>
-#include <cstring>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 static volatile int Sink;
 
@@ -20,8 +20,8 @@ bool Switch(const uint8_t *Data, size_t Size) {
     case 101: Sink = __LINE__; break;
     case 1001: Sink = __LINE__; break;
     case 10001: Sink = __LINE__; break;
-//    case 100001: Sink = __LINE__; break;
-//    case 1000001: Sink = __LINE__; break;
+    case 100001: Sink = __LINE__; break;
+    case 1000001: Sink = __LINE__; break;
     case 10000001: Sink = __LINE__; break;
     case 100000001: return true;
   }

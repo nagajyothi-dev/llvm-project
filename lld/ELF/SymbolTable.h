@@ -18,11 +18,8 @@
 
 namespace lld {
 namespace elf {
-class Lazy;
-class OutputSectionBase;
-struct Symbol;
 
-typedef llvm::CachedHashStringRef SymName;
+struct Symbol;
 
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
@@ -36,70 +33,68 @@ typedef llvm::CachedHashStringRef SymName;
 // to replace the lazy symbol. The logic is implemented in the
 // add*() functions, which are called by input files as they are parsed. There
 // is one add* function per symbol type.
-template <class ELFT> class SymbolTable {
-  typedef typename ELFT::Sym Elf_Sym;
-  typedef typename ELFT::uint uintX_t;
-
+class SymbolTable {
 public:
-  void addFile(InputFile *File);
-  void addCombinedLTOObject();
+  template <class ELFT> void addFile(InputFile *File);
+  template <class ELFT> void addCombinedLTOObject();
+  template <class ELFT> void addSymbolAlias(StringRef Alias, StringRef Name);
+  template <class ELFT> void addSymbolWrap(StringRef Name);
+  void applySymbolRenames();
 
   ArrayRef<Symbol *> getSymbols() const { return SymVector; }
-  ArrayRef<ObjectFile<ELFT> *> getObjectFiles() const { return ObjectFiles; }
-  ArrayRef<BinaryFile *> getBinaryFiles() const { return BinaryFiles; }
-  ArrayRef<SharedFile<ELFT> *> getSharedFiles() const { return SharedFiles; }
 
-  DefinedRegular<ELFT> *addAbsolute(StringRef Name,
-                                    uint8_t Visibility = llvm::ELF::STV_HIDDEN,
-                                    uint8_t Binding = llvm::ELF::STB_GLOBAL);
-  DefinedRegular<ELFT> *addIgnored(StringRef Name,
-                                   uint8_t Visibility = llvm::ELF::STV_HIDDEN);
+  template <class ELFT>
+  DefinedRegular *addAbsolute(StringRef Name,
+                              uint8_t Visibility = llvm::ELF::STV_HIDDEN,
+                              uint8_t Binding = llvm::ELF::STB_GLOBAL);
+  template <class ELFT>
+  DefinedRegular *addIgnored(StringRef Name,
+                             uint8_t Visibility = llvm::ELF::STV_HIDDEN);
 
-  Symbol *addUndefined(StringRef Name);
+  template <class ELFT> Symbol *addUndefined(StringRef Name);
+  template <class ELFT>
   Symbol *addUndefined(StringRef Name, bool IsLocal, uint8_t Binding,
                        uint8_t StOther, uint8_t Type, bool CanOmitFromDynSym,
                        InputFile *File);
-
+  template <class ELFT>
   Symbol *addRegular(StringRef Name, uint8_t StOther, uint8_t Type,
-                     uintX_t Value, uintX_t Size, uint8_t Binding,
-                     InputSectionBase<ELFT> *Section, InputFile *File);
+                     uint64_t Value, uint64_t Size, uint8_t Binding,
+                     SectionBase *Section, InputFile *File);
 
-  Symbol *addSynthetic(StringRef N, const OutputSectionBase *Section,
-                       uintX_t Value, uint8_t StOther);
-
-  void addShared(SharedFile<ELFT> *F, StringRef Name, const Elf_Sym &Sym,
+  template <class ELFT>
+  void addShared(SharedFile<ELFT> *F, StringRef Name,
+                 const typename ELFT::Sym &Sym,
                  const typename ELFT::Verdef *Verdef);
 
-  void addLazyArchive(ArchiveFile *F, const llvm::object::Archive::Symbol S);
-  void addLazyObject(StringRef Name, LazyObjectFile &Obj);
+  template <class ELFT>
+  Symbol *addLazyArchive(ArchiveFile *F, const llvm::object::Archive::Symbol S);
+  template <class ELFT> void addLazyObject(StringRef Name, LazyObjFile &Obj);
+
   Symbol *addBitcode(StringRef Name, uint8_t Binding, uint8_t StOther,
                      uint8_t Type, bool CanOmitFromDynSym, BitcodeFile *File);
 
-  Symbol *addCommon(StringRef N, uint64_t Size, uint64_t Alignment,
+  Symbol *addCommon(StringRef N, uint64_t Size, uint32_t Alignment,
                     uint8_t Binding, uint8_t StOther, uint8_t Type,
                     InputFile *File);
 
-  void scanUndefinedFlags();
-  void scanShlibUndefined();
-  void scanVersionScript();
-
-  SymbolBody *find(StringRef Name);
-
-  void trace(StringRef Name);
-  void wrap(StringRef Name);
-
-  std::vector<InputSectionBase<ELFT> *> Sections;
-
-private:
   std::pair<Symbol *, bool> insert(StringRef Name);
   std::pair<Symbol *, bool> insert(StringRef Name, uint8_t Type,
                                    uint8_t Visibility, bool CanOmitFromDynSym,
                                    InputFile *File);
 
+  template <class ELFT> void scanUndefinedFlags();
+  template <class ELFT> void scanShlibUndefined();
+  void scanVersionScript();
+
+  SymbolBody *find(StringRef Name);
+
+  void trace(StringRef Name);
+
+private:
   std::vector<SymbolBody *> findByVersion(SymbolVersion Ver);
   std::vector<SymbolBody *> findAllByVersion(SymbolVersion Ver);
 
-  void initDemangledSyms();
+  llvm::StringMap<std::vector<SymbolBody *>> &getDemangledSyms();
   void handleAnonymousVersion();
   void assignExactVersion(SymbolVersion Ver, uint16_t VersionId,
                           StringRef VersionName);
@@ -118,18 +113,13 @@ private:
   // but a bit inefficient.
   // FIXME: Experiment with passing in a custom hashing or sorting the symbols
   // once symbol resolution is finished.
-  llvm::DenseMap<SymName, SymIndex> Symtab;
+  llvm::DenseMap<llvm::CachedHashStringRef, SymIndex> Symtab;
   std::vector<Symbol *> SymVector;
 
   // Comdat groups define "link once" sections. If two comdat groups have the
   // same name, only one of them is linked, and the other is ignored. This set
   // is used to uniquify them.
   llvm::DenseSet<llvm::CachedHashStringRef> ComdatGroups;
-
-  std::vector<ObjectFile<ELFT> *> ObjectFiles;
-  std::vector<SharedFile<ELFT> *> SharedFiles;
-  std::vector<BitcodeFile *> BitcodeFiles;
-  std::vector<BinaryFile *> BinaryFiles;
 
   // Set of .so files to not link the same shared object file more than once.
   llvm::DenseSet<StringRef> SoNames;
@@ -144,9 +134,7 @@ private:
   std::unique_ptr<BitcodeCompiler> LTO;
 };
 
-template <class ELFT> struct Symtab { static SymbolTable<ELFT> *X; };
-template <class ELFT> SymbolTable<ELFT> *Symtab<ELFT>::X;
-
+extern SymbolTable *Symtab;
 } // namespace elf
 } // namespace lld
 

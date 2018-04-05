@@ -23,6 +23,9 @@
 #include "llvm/ADT/SmallVector.h"
 #include "isl/ctx.h"
 #include "isl/union_map.h"
+
+#include "isl-noexceptions.h"
+
 #include <utility>
 #include <vector>
 
@@ -41,6 +44,9 @@ struct SubtreeReferences {
   SetVector<Value *> &Values;
   SetVector<const SCEV *> &SCEVs;
   BlockGenerator &BlockGen;
+  // In case an (optional) parameter space location is provided, parameter space
+  // information is collected as well.
+  isl::space *ParamSpace;
 };
 
 /// Extract the out-of-scop values and SCEVs referenced from a ScopStmt.
@@ -49,6 +55,10 @@ struct SubtreeReferences {
 /// statement and the base pointers of the memory accesses. For scalar
 /// statements we force the generation of alloca memory locations and list
 /// these locations in the set of out-of-scop values as well.
+///
+/// We also collect an isl::space that includes all parameter dimensions
+/// used in the statement's memory accesses, in case the ParamSpace pointer
+/// is non-null.
 ///
 /// @param Stmt             The statement for which to extract the information.
 /// @param UserPtr          A void pointer that can be casted to a
@@ -60,20 +70,27 @@ isl_stat addReferencesFromStmt(const ScopStmt *Stmt, void *UserPtr,
 
 class IslNodeBuilder {
 public:
-  IslNodeBuilder(PollyIRBuilder &Builder, ScopAnnotator &Annotator, Pass *P,
+  IslNodeBuilder(PollyIRBuilder &Builder, ScopAnnotator &Annotator,
                  const DataLayout &DL, LoopInfo &LI, ScalarEvolution &SE,
                  DominatorTree &DT, Scop &S, BasicBlock *StartBlock)
       : S(S), Builder(Builder), Annotator(Annotator),
         ExprBuilder(S, Builder, IDToValue, ValueMap, DL, SE, DT, LI,
                     StartBlock),
-        BlockGen(Builder, LI, SE, DT, ScalarMap, PHIOpMap, EscapeMap, ValueMap,
+        BlockGen(Builder, LI, SE, DT, ScalarMap, EscapeMap, ValueMap,
                  &ExprBuilder, StartBlock),
-        RegionGen(BlockGen), P(P), DL(DL), LI(LI), SE(SE), DT(DT),
+        RegionGen(BlockGen), DL(DL), LI(LI), SE(SE), DT(DT),
         StartBlock(StartBlock) {}
 
   virtual ~IslNodeBuilder() = default;
 
   void addParameters(__isl_take isl_set *Context);
+
+  /// Create Values which hold the sizes of the outermost dimension of all
+  /// Fortran arrays in the current scop.
+  ///
+  /// @returns False, if a problem occurred and a Fortran array was not
+  /// materialized. True otherwise.
+  bool materializeFortranArrayOutermostDimension();
 
   /// Generate code that evaluates @p Condition at run-time.
   ///
@@ -91,7 +108,7 @@ public:
   void create(__isl_take isl_ast_node *Node);
 
   /// Allocate memory for all new arrays created by Polly.
-  void allocateNewArrays();
+  void allocateNewArrays(BBPair StartExitBlocks);
 
   /// Preload all memory loads that are invariant.
   bool preloadInvariantLoads();
@@ -105,7 +122,7 @@ public:
 
   /// Get the associated block generator.
   ///
-  /// @return A referecne to the associated block generator.
+  /// @return A reference to the associated block generator.
   BlockGenerator &getBlockGenerator() { return BlockGen; }
 
   /// Return the parallel subfunctions that have been created.
@@ -125,10 +142,7 @@ protected:
   ///@{
 
   /// See BlockGenerator::ScalarMap.
-  BlockGenerator::ScalarAllocaMapTy ScalarMap;
-
-  /// See BlockGenerator::PhiOpMap.
-  BlockGenerator::ScalarAllocaMapTy PHIOpMap;
+  BlockGenerator::AllocaMapTy ScalarMap;
 
   /// See BlockGenerator::EscapeMap.
   BlockGenerator::EscapeUsersAllocaMapTy EscapeMap;
@@ -141,7 +155,6 @@ protected:
   /// The generator used to copy a non-affine region.
   RegionGenerator RegionGen;
 
-  Pass *const P;
   const DataLayout &DL;
   LoopInfo &LI;
   ScalarEvolution &SE;
@@ -179,16 +192,18 @@ protected:
 
   /// Materialize code for @p Id if it was not done before.
   ///
-  /// @returns False, iff a problem occured and the value was not materialized.
+  /// @returns False, iff a problem occurred and the value was not materialized.
   bool materializeValue(__isl_take isl_id *Id);
 
   /// Materialize parameters of @p Set.
   ///
-  /// @param All If not set only parameters referred to by the constraints in
-  ///            @p Set will be materialized, otherwise all.
+  /// @returns False, iff a problem occurred and the value was not materialized.
+  bool materializeParameters(__isl_take isl_set *Set);
+
+  /// Materialize all parameters in the current scop.
   ///
   /// @returns False, iff a problem occurred and the value was not materialized.
-  bool materializeParameters(__isl_take isl_set *Set, bool All);
+  bool materializeParameters();
 
   // Extract the upper bound of this loop
   //
@@ -256,6 +271,14 @@ protected:
   ///
   /// @param NewValues A map that maps certain llvm::Values to new llvm::Values.
   void updateValues(ValueMapT &NewValues);
+
+  /// Return the most up-to-date version of the llvm::Value for code generation.
+  /// @param Original The Value to check for an up to date version.
+  /// @returns A remapped `Value` from ValueMap, or `Original` if no mapping
+  ///          exists.
+  /// @see IslNodeBuilder::updateValues
+  /// @see IslNodeBuilder::ValueMap
+  Value *getLatestValue(Value *Original) const;
 
   /// Generate code for a marker now.
   ///
@@ -399,6 +422,16 @@ private:
   ///                    ids to new access expressions.
   void generateCopyStmt(ScopStmt *Stmt,
                         __isl_keep isl_id_to_ast_expr *NewAccesses);
+
+  /// Materialize a canonical loop induction variable for `L`, which is a loop
+  /// that is *not* present in the Scop.
+  ///
+  /// Note that this is materialized at the point where the `Builder` is
+  /// currently pointing.
+  /// We also populate the `OutsideLoopIterations` map with `L`s SCEV to keep
+  /// track of the induction variable.
+  /// See [Code generation of induction variables of loops outside Scops]
+  Value *materializeNonScopLoopInductionVariable(const Loop *L);
 };
 
 #endif // POLLY_ISL_NODE_BUILDER_H

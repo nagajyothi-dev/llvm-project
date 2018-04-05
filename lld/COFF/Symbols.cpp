@@ -19,11 +19,18 @@
 using namespace llvm;
 using namespace llvm::object;
 
+// Returns a symbol name for an error message.
+std::string lld::toString(coff::SymbolBody &B) {
+  if (Optional<std::string> S = coff::demangle(B.getName()))
+    return ("\"" + *S + "\" (" + B.getName() + ")").str();
+  return B.getName();
+}
+
 namespace lld {
 namespace coff {
 
 StringRef SymbolBody::getName() {
-  // DefinedCOFF names are read lazily for a performance reason.
+  // COFF symbol names are read lazily for a performance reason.
   // Non-external symbol names are never used by the linker except for logging
   // or debugging. Their internal references are resolved not by name but by
   // symbol index. And because they are not external, no one can refer them by
@@ -32,7 +39,7 @@ StringRef SymbolBody::getName() {
   // is a waste of time.
   if (Name.empty()) {
     auto *D = cast<DefinedCOFF>(this);
-    D->File->getCOFFObj()->getSymbolName(D->Sym, Name);
+    cast<ObjFile>(D->File)->getCOFFObj()->getSymbolName(D->Sym, Name);
   }
   return Name;
 }
@@ -40,31 +47,47 @@ StringRef SymbolBody::getName() {
 InputFile *SymbolBody::getFile() {
   if (auto *Sym = dyn_cast<DefinedCOFF>(this))
     return Sym->File;
-  if (auto *Sym = dyn_cast<DefinedBitcode>(this))
-    return Sym->File;
   if (auto *Sym = dyn_cast<Lazy>(this))
     return Sym->File;
   return nullptr;
 }
 
+bool SymbolBody::isLive() const {
+  if (auto *R = dyn_cast<DefinedRegular>(this))
+    return R->getChunk()->isLive();
+  if (auto *Imp = dyn_cast<DefinedImportData>(this))
+    return Imp->File->Live;
+  if (auto *Imp = dyn_cast<DefinedImportThunk>(this))
+    return Imp->WrappedSym->File->Live;
+  // Assume any other kind of symbol is live.
+  return true;
+}
+
 COFFSymbolRef DefinedCOFF::getCOFFSymbol() {
-  size_t SymSize = File->getCOFFObj()->getSymbolTableEntrySize();
+  size_t SymSize = cast<ObjFile>(File)->getCOFFObj()->getSymbolTableEntrySize();
   if (SymSize == sizeof(coff_symbol16))
     return COFFSymbolRef(reinterpret_cast<const coff_symbol16 *>(Sym));
   assert(SymSize == sizeof(coff_symbol32));
   return COFFSymbolRef(reinterpret_cast<const coff_symbol32 *>(Sym));
 }
 
+uint16_t DefinedAbsolute::OutputSectionIndex = 0;
+
+static Chunk *makeImportThunk(DefinedImportData *S, uint16_t Machine) {
+  if (Machine == AMD64)
+    return make<ImportThunkChunkX64>(S);
+  if (Machine == I386)
+    return make<ImportThunkChunkX86>(S);
+  if (Machine == ARM64)
+    return make<ImportThunkChunkARM64>(S);
+  assert(Machine == ARMNT);
+  return make<ImportThunkChunkARM>(S);
+}
+
 DefinedImportThunk::DefinedImportThunk(StringRef Name, DefinedImportData *S,
                                        uint16_t Machine)
-    : Defined(DefinedImportThunkKind, Name) {
-  switch (Machine) {
-  case AMD64: Data = make<ImportThunkChunkX64>(S); return;
-  case I386:  Data = make<ImportThunkChunkX86>(S); return;
-  case ARMNT: Data = make<ImportThunkChunkARM>(S); return;
-  default:    llvm_unreachable("unknown machine type");
-  }
-}
+    : Defined(DefinedImportThunkKind, Name), WrappedSym(S),
+      Data(makeImportThunk(S, Machine)) {}
 
 Defined *Undefined::getWeakAlias() {
   // A weak alias may be a weak alias to another symbol, so check recursively.
@@ -73,13 +96,5 @@ Defined *Undefined::getWeakAlias() {
       return D;
   return nullptr;
 }
-
-// Returns a symbol name for an error message.
-std::string toString(SymbolBody &B) {
-  if (Optional<std::string> S = demangle(B.getName()))
-    return ("\"" + *S + "\" (" + B.getName() + ")").str();
-  return B.getName();
-}
-
 } // namespace coff
 } // namespace lld

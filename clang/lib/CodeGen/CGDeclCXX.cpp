@@ -18,6 +18,7 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/Support/Path.h"
 
 using namespace clang;
@@ -237,7 +238,7 @@ void CodeGenFunction::registerGlobalDtorWithAtExit(const VarDecl &VD,
     llvm::FunctionType::get(IntTy, dtorStub->getType(), false);
 
   llvm::Constant *atexit =
-      CGM.CreateRuntimeFunction(atexitTy, "atexit", llvm::AttributeSet(),
+      CGM.CreateRuntimeFunction(atexitTy, "atexit", llvm::AttributeList(),
                                 /*Local=*/true);
   if (llvm::Function *atexitFn = dyn_cast<llvm::Function>(atexit))
     atexitFn->setDoesNotThrow();
@@ -257,6 +258,43 @@ void CodeGenFunction::EmitCXXGuardedInit(const VarDecl &D,
               "the kernel does not support");
 
   CGM.getCXXABI().EmitGuardedInit(*this, D, DeclPtr, PerformInit);
+}
+
+void CodeGenFunction::EmitCXXGuardedInitBranch(llvm::Value *NeedsInit,
+                                               llvm::BasicBlock *InitBlock,
+                                               llvm::BasicBlock *NoInitBlock,
+                                               GuardKind Kind,
+                                               const VarDecl *D) {
+  assert((Kind == GuardKind::TlsGuard || D) && "no guarded variable");
+
+  // A guess at how many times we will enter the initialization of a
+  // variable, depending on the kind of variable.
+  static const uint64_t InitsPerTLSVar = 1024;
+  static const uint64_t InitsPerLocalVar = 1024 * 1024;
+
+  llvm::MDNode *Weights;
+  if (Kind == GuardKind::VariableGuard && !D->isLocalVarDecl()) {
+    // For non-local variables, don't apply any weighting for now. Due to our
+    // use of COMDATs, we expect there to be at most one initialization of the
+    // variable per DSO, but we have no way to know how many DSOs will try to
+    // initialize the variable.
+    Weights = nullptr;
+  } else {
+    uint64_t NumInits;
+    // FIXME: For the TLS case, collect and use profiling information to
+    // determine a more accurate brach weight.
+    if (Kind == GuardKind::TlsGuard || D->getTLSKind())
+      NumInits = InitsPerTLSVar;
+    else
+      NumInits = InitsPerLocalVar;
+
+    // The probability of us entering the initializer is
+    //   1 / (total number of times we attempt to initialize the variable).
+    llvm::MDBuilder MDHelper(CGM.getLLVMContext());
+    Weights = MDHelper.createBranchWeights(1, NumInits - 1);
+  }
+
+  Builder.CreateCondBr(NeedsInit, InitBlock, NoInitBlock, Weights);
 }
 
 llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
@@ -353,9 +391,6 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
 
   if (D->getTLSKind()) {
     // FIXME: Should we support init_priority for thread_local?
-    // FIXME: Ideally, initialization of instantiated thread_local static data
-    // members of class templates should not trigger initialization of other
-    // entities in the TU.
     // FIXME: We only need to register one __cxa_thread_atexit function for the
     // entire TU.
     CXXThreadLocalInits.push_back(Fn);
@@ -542,7 +577,8 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
                                                  "guard.uninitialized");
       llvm::BasicBlock *InitBlock = createBasicBlock("init");
       ExitBlock = createBasicBlock("exit");
-      Builder.CreateCondBr(Uninit, InitBlock, ExitBlock);
+      EmitCXXGuardedInitBranch(Uninit, InitBlock, ExitBlock,
+                               GuardKind::TlsGuard, nullptr);
       EmitBlock(InitBlock);
       // Mark as initialized before initializing anything else. If the
       // initializers use previously-initialized thread_local vars, that's
@@ -574,9 +610,10 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
   FinishFunction();
 }
 
-void CodeGenFunction::GenerateCXXGlobalDtorsFunc(llvm::Function *Fn,
-                  const std::vector<std::pair<llvm::WeakVH, llvm::Constant*> >
-                                                &DtorsAndObjects) {
+void CodeGenFunction::GenerateCXXGlobalDtorsFunc(
+    llvm::Function *Fn,
+    const std::vector<std::pair<llvm::WeakTrackingVH, llvm::Constant *>>
+        &DtorsAndObjects) {
   {
     auto NL = ApplyDebugLocation::CreateEmpty(*this);
     StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
@@ -605,9 +642,9 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
     Address addr, QualType type, Destroyer *destroyer,
     bool useEHCleanupForArray, const VarDecl *VD) {
   FunctionArgList args;
-  ImplicitParamDecl dst(getContext(), nullptr, SourceLocation(), nullptr,
-                        getContext().VoidPtrTy);
-  args.push_back(&dst);
+  ImplicitParamDecl Dst(getContext(), getContext().VoidPtrTy,
+                        ImplicitParamDecl::Other);
+  args.push_back(&Dst);
 
   const CGFunctionInfo &FI =
     CGM.getTypes().arrangeBuiltinFunctionDeclaration(getContext().VoidTy, args);

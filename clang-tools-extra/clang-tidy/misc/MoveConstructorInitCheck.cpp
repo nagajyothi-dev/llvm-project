@@ -25,7 +25,7 @@ MoveConstructorInitCheck::MoveConstructorInitCheck(StringRef Name,
                                                    ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
       IncludeStyle(utils::IncludeSorter::parseIncludeStyle(
-          Options.get("IncludeStyle", "llvm"))) {}
+          Options.getLocalOrGlobal("IncludeStyle", "llvm"))) {}
 
 void MoveConstructorInitCheck::registerMatchers(MatchFinder *Finder) {
   // Only register the matchers for C++11; the functionality currently does not
@@ -55,6 +55,9 @@ void MoveConstructorInitCheck::check(const MatchFinder::MatchResult &Result) {
   // trivially-copyable type.
   QualType QT = Initializer->getInit()->getType();
   if (QT.isTriviallyCopyableType(*Result.Context))
+    return;
+
+  if (QT.isConstQualified())
     return;
 
   const auto *RD = QT->getAsCXXRecordDecl();

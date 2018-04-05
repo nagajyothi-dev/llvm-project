@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,deadcode.DeadStores,alpha.deadcode.UnreachableCode -verify -analyzer-opt-analyze-nested-blocks -Wno-unused-value %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,deadcode.DeadStores,alpha.deadcode.UnreachableCode -verify -analyzer-opt-analyze-nested-blocks -Wno-unused-value %s
 
 extern void foo(int a);
 
@@ -213,3 +213,13 @@ void macro(void) {
   RETURN(1); // no-warning
 }
 
+// Avoid FP when macro argument is known
+void writeSomething(int *x);
+#define MACRO(C)        \
+  if (!C) {             \
+    static int x;       \
+    writeSomething(&x); \
+  }
+void macro2(void) {
+  MACRO(1);
+}

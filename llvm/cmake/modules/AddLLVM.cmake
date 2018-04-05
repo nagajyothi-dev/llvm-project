@@ -81,8 +81,9 @@ function(add_llvm_symbol_exports target_name export_file)
     # Gold and BFD ld require a version script rather than a plain list.
     set(native_export_file "${target_name}.exports")
     # FIXME: Don't write the "local:" line on OpenBSD.
+    # in the export file, also add a linker script to version LLVM symbols (form: LLVM_N.M)
     add_custom_command(OUTPUT ${native_export_file}
-      COMMAND echo "{" > ${native_export_file}
+      COMMAND echo "LLVM_${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR} {" > ${native_export_file}
       COMMAND grep -q "[[:alnum:]]" ${export_file} && echo "  global:" >> ${native_export_file} || :
       COMMAND sed -e "s/$/;/" -e "s/^/    /" < ${export_file} >> ${native_export_file}
       COMMAND echo "  local: *;" >> ${native_export_file}
@@ -90,7 +91,7 @@ function(add_llvm_symbol_exports target_name export_file)
       DEPENDS ${export_file}
       VERBATIM
       COMMENT "Creating export file for ${target_name}")
-    if (${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
+    if (${LLVM_LINKER_IS_SOLARISLD})
       set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                    LINK_FLAGS "  -Wl,-M,${CMAKE_CURRENT_BINARY_DIR}/${native_export_file}")
     else()
@@ -147,13 +148,28 @@ function(add_llvm_symbol_exports target_name export_file)
 endfunction(add_llvm_symbol_exports)
 
 if(NOT WIN32 AND NOT APPLE)
+  # Detect what linker we have here
   execute_process(
     COMMAND ${CMAKE_C_COMPILER} -Wl,--version
     OUTPUT_VARIABLE stdout
-    ERROR_QUIET
+    ERROR_VARIABLE stderr
     )
+  set(LLVM_LINKER_DETECTED ON)
   if("${stdout}" MATCHES "GNU gold")
     set(LLVM_LINKER_IS_GOLD ON)
+    message(STATUS "Linker detection: GNU Gold")
+  elseif("${stdout}" MATCHES "^LLD")
+    set(LLVM_LINKER_IS_LLD ON)
+    message(STATUS "Linker detection: LLD")
+  elseif("${stdout}" MATCHES "GNU ld")
+    set(LLVM_LINKER_IS_GNULD ON)
+    message(STATUS "Linker detection: GNU ld")
+  elseif("${stderr}" MATCHES "Solaris Link Editors")
+    set(LLVM_LINKER_IS_SOLARISLD ON)
+    message(STATUS "Linker detection: Solaris ld")
+  else()
+    set(LLVM_LINKER_DETECTED OFF)
+    message(STATUS "Linker detection: unknown")
   endif()
 endif()
 
@@ -462,11 +478,9 @@ function(llvm_add_library name)
     if(UNIX AND NOT APPLE AND NOT ARG_SONAME)
       set_target_properties(${name}
         PROPERTIES
-		# Concatenate the version numbers since ldconfig expects exactly
-		# one component indicating the ABI version, while LLVM uses
-		# major+minor for that.
-        SOVERSION ${LLVM_VERSION_MAJOR}${LLVM_VERSION_MINOR}
-        VERSION ${LLVM_VERSION_MAJOR}${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}${LLVM_VERSION_SUFFIX})
+        # Since 4.0.0, the ABI version is indicated by the major version
+        SOVERSION ${LLVM_VERSION_MAJOR}
+        VERSION ${LLVM_VERSION_MAJOR}.${LLVM_VERSION_MINOR}.${LLVM_VERSION_PATCH}${LLVM_VERSION_SUFFIX})
     endif()
   endif()
 
@@ -720,11 +734,11 @@ macro(add_llvm_executable name)
   if(NOT ARG_IGNORE_EXTERNALIZE_DEBUGINFO)
     llvm_externalize_debuginfo(${name})
   endif()
-  if (PTHREAD_LIB)
+  if (LLVM_PTHREAD_LIB)
     # libpthreads overrides some standard library symbols, so main
     # executable must be linked with it in order to provide consistent
     # API for all shared libaries loaded by this executable.
-    target_link_libraries(${name} ${PTHREAD_LIB})
+    target_link_libraries(${name} ${LLVM_PTHREAD_LIB})
   endif()
 endmacro(add_llvm_executable name)
 
@@ -866,7 +880,7 @@ macro(add_llvm_utility name)
   set_target_properties(${name} PROPERTIES FOLDER "Utils")
   if( LLVM_INSTALL_UTILS AND LLVM_BUILD_UTILS )
     install (TARGETS ${name}
-      RUNTIME DESTINATION bin
+      RUNTIME DESTINATION ${LLVM_UTILS_INSTALL_DIR}
       COMPONENT ${name})
     if (NOT CMAKE_CONFIGURATION_TYPES)
       add_custom_target(install-${name}
@@ -1007,13 +1021,18 @@ function(add_unittest test_suite test_name)
   endif()
 
   include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googletest/include)
+  include_directories(${LLVM_MAIN_SRC_DIR}/utils/unittest/googlemock/include)
   if (NOT LLVM_ENABLE_THREADS)
     list(APPEND LLVM_COMPILE_DEFINITIONS GTEST_HAS_PTHREAD=0)
   endif ()
 
-  if (SUPPORTS_NO_VARIADIC_MACROS_FLAG)
+  if (SUPPORTS_VARIADIC_MACROS_FLAG)
     list(APPEND LLVM_COMPILE_FLAGS "-Wno-variadic-macros")
   endif ()
+  # Some parts of gtest rely on this GNU extension, don't warn on it.
+  if(SUPPORTS_GNU_ZERO_VARIADIC_MACRO_ARGUMENTS_FLAG)
+    list(APPEND LLVM_COMPILE_FLAGS "-Wno-gnu-zero-variadic-macro-arguments")
+  endif()
 
   set(LLVM_REQUIRES_RTTI OFF)
 
@@ -1024,7 +1043,7 @@ function(add_unittest test_suite test_name)
   # libpthreads overrides some standard library symbols, so main
   # executable must be linked with it in order to provide consistent
   # API for all shared libaries loaded by this executable.
-  target_link_libraries(${test_name} gtest_main gtest ${PTHREAD_LIB})
+  target_link_libraries(${test_name} gtest_main gtest ${LLVM_PTHREAD_LIB})
 
   add_dependencies(${test_suite} ${test_name})
   get_target_property(test_suite_folder ${test_suite} FOLDER)
@@ -1062,6 +1081,19 @@ function(llvm_add_go_executable binary pkgpath)
     endif()
   endif()
 endfunction()
+
+# This function canonicalize the CMake variables passed by names
+# from CMake boolean to 0/1 suitable for passing into Python or C++,
+# in place.
+function(llvm_canonicalize_cmake_booleans)
+  foreach(var ${ARGN})
+    if(${var})
+      set(${var} 1 PARENT_SCOPE)
+    else()
+      set(${var} 0 PARENT_SCOPE)
+    endif()
+  endforeach()
+endfunction(llvm_canonicalize_cmake_booleans)
 
 # This function provides an automatic way to 'configure'-like generate a file
 # based on a set of common and custom variables, specifically targeting the
@@ -1116,6 +1148,19 @@ function(configure_lit_site_cfg input output)
 
   set(LIT_SITE_CFG_IN_HEADER  "## Autogenerated from ${input}\n## Do not edit!")
 
+  # Override config_target_triple (and the env)
+  if(LLVM_TARGET_TRIPLE_ENV)
+    # This is expanded into the heading.
+    string(CONCAT LIT_SITE_CFG_IN_HEADER "${LIT_SITE_CFG_IN_HEADER}\n\n"
+      "import os\n"
+      "target_env = \"${LLVM_TARGET_TRIPLE_ENV}\"\n"
+      "config.target_triple = config.environment[target_env] = os.environ.get(target_env, \"${TARGET_TRIPLE}\")\n"
+      )
+
+    # This is expanded to; config.target_triple = ""+config.target_triple+""
+    set(TARGET_TRIPLE "\"+config.target_triple+\"")
+  endif()
+
   configure_file(${input} ${output} @ONLY)
 endfunction()
 
@@ -1129,11 +1174,6 @@ function(add_lit_target target comment)
     list(APPEND LIT_ARGS --param build_mode=${CMAKE_CFG_INTDIR})
   endif ()
   if (EXISTS ${LLVM_MAIN_SRC_DIR}/utils/lit/lit.py)
-    # reset cache after erraneous r283029
-    # TODO: remove this once all buildbots run
-    if (LIT_COMMAND STREQUAL "${PYTHON_EXECUTABLE} ${LLVM_MAIN_SRC_DIR}/utils/lit/lit.py")
-      unset(LIT_COMMAND CACHE)
-    endif()
     set (LIT_COMMAND "${PYTHON_EXECUTABLE};${LLVM_MAIN_SRC_DIR}/utils/lit/lit.py"
          CACHE STRING "Command used to spawn llvm-lit")
   else()
@@ -1371,7 +1411,11 @@ function(llvm_externalize_debuginfo name)
   endif()
 
   if(NOT LLVM_EXTERNALIZE_DEBUGINFO_SKIP_STRIP)
-    set(strip_command COMMAND xcrun strip -Sxl $<TARGET_FILE:${name}>)
+    if(APPLE)
+      set(strip_command COMMAND xcrun strip -Sxl $<TARGET_FILE:${name}>)
+    else()
+      set(strip_command COMMAND strip -gx $<TARGET_FILE:${name}>)
+    endif()
   endif()
 
   if(APPLE)
@@ -1387,7 +1431,11 @@ function(llvm_externalize_debuginfo name)
       ${strip_command}
       )
   else()
-    message(FATAL_ERROR "LLVM_EXTERNALIZE_DEBUGINFO isn't implemented for non-darwin platforms!")
+    add_custom_command(TARGET ${name} POST_BUILD
+      COMMAND objcopy --only-keep-debug $<TARGET_FILE:${name}> $<TARGET_FILE:${name}>.debug
+      ${strip_command} -R .gnu_debuglink
+      COMMAND objcopy --add-gnu-debuglink=$<TARGET_FILE:${name}>.debug $<TARGET_FILE:${name}>
+      )
   endif()
 endfunction()
 

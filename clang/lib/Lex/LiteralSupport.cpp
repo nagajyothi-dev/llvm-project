@@ -456,10 +456,17 @@ static void EncodeUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
   // Finally, we write the bytes into ResultBuf.
   ResultBuf += bytesToWrite;
   switch (bytesToWrite) { // note: everything falls through.
-  case 4: *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
-  case 3: *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
-  case 2: *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
-  case 1: *--ResultBuf = (UTF8) (UcnVal | firstByteMark[bytesToWrite]);
+  case 4:
+    *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
+    LLVM_FALLTHROUGH;
+  case 3:
+    *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
+    LLVM_FALLTHROUGH;
+  case 2:
+    *--ResultBuf = (UTF8)((UcnVal | byteMark) & byteMask); UcnVal >>= 6;
+    LLVM_FALLTHROUGH;
+  case 1:
+    *--ResultBuf = (UTF8) (UcnVal | firstByteMark[bytesToWrite]);
   }
   // Update the buffer.
   ResultBuf += bytesToWrite;
@@ -563,7 +570,6 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   // Parse the suffix.  At this point we can classify whether we have an FP or
   // integer constant.
   bool isFPConstant = isFloatingLiteral();
-  const char *ImaginarySuffixLoc = nullptr;
 
   // Loop over all of the characters of the suffix.  If we see something bad,
   // we break out of the loop.
@@ -652,51 +658,45 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
           break;
         }
       }
-      // "i", "if", and "il" are user-defined suffixes in C++1y.
-      if (*s == 'i' && PP.getLangOpts().CPlusPlus14)
-        break;
       // fall through.
     case 'j':
     case 'J':
       if (isImaginary) break;   // Cannot be repeated.
       isImaginary = true;
-      ImaginarySuffixLoc = s;
       continue;  // Success.
     }
     // If we reached here, there was an error or a ud-suffix.
     break;
   }
 
-  if (s != ThisTokEnd) {
+  // "i", "if", and "il" are user-defined suffixes in C++1y.
+  if (s != ThisTokEnd || isImaginary) {
     // FIXME: Don't bother expanding UCNs if !tok.hasUCN().
     expandUCNs(UDSuffixBuf, StringRef(SuffixBegin, ThisTokEnd - SuffixBegin));
     if (isValidUDSuffix(PP.getLangOpts(), UDSuffixBuf)) {
-      // Any suffix pieces we might have parsed are actually part of the
-      // ud-suffix.
-      isLong = false;
-      isUnsigned = false;
-      isLongLong = false;
-      isFloat = false;
-      isHalf = false;
-      isImaginary = false;
-      MicrosoftInteger = 0;
+      if (!isImaginary) {
+        // Any suffix pieces we might have parsed are actually part of the
+        // ud-suffix.
+        isLong = false;
+        isUnsigned = false;
+        isLongLong = false;
+        isFloat = false;
+        isHalf = false;
+        isImaginary = false;
+        MicrosoftInteger = 0;
+      }
 
       saw_ud_suffix = true;
       return;
     }
 
-    // Report an error if there are any.
-    PP.Diag(PP.AdvanceToTokenCharacter(TokLoc, SuffixBegin - ThisTokBegin),
-            diag::err_invalid_suffix_constant)
-      << StringRef(SuffixBegin, ThisTokEnd-SuffixBegin) << isFPConstant;
-    hadError = true;
-    return;
-  }
-
-  if (isImaginary) {
-    PP.Diag(PP.AdvanceToTokenCharacter(TokLoc,
-                                       ImaginarySuffixLoc - ThisTokBegin),
-            diag::ext_imaginary_constant);
+    if (s != ThisTokEnd) {
+      // Report an error if there are any.
+      PP.Diag(PP.AdvanceToTokenCharacter(TokLoc, SuffixBegin - ThisTokBegin),
+              diag::err_invalid_suffix_constant)
+          << StringRef(SuffixBegin, ThisTokEnd - SuffixBegin) << isFPConstant;
+      hadError = true;
+    }
   }
 }
 
@@ -847,7 +847,7 @@ void NumericLiteralParser::ParseNumberStartingWithZero(SourceLocation TokLoc) {
                             ? diag::ext_hex_literal_invalid
                             : diag::ext_hex_constant_invalid);
       else if (PP.getLangOpts().CPlusPlus1z)
-        PP.Diag(TokLoc, diag::warn_cxx1z_hex_literal);
+        PP.Diag(TokLoc, diag::warn_cxx17_hex_literal);
     } else if (saw_period) {
       PP.Diag(PP.AdvanceToTokenCharacter(TokLoc, s - ThisTokBegin),
               diag::err_hex_constant_requires)
@@ -1707,4 +1707,13 @@ unsigned StringLiteralParser::getOffsetOfStringByte(const Token &Tok,
   }
 
   return SpellingPtr-SpellingStart;
+}
+
+/// Determine whether a suffix is a valid ud-suffix. We avoid treating reserved
+/// suffixes as ud-suffixes, because the diagnostic experience is better if we
+/// treat it as an invalid suffix.
+bool StringLiteralParser::isValidUDSuffix(const LangOptions &LangOpts,
+                                          StringRef Suffix) {
+  return NumericLiteralParser::isValidUDSuffix(LangOpts, Suffix) ||
+         Suffix == "sv";
 }

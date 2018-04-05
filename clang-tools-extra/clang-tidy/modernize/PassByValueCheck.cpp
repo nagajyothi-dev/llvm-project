@@ -119,7 +119,7 @@ collectParamDecls(const CXXConstructorDecl *Ctor,
 PassByValueCheck::PassByValueCheck(StringRef Name, ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
       IncludeStyle(utils::IncludeSorter::parseIncludeStyle(
-          Options.get("IncludeStyle", "llvm"))),
+          Options.getLocalOrGlobal("IncludeStyle", "llvm"))),
       ValuesOnly(Options.get("ValuesOnly", 0) != 0) {}
 
 void PassByValueCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
@@ -188,7 +188,8 @@ void PassByValueCheck::check(const MatchFinder::MatchResult &Result) {
 
   // If the parameter is trivial to copy, don't move it. Moving a trivivally
   // copyable type will cause a problem with misc-move-const-arg
-  if (ParamDecl->getType().isTriviallyCopyableType(*Result.Context))
+  if (ParamDecl->getType().getNonReferenceType().isTriviallyCopyableType(
+          *Result.Context))
     return;
 
   auto Diag = diag(ParamDecl->getLocStart(), "pass by value and use std::move");

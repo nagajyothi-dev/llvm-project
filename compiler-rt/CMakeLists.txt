@@ -7,29 +7,25 @@
 # An important constraint of the build is that it only produces libraries
 # based on the ability of the host toolchain to target various platforms.
 
+cmake_minimum_required(VERSION 3.4.3)
+
 # Check if compiler-rt is built as a standalone project.
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR COMPILER_RT_STANDALONE_BUILD)
   project(CompilerRT C CXX ASM)
   set(COMPILER_RT_STANDALONE_BUILD TRUE)
 endif()
 
-cmake_minimum_required(VERSION 3.4.3)
-# FIXME:
-# The OLD behavior (pre 3.2) for this policy is to not set the value of the 
-# CMAKE_EXE_LINKER_FLAGS variable in the generated test project. The NEW behavior
-# for this policy is to set the value of the CMAKE_EXE_LINKER_FLAGS variable 
-# in the test project to the same as it is in the calling project. The new 
-# behavior cause the compiler_rt test to fail during try_compile: see
-# projects/compiler-rt/cmake/Modules/CompilerRTUtils.cmake:121 such that
-# CAN_TARGET_${arch} is not set properly. This results in COMPILER_RT_SUPPORTED_ARCH
-# not being updated properly leading to poblems.
-cmake_policy(SET CMP0056 OLD)
-
 # Add path for custom compiler-rt modules.
 list(INSERT CMAKE_MODULE_PATH 0
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules"
   )
+
+if(CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_CFG_RESOLVED_INTDIR "${CMAKE_CFG_INTDIR}/")
+else()
+  set(CMAKE_CFG_RESOLVED_INTDIR "")
+endif()
 
 include(base-config-ix)
 include(CompilerRTUtils)
@@ -40,6 +36,11 @@ option(COMPILER_RT_BUILD_SANITIZERS "Build sanitizers" ON)
 mark_as_advanced(COMPILER_RT_BUILD_SANITIZERS)
 option(COMPILER_RT_BUILD_XRAY "Build xray" ON)
 mark_as_advanced(COMPILER_RT_BUILD_XRAY)
+option(COMPILER_RT_BUILD_XRAY_NO_PREINIT "Build xray with no preinit patching" OFF)
+mark_as_advanced(COMPILER_RT_BUILD_XRAY_NO_PREINIT)
+
+set(COMPILER_RT_BAREMETAL_BUILD OFF CACHE BOOLEAN
+  "Build for a bare-metal target.")
 
 if (COMPILER_RT_STANDALONE_BUILD)
   load_llvm_config()
@@ -85,9 +86,10 @@ option(COMPILER_RT_EXTERNALIZE_DEBUGINFO
 # COMPILER_RT_DEBUG_PYBOOL is used by lit.common.configured.in.
 pythonize_bool(COMPILER_RT_DEBUG)
 
+include(HandleCompilerRT)
 include(config-ix)
 
-if(APPLE AND SANITIZER_MIN_OSX_VERSION VERSION_LESS "10.9")
+if(APPLE AND SANITIZER_MIN_OSX_VERSION AND SANITIZER_MIN_OSX_VERSION VERSION_LESS "10.9")
   # Mac OS X prior to 10.9 had problems with exporting symbols from
   # libc++/libc++abi.
   set(use_cxxabi_default OFF)
@@ -99,6 +101,44 @@ endif()
 
 option(SANITIZER_CAN_USE_CXXABI "Sanitizers can use cxxabi" ${use_cxxabi_default})
 pythonize_bool(SANITIZER_CAN_USE_CXXABI)
+
+set(SANITIZER_CXX_ABI "default" CACHE STRING
+    "Specify C++ ABI library to use.")
+set(CXXABIS none default libcxxabi libstdc++ libc++)
+set_property(CACHE SANITIZER_CXX_ABI PROPERTY STRINGS ;${CXXABIS})
+
+if (SANITIZER_CXX_ABI STREQUAL "default")
+  if (HAVE_LIBCXXABI AND COMPILER_RT_DEFAULT_TARGET_ONLY)
+    set(SANITIZER_CXX_ABI_LIBNAME "libcxxabi")
+    set(SANITIZER_CXX_ABI_INTREE 1)
+  elseif (APPLE)
+    set(SANITIZER_CXX_ABI_LIBNAME "libcxxabi")
+    set(SANITIZER_CXX_ABI_SYSTEM 1)
+  else()
+    set(SANITIZER_CXX_ABI_LIBNAME "libstdc++")
+  endif()
+else()
+  set(SANITIZER_CXX_ABI_LIBNAME "${SANITIZER_CXX_ABI}")
+endif()
+
+if (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libcxxabi")
+  if (SANITIZER_CXX_ABI_INTREE)
+    if (TARGET unwind_shared OR HAVE_LIBUNWIND)
+      list(APPEND SANITIZER_CXX_ABI_LIBRARY unwind_shared)
+    endif()
+    if (TARGET cxxabi_shared OR HAVE_LIBCXXABI)
+      list(APPEND SANITIZER_CXX_ABI_LIBRARY cxxabi_shared)
+    endif()
+  else()
+    list(APPEND SANITIZER_CXX_ABI_LIBRARY "c++abi")
+  endif()
+elseif (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libc++")
+  list(APPEND SANITIZER_CXX_ABI_LIBRARY "c++")
+elseif (SANITIZER_CXX_ABI_LIBNAME STREQUAL "libstdc++")
+  append_list_if(COMPILER_RT_HAS_LIBSTDCXX stdc++ SANITIZER_CXX_ABI_LIBRARY)
+endif()
+
+option(SANITIZER_USE_COMPILER_RT "Use compiler-rt builtins instead of libgcc" OFF)
 
 #================================
 # Setup Compiler Flags
@@ -134,7 +174,7 @@ if(NOT WIN32)
 endif()
 append_list_if(COMPILER_RT_HAS_FNO_BUILTIN_FLAG -fno-builtin SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_FNO_EXCEPTIONS_FLAG -fno-exceptions SANITIZER_COMMON_CFLAGS)
-if(NOT COMPILER_RT_DEBUG)
+if(NOT COMPILER_RT_DEBUG AND NOT APPLE)
   append_list_if(COMPILER_RT_HAS_FOMIT_FRAME_POINTER_FLAG -fomit-frame-pointer SANITIZER_COMMON_CFLAGS)
 endif()
 append_list_if(COMPILER_RT_HAS_FUNWIND_TABLES_FLAG -funwind-tables SANITIZER_COMMON_CFLAGS)
@@ -142,8 +182,15 @@ append_list_if(COMPILER_RT_HAS_FNO_STACK_PROTECTOR_FLAG -fno-stack-protector SAN
 append_list_if(COMPILER_RT_HAS_FNO_SANITIZE_SAFE_STACK_FLAG -fno-sanitize=safe-stack SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_FVISIBILITY_HIDDEN_FLAG -fvisibility=hidden SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_FVISIBILITY_INLINES_HIDDEN_FLAG -fvisibility-inlines-hidden SANITIZER_COMMON_CFLAGS)
-append_list_if(COMPILER_RT_HAS_FNO_FUNCTION_SECTIONS_FLAG -fno-function-sections SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_FNO_LTO_FLAG -fno-lto SANITIZER_COMMON_CFLAGS)
+
+# The following is a workaround for powerpc64le. This is the only architecture
+# that requires -fno-function-sections to work properly. If lacking, the ASan
+# Linux test function-sections-are-bad.cc fails with the following error:
+# 'undefined symbol: __sanitizer_unaligned_load32'.
+if(DEFINED TARGET_powerpc64le_CFLAGS)
+  append_list_if(COMPILER_RT_HAS_FNO_FUNCTION_SECTIONS_FLAG -fno-function-sections TARGET_powerpc64le_CFLAGS)
+endif()
 
 if(MSVC)
   # Replace the /M[DT][d] flags with /MT, and strip any definitions of _DEBUG,
@@ -172,10 +219,16 @@ endif()
 
 append_list_if(COMPILER_RT_DEBUG -DSANITIZER_DEBUG=1 SANITIZER_COMMON_CFLAGS)
 
-# Build with optimization, unless we're in debug mode. If we're using MSVC,
+# If we're using MSVC,
 # always respect the optimization flags set by CMAKE_BUILD_TYPE instead.
-if(NOT COMPILER_RT_DEBUG AND NOT MSVC)
-  list(APPEND SANITIZER_COMMON_CFLAGS -O3)
+if (NOT MSVC)
+
+  # Build with optimization, unless we're in debug mode. 
+  if(COMPILER_RT_DEBUG)
+    list(APPEND SANITIZER_COMMON_CFLAGS -O0)
+  else()
+    list(APPEND SANITIZER_COMMON_CFLAGS -O3)
+  endif()
 endif()
 
 # Determine if we should restrict stack frame sizes.
@@ -222,8 +275,41 @@ append_list_if(COMPILER_RT_HAS_WD4391_FLAG /wd4391 SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_WD4722_FLAG /wd4722 SANITIZER_COMMON_CFLAGS)
 append_list_if(COMPILER_RT_HAS_WD4800_FLAG /wd4800 SANITIZER_COMMON_CFLAGS)
 
+# Set common link flags.
+append_list_if(COMPILER_RT_HAS_NODEFAULTLIBS_FLAG -nodefaultlibs SANITIZER_COMMON_LINK_FLAGS)
+
+if (SANITIZER_USE_COMPILER_RT)
+  list(APPEND SANITIZER_COMMON_LINK_FLAGS -rtlib=compiler-rt)
+  find_compiler_rt_library(builtins COMPILER_RT_BUILTINS_LIBRARY)
+  list(APPEND SANITIZER_COMMON_LINK_LIBS ${COMPILER_RT_BUILTINS_LIBRARY})
+else()
+  if (ANDROID)
+    append_list_if(COMPILER_RT_HAS_GCC_LIB gcc SANITIZER_COMMON_LINK_LIBS)
+  else()
+    append_list_if(COMPILER_RT_HAS_GCC_S_LIB gcc_s SANITIZER_COMMON_LINK_LIBS)
+  endif()
+endif()
+
+append_list_if(COMPILER_RT_HAS_LIBC c SANITIZER_COMMON_LINK_LIBS)
+
+if("${CMAKE_SYSTEM_NAME}" STREQUAL "Fuchsia")
+  list(APPEND SANITIZER_COMMON_LINK_FLAGS -Wl,-z,defs,-z,now,-z,relro)
+  list(APPEND SANITIZER_COMMON_LINK_LIBS magenta)
+endif()
+
 # Warnings to turn off for all libraries, not just sanitizers.
 append_string_if(COMPILER_RT_HAS_WUNUSED_PARAMETER_FLAG -Wno-unused-parameter CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+
+if (CMAKE_LINKER MATCHES "link.exe$")
+  # Silence MSVC linker warnings caused by empty object files. The
+  # sanitizer libraries intentionally use ifdefs that result in empty
+  # files, rather than skipping these files in the build system.
+  # Ideally, we would pass this flag only for the libraries that need
+  # it, but CMake doesn't seem to have a way to set linker flags for
+  # individual static libraries, so we enable the suppression flag for
+  # the whole compiler-rt project.
+  append("/IGNORE:4221" CMAKE_STATIC_LINKER_FLAGS)
+endif()
 
 add_subdirectory(include)
 
@@ -231,16 +317,26 @@ set(COMPILER_RT_LIBCXX_PATH ${LLVM_MAIN_SRC_DIR}/projects/libcxx)
 if(EXISTS ${COMPILER_RT_LIBCXX_PATH}/)
   set(COMPILER_RT_HAS_LIBCXX_SOURCES TRUE)
 else()
-  set(COMPILER_RT_HAS_LIBCXX_SOURCES FALSE)
+  set(COMPILER_RT_LIBCXX_PATH ${LLVM_MAIN_SRC_DIR}/../libcxx)
+  if(EXISTS ${COMPILER_RT_LIBCXX_PATH}/)
+    set(COMPILER_RT_HAS_LIBCXX_SOURCES TRUE)
+  else()
+    set(COMPILER_RT_HAS_LIBCXX_SOURCES FALSE)
+  endif()
 endif()
 
 set(COMPILER_RT_LLD_PATH ${LLVM_MAIN_SRC_DIR}/tools/lld)
-if(EXISTS ${COMPILER_RT_LLD_PATH}/)
-  set(COMPILER_RT_HAS_LLD_SOURCES TRUE)
+if(EXISTS ${COMPILER_RT_LLD_PATH}/ AND LLVM_TOOL_LLD_BUILD)
+  set(COMPILER_RT_HAS_LLD TRUE)
 else()
-  set(COMPILER_RT_HAS_LLD_SOURCES FALSE)
+  set(COMPILER_RT_LLD_PATH ${LLVM_MAIN_SRC_DIR}/../lld)
+  if(EXISTS ${COMPILER_RT_LLD_PATH}/ AND LLVM_TOOL_LLD_BUILD)
+    set(COMPILER_RT_HAS_LLD TRUE)
+  else()
+    set(COMPILER_RT_HAS_LLD FALSE)
+  endif()
 endif()
-pythonize_bool(COMPILER_RT_HAS_LLD_SOURCES)
+pythonize_bool(COMPILER_RT_HAS_LLD)
 
 add_subdirectory(lib)
 

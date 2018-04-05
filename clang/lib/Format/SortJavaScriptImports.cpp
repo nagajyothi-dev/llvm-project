@@ -197,9 +197,10 @@ public:
         ReferencesText));
     // FIXME: better error handling. For now, just print error message and skip
     // the replacement for the release version.
-    if (Err)
+    if (Err) {
       llvm::errs() << llvm::toString(std::move(Err)) << "\n";
-    assert(!Err);
+      assert(false);
+    }
 
     return Result;
   }
@@ -412,7 +413,7 @@ private:
       nextToken();
       if (Current->is(tok::r_brace))
         break;
-      if (Current->isNot(tok::identifier))
+      if (!Current->isOneOf(tok::identifier, tok::kw_default))
         return false;
 
       JsImportedSymbol Symbol;
@@ -424,7 +425,7 @@ private:
 
       if (Current->is(Keywords.kw_as)) {
         nextToken();
-        if (Current->isNot(tok::identifier))
+        if (!Current->isOneOf(tok::identifier, tok::kw_default))
           return false;
         Symbol.Alias = Current->TokenText;
         nextToken();

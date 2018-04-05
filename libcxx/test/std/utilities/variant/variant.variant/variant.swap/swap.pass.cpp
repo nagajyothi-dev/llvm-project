@@ -10,6 +10,13 @@
 
 // UNSUPPORTED: c++98, c++03, c++11, c++14
 
+// XFAIL: with_system_cxx_lib=macosx10.12
+// XFAIL: with_system_cxx_lib=macosx10.11
+// XFAIL: with_system_cxx_lib=macosx10.10
+// XFAIL: with_system_cxx_lib=macosx10.9
+// XFAIL: with_system_cxx_lib=macosx10.7
+// XFAIL: with_system_cxx_lib=macosx10.8
+
 // <variant>
 
 // template <class ...Types> class variant;
@@ -489,7 +496,7 @@ void test_swap_sfinae() {
     // but is still swappable via the generic swap algorithm, since the
     // variant is move constructible and move assignable.
     using V = std::variant<int, NotSwappable>;
-    LIBCPP_STATIC_ASSERT(!has_swap_member<V>());
+    LIBCPP_STATIC_ASSERT(!has_swap_member<V>(), "");
     static_assert(std::is_swappable_v<V>, "");
   }
   {
@@ -569,7 +576,7 @@ void test_swap_noexcept() {
     // but is still swappable via the generic swap algorithm, since the
     // variant is move constructible and move assignable.
     using V = std::variant<int, NotSwappable>;
-    LIBCPP_STATIC_ASSERT(!has_swap_member<V>());
+    LIBCPP_STATIC_ASSERT(!has_swap_member<V>(), "");
     static_assert(std::is_swappable_v<V>, "");
     static_assert(std::is_nothrow_swappable_v<V>, "");
     V v1, v2;

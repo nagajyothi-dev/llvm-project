@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/Type.h"
+#include "Linkage.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/CharUnits.h"
@@ -1344,7 +1345,7 @@ Optional<ArrayRef<QualType>> Type::getObjCSubstitutions(
   } else if (getAs<BlockPointerType>()) {
     ASTContext &ctx = dc->getParentASTContext();
     objectType = ctx.getObjCObjectType(ctx.ObjCBuiltinIdTy, { }, { })
-                   ->castAs<ObjCObjectType>();;
+                   ->castAs<ObjCObjectType>();
   } else {
     objectType = getAs<ObjCObjectType>();
   }
@@ -1559,61 +1560,79 @@ TagDecl *Type::getAsTagDecl() const {
 }
 
 namespace {
-  class GetContainedAutoVisitor :
-    public TypeVisitor<GetContainedAutoVisitor, AutoType*> {
+  class GetContainedDeducedTypeVisitor :
+    public TypeVisitor<GetContainedDeducedTypeVisitor, Type*> {
+    bool Syntactic;
   public:
-    using TypeVisitor<GetContainedAutoVisitor, AutoType*>::Visit;
-    AutoType *Visit(QualType T) {
+    GetContainedDeducedTypeVisitor(bool Syntactic = false)
+        : Syntactic(Syntactic) {}
+
+    using TypeVisitor<GetContainedDeducedTypeVisitor, Type*>::Visit;
+    Type *Visit(QualType T) {
       if (T.isNull())
         return nullptr;
       return Visit(T.getTypePtr());
     }
 
-    // The 'auto' type itself.
-    AutoType *VisitAutoType(const AutoType *AT) {
-      return const_cast<AutoType*>(AT);
+    // The deduced type itself.
+    Type *VisitDeducedType(const DeducedType *AT) {
+      return const_cast<DeducedType*>(AT);
     }
 
     // Only these types can contain the desired 'auto' type.
-    AutoType *VisitPointerType(const PointerType *T) {
+    Type *VisitElaboratedType(const ElaboratedType *T) {
+      return Visit(T->getNamedType());
+    }
+    Type *VisitPointerType(const PointerType *T) {
       return Visit(T->getPointeeType());
     }
-    AutoType *VisitBlockPointerType(const BlockPointerType *T) {
+    Type *VisitBlockPointerType(const BlockPointerType *T) {
       return Visit(T->getPointeeType());
     }
-    AutoType *VisitReferenceType(const ReferenceType *T) {
+    Type *VisitReferenceType(const ReferenceType *T) {
       return Visit(T->getPointeeTypeAsWritten());
     }
-    AutoType *VisitMemberPointerType(const MemberPointerType *T) {
+    Type *VisitMemberPointerType(const MemberPointerType *T) {
       return Visit(T->getPointeeType());
     }
-    AutoType *VisitArrayType(const ArrayType *T) {
+    Type *VisitArrayType(const ArrayType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitDependentSizedExtVectorType(
+    Type *VisitDependentSizedExtVectorType(
       const DependentSizedExtVectorType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitVectorType(const VectorType *T) {
+    Type *VisitVectorType(const VectorType *T) {
       return Visit(T->getElementType());
     }
-    AutoType *VisitFunctionType(const FunctionType *T) {
+    Type *VisitFunctionProtoType(const FunctionProtoType *T) {
+      if (Syntactic && T->hasTrailingReturn())
+        return const_cast<FunctionProtoType*>(T);
+      return VisitFunctionType(T);
+    }
+    Type *VisitFunctionType(const FunctionType *T) {
       return Visit(T->getReturnType());
     }
-    AutoType *VisitParenType(const ParenType *T) {
+    Type *VisitParenType(const ParenType *T) {
       return Visit(T->getInnerType());
     }
-    AutoType *VisitAttributedType(const AttributedType *T) {
+    Type *VisitAttributedType(const AttributedType *T) {
       return Visit(T->getModifiedType());
     }
-    AutoType *VisitAdjustedType(const AdjustedType *T) {
+    Type *VisitAdjustedType(const AdjustedType *T) {
       return Visit(T->getOriginalType());
     }
   };
 }
 
-AutoType *Type::getContainedAutoType() const {
-  return GetContainedAutoVisitor().Visit(this);
+DeducedType *Type::getContainedDeducedType() const {
+  return cast_or_null<DeducedType>(
+      GetContainedDeducedTypeVisitor().Visit(this));
+}
+
+bool Type::hasAutoForTrailingReturnType() const {
+  return dyn_cast_or_null<FunctionType>(
+      GetContainedDeducedTypeVisitor(true).Visit(this));
 }
 
 bool Type::hasIntegerRepresentation() const {
@@ -2005,20 +2024,8 @@ bool QualType::isCXX98PODType(const ASTContext &Context) const {
   if ((*this)->isIncompleteType())
     return false;
 
-  if (Context.getLangOpts().ObjCAutoRefCount) {
-    switch (getObjCLifetime()) {
-    case Qualifiers::OCL_ExplicitNone:
-      return true;
-      
-    case Qualifiers::OCL_Strong:
-    case Qualifiers::OCL_Weak:
-    case Qualifiers::OCL_Autoreleasing:
-      return false;
-
-    case Qualifiers::OCL_None:
-      break;
-    }        
-  }
+  if (hasNonTrivialObjCLifetime())
+    return false;
   
   QualType CanonicalType = getTypePtr()->CanonicalType;
   switch (CanonicalType->getTypeClass()) {
@@ -2067,22 +2074,8 @@ bool QualType::isTrivialType(const ASTContext &Context) const {
   if ((*this)->isIncompleteType())
     return false;
   
-  if (Context.getLangOpts().ObjCAutoRefCount) {
-    switch (getObjCLifetime()) {
-    case Qualifiers::OCL_ExplicitNone:
-      return true;
-      
-    case Qualifiers::OCL_Strong:
-    case Qualifiers::OCL_Weak:
-    case Qualifiers::OCL_Autoreleasing:
-      return false;
-      
-    case Qualifiers::OCL_None:
-      if ((*this)->isObjCLifetimeType())
-        return false;
-      break;
-    }        
-  }
+  if (hasNonTrivialObjCLifetime())
+    return false;
   
   QualType CanonicalType = getTypePtr()->CanonicalType;
   if (CanonicalType->isDependentType())
@@ -2119,33 +2112,16 @@ bool QualType::isTriviallyCopyableType(const ASTContext &Context) const {
   if ((*this)->isArrayType())
     return Context.getBaseElementType(*this).isTriviallyCopyableType(Context);
 
-  if (Context.getLangOpts().ObjCAutoRefCount) {
-    switch (getObjCLifetime()) {
-    case Qualifiers::OCL_ExplicitNone:
-      return true;
-      
-    case Qualifiers::OCL_Strong:
-    case Qualifiers::OCL_Weak:
-    case Qualifiers::OCL_Autoreleasing:
-      return false;
-      
-    case Qualifiers::OCL_None:
-      if ((*this)->isObjCLifetimeType())
-        return false;
-      break;
-    }        
-  }
+  if (hasNonTrivialObjCLifetime())
+    return false;
 
-  // C++11 [basic.types]p9
+  // C++11 [basic.types]p9 - See Core 2094
   //   Scalar types, trivially copyable class types, arrays of such types, and
-  //   non-volatile const-qualified versions of these types are collectively
+  //   cv-qualified versions of these types are collectively
   //   called trivially copyable types.
 
   QualType CanonicalType = getCanonicalType();
   if (CanonicalType->isDependentType())
-    return false;
-
-  if (CanonicalType.isVolatileQualified())
     return false;
 
   // Return false for incomplete types after skipping any incomplete array types
@@ -2170,7 +2146,11 @@ bool QualType::isTriviallyCopyableType(const ASTContext &Context) const {
   return false;
 }
 
-
+bool QualType::isNonWeakInMRRWithObjCWeak(const ASTContext &Context) const {
+  return !Context.getLangOpts().ObjCAutoRefCount &&
+         Context.getLangOpts().ObjCWeak &&
+         getObjCLifetime() != Qualifiers::OCL_Weak;
+}
 
 bool Type::isLiteralType(const ASTContext &Ctx) const {
   if (isDependentType())
@@ -2280,20 +2260,8 @@ bool QualType::isCXX11PODType(const ASTContext &Context) const {
   if (ty->isDependentType())
     return false;
 
-  if (Context.getLangOpts().ObjCAutoRefCount) {
-    switch (getObjCLifetime()) {
-    case Qualifiers::OCL_ExplicitNone:
-      return true;
-      
-    case Qualifiers::OCL_Strong:
-    case Qualifiers::OCL_Weak:
-    case Qualifiers::OCL_Autoreleasing:
-      return false;
-
-    case Qualifiers::OCL_None:
-      break;
-    }        
-  }
+  if (hasNonTrivialObjCLifetime())
+    return false;
 
   // C++11 [basic.types]p9:
   //   Scalar types, POD classes, arrays of such types, and cv-qualified
@@ -2341,6 +2309,15 @@ bool Type::isAlignValT() const {
   if (auto *ET = getAs<EnumType>()) {
     auto *II = ET->getDecl()->getIdentifier();
     if (II && II->isStr("align_val_t") && ET->getDecl()->isInStdNamespace())
+      return true;
+  }
+  return false;
+}
+
+bool Type::isStdByteType() const {
+  if (auto *ET = getAs<EnumType>()) {
+    auto *II = ET->getDecl()->getIdentifier();
+    if (II && II->isStr("byte") && ET->getDecl()->isInStdNamespace())
       return true;
   }
   return false;
@@ -2630,8 +2607,6 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "clk_event_t";
   case OCLQueue:
     return "queue_t";
-  case OCLNDRange:
-    return "ndrange_t";
   case OCLReserveID:
     return "reserve_id_t";
   case OMPArraySection:
@@ -2665,7 +2640,7 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
   case CC_X86ThisCall: return "thiscall";
   case CC_X86Pascal: return "pascal";
   case CC_X86VectorCall: return "vectorcall";
-  case CC_X86_64Win64: return "ms_abi";
+  case CC_Win64: return "ms_abi";
   case CC_X86_64SysV: return "sysv_abi";
   case CC_X86RegCall : return "regcall";
   case CC_AAPCS: return "aapcs";
@@ -3058,6 +3033,7 @@ bool AttributedType::isQualifier() const {
   case AttributedType::attr_sptr:
   case AttributedType::attr_uptr:
   case AttributedType::attr_objc_kindof:
+  case AttributedType::attr_ns_returns_retained:
     return false;
   }
   llvm_unreachable("bad attributed type kind");
@@ -3091,6 +3067,7 @@ bool AttributedType::isCallingConv() const {
   case attr_objc_inert_unsafe_unretained:
   case attr_noreturn:
   case attr_nonnull:
+  case attr_ns_returns_retained:
   case attr_nullable:
   case attr_null_unspecified:
   case attr_objc_kindof:
@@ -3365,6 +3342,7 @@ static CachedProperties computeCachedProperties(const Type *T) {
     return CachedProperties(ExternalLinkage, false);
 
   case Type::Auto:
+  case Type::DeducedTemplateSpecialization:
     // Give non-deduced 'auto' types external linkage. We should only see them
     // here in error recovery.
     return CachedProperties(ExternalLinkage, false);
@@ -3451,9 +3429,7 @@ bool Type::hasUnnamedOrLocalType() const {
   return TypeBits.hasLocalOrUnnamedType();
 }
 
-static LinkageInfo computeLinkageInfo(QualType T);
-
-static LinkageInfo computeLinkageInfo(const Type *T) {
+LinkageInfo LinkageComputer::computeTypeLinkageInfo(const Type *T) {
   switch (T->getTypeClass()) {
 #define TYPE(Class,Base)
 #define NON_CANONICAL_TYPE(Class,Base) case Type::Class:
@@ -3472,77 +3448,81 @@ static LinkageInfo computeLinkageInfo(const Type *T) {
     return LinkageInfo::external();
 
   case Type::Auto:
+  case Type::DeducedTemplateSpecialization:
     return LinkageInfo::external();
 
   case Type::Record:
   case Type::Enum:
-    return cast<TagType>(T)->getDecl()->getLinkageAndVisibility();
+    return getDeclLinkageAndVisibility(cast<TagType>(T)->getDecl());
 
   case Type::Complex:
-    return computeLinkageInfo(cast<ComplexType>(T)->getElementType());
+    return computeTypeLinkageInfo(cast<ComplexType>(T)->getElementType());
   case Type::Pointer:
-    return computeLinkageInfo(cast<PointerType>(T)->getPointeeType());
+    return computeTypeLinkageInfo(cast<PointerType>(T)->getPointeeType());
   case Type::BlockPointer:
-    return computeLinkageInfo(cast<BlockPointerType>(T)->getPointeeType());
+    return computeTypeLinkageInfo(cast<BlockPointerType>(T)->getPointeeType());
   case Type::LValueReference:
   case Type::RValueReference:
-    return computeLinkageInfo(cast<ReferenceType>(T)->getPointeeType());
+    return computeTypeLinkageInfo(cast<ReferenceType>(T)->getPointeeType());
   case Type::MemberPointer: {
     const MemberPointerType *MPT = cast<MemberPointerType>(T);
-    LinkageInfo LV = computeLinkageInfo(MPT->getClass());
-    LV.merge(computeLinkageInfo(MPT->getPointeeType()));
+    LinkageInfo LV = computeTypeLinkageInfo(MPT->getClass());
+    LV.merge(computeTypeLinkageInfo(MPT->getPointeeType()));
     return LV;
   }
   case Type::ConstantArray:
   case Type::IncompleteArray:
   case Type::VariableArray:
-    return computeLinkageInfo(cast<ArrayType>(T)->getElementType());
+    return computeTypeLinkageInfo(cast<ArrayType>(T)->getElementType());
   case Type::Vector:
   case Type::ExtVector:
-    return computeLinkageInfo(cast<VectorType>(T)->getElementType());
+    return computeTypeLinkageInfo(cast<VectorType>(T)->getElementType());
   case Type::FunctionNoProto:
-    return computeLinkageInfo(cast<FunctionType>(T)->getReturnType());
+    return computeTypeLinkageInfo(cast<FunctionType>(T)->getReturnType());
   case Type::FunctionProto: {
     const FunctionProtoType *FPT = cast<FunctionProtoType>(T);
-    LinkageInfo LV = computeLinkageInfo(FPT->getReturnType());
+    LinkageInfo LV = computeTypeLinkageInfo(FPT->getReturnType());
     for (const auto &ai : FPT->param_types())
-      LV.merge(computeLinkageInfo(ai));
+      LV.merge(computeTypeLinkageInfo(ai));
     return LV;
   }
   case Type::ObjCInterface:
-    return cast<ObjCInterfaceType>(T)->getDecl()->getLinkageAndVisibility();
+    return getDeclLinkageAndVisibility(cast<ObjCInterfaceType>(T)->getDecl());
   case Type::ObjCObject:
-    return computeLinkageInfo(cast<ObjCObjectType>(T)->getBaseType());
+    return computeTypeLinkageInfo(cast<ObjCObjectType>(T)->getBaseType());
   case Type::ObjCObjectPointer:
-    return computeLinkageInfo(cast<ObjCObjectPointerType>(T)->getPointeeType());
+    return computeTypeLinkageInfo(
+        cast<ObjCObjectPointerType>(T)->getPointeeType());
   case Type::Atomic:
-    return computeLinkageInfo(cast<AtomicType>(T)->getValueType());
+    return computeTypeLinkageInfo(cast<AtomicType>(T)->getValueType());
   case Type::Pipe:
-    return computeLinkageInfo(cast<PipeType>(T)->getElementType());
+    return computeTypeLinkageInfo(cast<PipeType>(T)->getElementType());
   }
 
   llvm_unreachable("unhandled type class");
-}
-
-static LinkageInfo computeLinkageInfo(QualType T) {
-  return computeLinkageInfo(T.getTypePtr());
 }
 
 bool Type::isLinkageValid() const {
   if (!TypeBits.isCacheValid())
     return true;
 
-  return computeLinkageInfo(getCanonicalTypeInternal()).getLinkage() ==
-    TypeBits.getLinkage();
+  Linkage L = LinkageComputer{}
+                  .computeTypeLinkageInfo(getCanonicalTypeInternal())
+                  .getLinkage();
+  return L == TypeBits.getLinkage();
+}
+
+LinkageInfo LinkageComputer::getTypeLinkageAndVisibility(const Type *T) {
+  if (!T->isCanonicalUnqualified())
+    return computeTypeLinkageInfo(T->getCanonicalTypeInternal());
+
+  LinkageInfo LV = computeTypeLinkageInfo(T);
+  assert(LV.getLinkage() == T->getLinkage());
+  return LV;
 }
 
 LinkageInfo Type::getLinkageAndVisibility() const {
-  if (!isCanonicalUnqualified())
-    return computeLinkageInfo(getCanonicalTypeInternal());
-
-  LinkageInfo LV = computeLinkageInfo(this);
-  assert(LV.getLinkage() == getLinkage());
-  return LV;
+  return LinkageComputer{}.getTypeLinkageAndVisibility(this);
 }
 
 Optional<NullabilityKind> Type::getNullability(const ASTContext &context) const {
@@ -3564,7 +3544,7 @@ Optional<NullabilityKind> Type::getNullability(const ASTContext &context) const 
   } while (true);
 }
 
-bool Type::canHaveNullability() const {
+bool Type::canHaveNullability(bool ResultIfUnknown) const {
   QualType type = getCanonicalTypeInternal();
   
   switch (type->getTypeClass()) {
@@ -3592,7 +3572,8 @@ bool Type::canHaveNullability() const {
   case Type::SubstTemplateTypeParmPack:
   case Type::DependentName:
   case Type::DependentTemplateSpecialization:
-    return true;
+  case Type::Auto:
+    return ResultIfUnknown;
 
   // Dependent template specializations can instantiate to pointer
   // types unless they're known to be specializations of a class
@@ -3604,11 +3585,7 @@ bool Type::canHaveNullability() const {
       if (isa<ClassTemplateDecl>(templateDecl))
         return false;
     }
-    return true;
-
-  // auto is considered dependent when it isn't deduced.
-  case Type::Auto:
-    return !cast<AutoType>(type.getTypePtr())->isDeduced();
+    return ResultIfUnknown;
 
   case Type::Builtin:
     switch (cast<BuiltinType>(type.getTypePtr())->getKind()) {
@@ -3627,7 +3604,7 @@ bool Type::canHaveNullability() const {
     case BuiltinType::PseudoObject:
     case BuiltinType::UnknownAny:
     case BuiltinType::ARCUnbridgedCast:
-      return true;
+      return ResultIfUnknown;
 
     case BuiltinType::Void:
     case BuiltinType::ObjCId:
@@ -3640,13 +3617,13 @@ bool Type::canHaveNullability() const {
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:
     case BuiltinType::OCLQueue:
-    case BuiltinType::OCLNDRange:
     case BuiltinType::OCLReserveID:
     case BuiltinType::BuiltinFn:
     case BuiltinType::NullPtr:
     case BuiltinType::OMPArraySection:
       return false;
     }
+    llvm_unreachable("unknown builtin type");
 
   // Non-pointer types.
   case Type::Complex:
@@ -3662,6 +3639,7 @@ bool Type::canHaveNullability() const {
   case Type::FunctionProto:
   case Type::FunctionNoProto:
   case Type::Record:
+  case Type::DeducedTemplateSpecialization:
   case Type::Enum:
   case Type::InjectedClassName:
   case Type::PackExpansion:

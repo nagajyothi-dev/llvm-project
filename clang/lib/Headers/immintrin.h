@@ -84,11 +84,11 @@
 ///    A 256-bit vector containing 32-bit single-precision float values to be
 ///    converted to 16-bit half-precision float values.
 /// \param imm
-///    An immediate value controlling rounding using bits [2:0]:
-///    000: Nearest
-///    001: Down
-///    010: Up
-///    011: Truncate
+///    An immediate value controlling rounding using bits [2:0]: \n
+///    000: Nearest \n
+///    001: Down \n
+///    010: Up \n
+///    011: Truncate \n
 ///    1XX: Use MXCSR.RC for rounding
 /// \returns A 128-bit vector containing the converted 16-bit half-precision
 ///    float values.
@@ -144,6 +144,10 @@ _mm256_cvtph_ps(__m128i __a)
 
 #if !defined(_MSC_VER) || __has_feature(modules) || defined(__AVX512CD__)
 #include <avx512cdintrin.h>
+#endif
+
+#if !defined(_MSC_VER) || __has_feature(modules) || defined(__AVX512VPOPCNTDQ__)
+#include <avx512vpopcntdqintrin.h>
 #endif
 
 #if !defined(_MSC_VER) || __has_feature(modules) || defined(__AVX512DQ__)
@@ -208,6 +212,15 @@ _rdrand32_step(unsigned int *__p)
   return __builtin_ia32_rdrand32_step(__p);
 }
 
+#ifdef __x86_64__
+static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
+_rdrand64_step(unsigned long long *__p)
+{
+  return __builtin_ia32_rdrand64_step(__p);
+}
+#endif
+#endif /* __RDRND__ */
+
 /* __bit_scan_forward */
 static __inline__ int __attribute__((__always_inline__, __nodebug__))
 _bit_scan_forward(int __A) {
@@ -219,15 +232,6 @@ static __inline__ int __attribute__((__always_inline__, __nodebug__))
 _bit_scan_reverse(int __A) {
   return 31 - __builtin_clz(__A);
 }
-
-#ifdef __x86_64__
-static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
-_rdrand64_step(unsigned long long *__p)
-{
-  return __builtin_ia32_rdrand64_step(__p);
-}
-#endif
-#endif /* __RDRND__ */
 
 #if !defined(_MSC_VER) || __has_feature(modules) || defined(__FSGSBASE__)
 #ifdef __x86_64__

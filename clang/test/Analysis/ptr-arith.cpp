@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -Wno-unused-value -std=c++14 -analyze -analyzer-checker=core,debug.ExprInspection,alpha.core.PointerArithm -verify %s
+// RUN: %clang_analyze_cc1 -Wno-unused-value -std=c++14 -analyzer-checker=core,debug.ExprInspection,alpha.core.PointerArithm -verify %s
 struct X {
   int *p;
   int zero;
@@ -97,4 +97,11 @@ void checkConditionalArray() {
 void checkMultiDimansionalArray() {
   int a[5][5];
    *(*(a+1)+2) = 2;
+}
+
+unsigned ptrSubtractionNoCrash(char *Begin, char *End) {
+  auto N = End - Begin;
+  if (Begin)
+    return 0;
+  return N;
 }

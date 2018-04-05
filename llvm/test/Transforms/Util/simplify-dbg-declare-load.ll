@@ -6,7 +6,7 @@ target triple = "x86_64-pc-linux-gnu"
 
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.declare(metadata, metadata, metadata) #0
-declare void @llvm.dbg.value(metadata, i64, metadata, metadata) #0
+declare void @llvm.dbg.value(metadata, metadata, metadata) #0
 
 ; Function Attrs: sspreq
 define void @julia_fastshortest_6256() #1 {
@@ -19,7 +19,7 @@ fail:                                             ; preds = %top
   unreachable
 
 idxend:                                           ; preds = %top
-; CHECK-NOT call void @llvm.dbg.value(metadata %foo* %cp,
+; CHECK-NOT: call void @llvm.dbg.value(metadata %foo* %cp,
   %0 = load volatile %foo, %foo* %cp, align 8
 ; CHECK: call void @llvm.dbg.value(metadata %foo %0,
   store volatile %foo %0, %foo* undef, align 8

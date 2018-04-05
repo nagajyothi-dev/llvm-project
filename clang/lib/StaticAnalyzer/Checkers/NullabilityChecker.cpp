@@ -49,7 +49,7 @@ namespace {
 enum class Nullability : char {
   Contradicted, // Tracked nullability is contradicted by an explicit cast. Do
                 // not report any nullability related issue for this symbol.
-                // This nullability is propagated agressively to avoid false
+                // This nullability is propagated aggressively to avoid false
                 // positive results. See the comment on getMostNullable method.
   Nullable,
   Unspecified,
@@ -57,7 +57,7 @@ enum class Nullability : char {
 };
 
 /// Returns the most nullable nullability. This is used for message expressions
-/// like [reciever method], where the nullability of this expression is either
+/// like [receiver method], where the nullability of this expression is either
 /// the nullability of the receiver or the nullability of the return type of the
 /// method, depending on which is more nullable. Contradicted is considered to
 /// be the most nullable, to avoid false positive results.
@@ -153,10 +153,10 @@ private:
       ID.AddPointer(Region);
     }
 
-    PathDiagnosticPiece *VisitNode(const ExplodedNode *N,
-                                   const ExplodedNode *PrevN,
-                                   BugReporterContext &BRC,
-                                   BugReport &BR) override;
+    std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
+                                                   const ExplodedNode *PrevN,
+                                                   BugReporterContext &BRC,
+                                                   BugReport &BR) override;
 
   private:
     // The tracked region.
@@ -178,7 +178,7 @@ private:
                  const MemRegion *Region, BugReporter &BR,
                  const Stmt *ValueExpr = nullptr) const {
     if (!BT)
-      BT.reset(new BugType(this, "Nullability", "Memory error"));
+      BT.reset(new BugType(this, "Nullability", categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(*BT, Msg, N);
     if (Region) {
@@ -306,9 +306,11 @@ NullabilityChecker::getTrackRegion(SVal Val, bool CheckSuperRegion) const {
   return dyn_cast<SymbolicRegion>(Region);
 }
 
-PathDiagnosticPiece *NullabilityChecker::NullabilityBugVisitor::VisitNode(
-    const ExplodedNode *N, const ExplodedNode *PrevN, BugReporterContext &BRC,
-    BugReport &BR) {
+std::shared_ptr<PathDiagnosticPiece>
+NullabilityChecker::NullabilityBugVisitor::VisitNode(const ExplodedNode *N,
+                                                     const ExplodedNode *PrevN,
+                                                     BugReporterContext &BRC,
+                                                     BugReport &BR) {
   ProgramStateRef State = N->getState();
   ProgramStateRef StatePrev = PrevN->getState();
 
@@ -324,7 +326,7 @@ PathDiagnosticPiece *NullabilityChecker::NullabilityBugVisitor::VisitNode(
 
   // Retrieve the associated statement.
   const Stmt *S = TrackedNullab->getNullabilitySource();
-  if (!S) {
+  if (!S || S->getLocStart().isInvalid()) {
     S = PathDiagnosticLocation::getStmt(N);
   }
 
@@ -339,7 +341,8 @@ PathDiagnosticPiece *NullabilityChecker::NullabilityBugVisitor::VisitNode(
   // Generate the extra diagnostic.
   PathDiagnosticLocation Pos(S, BRC.getSourceManager(),
                              N->getLocationContext());
-  return new PathDiagnosticEventPiece(Pos, InfoText, true, nullptr);
+  return std::make_shared<PathDiagnosticEventPiece>(Pos, InfoText, true,
+                                                    nullptr);
 }
 
 static Nullability getNullabilityAnnotation(QualType Type) {

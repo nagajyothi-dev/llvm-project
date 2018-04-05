@@ -1,5 +1,5 @@
 =======================================
-Clang 4.0.0 (In-Progress) Release Notes
+Clang 6.0.0 (In-Progress) Release Notes
 =======================================
 
 .. contents::
@@ -10,15 +10,15 @@ Written by the `LLVM Team <http://llvm.org/>`_
 
 .. warning::
 
-   These are in-progress notes for the upcoming Clang 4.0.0 release. You may
-   prefer the `Clang 3.9 Release Notes
-   <http://llvm.org/releases/3.9.0/tools/clang/docs/ReleaseNotes.html>`_.
+   These are in-progress notes for the upcoming Clang 6 release.
+   Release notes for previous releases can be found on
+   `the Download Page <http://releases.llvm.org/download.html>`_.
 
 Introduction
 ============
 
 This document contains the release notes for the Clang C/C++/Objective-C
-frontend, part of the LLVM Compiler Infrastructure, release 4.0.0. Here we
+frontend, part of the LLVM Compiler Infrastructure, release 6.0.0. Here we
 describe the status of Clang in some detail, including major
 improvements from the previous release and new feature work. For the
 general LLVM release notes, see `the LLVM
@@ -36,7 +36,7 @@ main Clang web page, this document applies to the *next* release, not
 the current one. To see the release notes for a specific release, please
 see the `releases page <http://llvm.org/releases/>`_.
 
-What's New in Clang 4.0.0?
+What's New in Clang 6.0.0?
 ==========================
 
 Some of the major new features and improvements to Clang are listed
@@ -52,17 +52,38 @@ Major New Features
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
--  ...
+- ``-Wpragma-pack`` is a new warning that warns in the following cases:
+
+  - When a translation unit is missing terminating ``#pragma pack (pop)``
+    directives.
+
+  - When leaving an included file that changes the current alignment value,
+    i.e. when the alignment before ``#include`` is different to the alignment
+    after ``#include``.
+
+  - ``-Wpragma-pack-suspicious-include`` (disabled by default) warns on an
+    ``#include`` when the included file contains structures or unions affected by
+    a non-default alignment that has been specified using a ``#pragma pack``
+    directive prior to the ``#include``.
+
+Non-comprehensive list of changes in this release
+-------------------------------------------------
+
+- Bitrig OS was merged back into OpenBSD, so Bitrig support has been 
+  removed from Clang/LLVM.
 
 New Compiler Flags
 ------------------
 
-The option -Og has been added to optimize the debugging experience.
-For now, this option is exactly the same as -O1. However, in the future,
-some other optimizations might be enabled or disabled.
+- --autocomplete was implemented to obtain a list of flags and its arguments. This is used for shell autocompletion.
 
+Deprecated Compiler Flags
+-------------------------
 
-The option ....
+The following options are deprecated and ignored. They will be removed in
+future versions of Clang.
+
+- ...
 
 New Pragmas in Clang
 -----------------------
@@ -73,7 +94,10 @@ Clang now supports the ...
 Attribute Changes in Clang
 --------------------------
 
--  ...
+- The presence of __attribute__((availability(...))) on a declaration no longer
+  implies default visibility for that declaration on macOS.
+
+- ...
 
 Windows Support
 ---------------
@@ -121,7 +145,7 @@ OpenMP Support in Clang
 Internal API Changes
 --------------------
 
-These are major API changes that have happened since the 3.9 release of
+These are major API changes that have happened since the 4.0.0 release of
 Clang. If upgrading an external codebase that uses Clang as a library,
 this section should help get you past the largest hurdles of upgrading.
 
@@ -130,19 +154,55 @@ this section should help get you past the largest hurdles of upgrading.
 AST Matchers
 ------------
 
+The hasDeclaration matcher now works the same for Type and QualType and only
+ever looks through one level of sugaring in a limited number of cases.
+
+There are two main patterns affected by this:
+
+-  qualType(hasDeclaration(recordDecl(...))): previously, we would look through
+   sugar like TypedefType to get at the underlying recordDecl; now, we need
+   to explicitly remove the sugaring:
+   qualType(hasUnqualifiedDesugaredType(hasDeclaration(recordDecl(...))))
+
+-  hasType(recordDecl(...)): hasType internally uses hasDeclaration; previously,
+   this matcher used to match for example TypedefTypes of the RecordType, but
+   after the change they don't; to fix, use:
+
+::
+   hasType(hasUnqualifiedDesugaredType(
+       recordType(hasDeclaration(recordDecl(...)))))
+
+-  templateSpecializationType(hasDeclaration(classTemplateDecl(...))):
+   previously, we would directly match the underlying ClassTemplateDecl;
+   now, we can explicitly match the ClassTemplateSpecializationDecl, but that
+   requires to explicitly get the ClassTemplateDecl:
+
+::
+   templateSpecializationType(hasDeclaration(
+       classTemplateSpecializationDecl(
+           hasSpecializedTemplate(classTemplateDecl(...)))))
+
+clang-format
+------------
+
 ...
+
+* Option -verbose added to the command line.
+  Shows the list of processed files.
 
 libclang
 --------
 
 ...
 
-With the option --show-description, scan-build's list of defects will also
-show the description of the defects.
-
 
 Static Analyzer
 ---------------
+
+...
+
+Undefined Behavior Sanitizer (UBSan)
+------------------------------------
 
 ...
 

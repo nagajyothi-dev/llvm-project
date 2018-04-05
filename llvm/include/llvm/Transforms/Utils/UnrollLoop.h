@@ -33,24 +33,35 @@ class Pass;
 class OptimizationRemarkEmitter;
 class ScalarEvolution;
 
+typedef SmallDenseMap<const Loop *, Loop *, 4> NewLoopsMap;
+
+const Loop* addClonedBlockToLoopInfo(BasicBlock *OriginalBB,
+                                     BasicBlock *ClonedBB, LoopInfo *LI,
+                                     NewLoopsMap &NewLoops);
+
 bool UnrollLoop(Loop *L, unsigned Count, unsigned TripCount, bool Force,
                 bool AllowRuntime, bool AllowExpensiveTripCount,
                 bool PreserveCondBr, bool PreserveOnlyFirst,
-                unsigned TripMultiple, unsigned PeelCount, LoopInfo *LI,
-                ScalarEvolution *SE, DominatorTree *DT, AssumptionCache *AC,
-                OptimizationRemarkEmitter *ORE, bool PreserveLCSSA);
+                unsigned TripMultiple, unsigned PeelCount, bool UnrollRemainder,
+                LoopInfo *LI, ScalarEvolution *SE, DominatorTree *DT,
+                AssumptionCache *AC, OptimizationRemarkEmitter *ORE,
+                bool PreserveLCSSA);
 
 bool UnrollRuntimeLoopRemainder(Loop *L, unsigned Count,
                                 bool AllowExpensiveTripCount,
-                                bool UseEpilogRemainder, LoopInfo *LI,
+                                bool UseEpilogRemainder, bool UnrollRemainder,
+                                LoopInfo *LI,
                                 ScalarEvolution *SE, DominatorTree *DT,
+                                AssumptionCache *AC,
+                                OptimizationRemarkEmitter *ORE,
                                 bool PreserveLCSSA);
 
 void computePeelCount(Loop *L, unsigned LoopSize,
-                      TargetTransformInfo::UnrollingPreferences &UP);
+                      TargetTransformInfo::UnrollingPreferences &UP,
+                      unsigned &TripCount);
 
 bool peelLoop(Loop *L, unsigned PeelCount, LoopInfo *LI, ScalarEvolution *SE,
-              DominatorTree *DT, bool PreserveLCSSA);
+              DominatorTree *DT, AssumptionCache *AC, bool PreserveLCSSA);
 
 MDNode *GetUnrollMetadata(MDNode *LoopID, StringRef Name);
 }

@@ -26,8 +26,8 @@
 #include "lldb/Breakpoint/Stoppoint.h"
 #include "lldb/Core/Event.h"
 #include "lldb/Core/SearchFilter.h"
-#include "lldb/Core/StringList.h"
-#include "lldb/Core/StructuredData.h"
+#include "lldb/Utility/StringList.h"
+#include "lldb/Utility/StructuredData.h"
 
 namespace lldb_private {
 
@@ -169,7 +169,7 @@ public:
 
     virtual bool EvaluatePrecondition(StoppointCallbackContext &context);
 
-    virtual Error ConfigurePrecondition(Args &options);
+    virtual Status ConfigurePrecondition(Args &options);
 
     virtual void GetDescription(Stream &stream, lldb::DescriptionLevel level);
   };
@@ -178,7 +178,7 @@ public:
 
   // Saving & restoring breakpoints:
   static lldb::BreakpointSP CreateFromStructuredData(
-      Target &target, StructuredData::ObjectSP &data_object_sp, Error &error);
+      Target &target, StructuredData::ObjectSP &data_object_sp, Status &error);
 
   static bool
   SerializedBreakpointMatchesNames(StructuredData::ObjectSP &bkpt_object_sp,
@@ -421,6 +421,18 @@ public:
   bool IsOneShot() const;
 
   //------------------------------------------------------------------
+  /// If \a auto_continue is \b true, breakpoint will auto-continue when on hit.
+  //------------------------------------------------------------------
+  void SetAutoContinue(bool auto_continue);
+
+  //------------------------------------------------------------------
+  /// Check the AutoContinue state.
+  /// @return
+  ///     \b true if the breakpoint is set to auto-continue, \b false otherwise.
+  //------------------------------------------------------------------
+  bool IsAutoContinue() const;
+
+  //------------------------------------------------------------------
   /// Set the valid thread to be checked when the breakpoint is hit.
   /// @param[in] thread_id
   ///    If this thread hits the breakpoint, we stop, otherwise not.
@@ -613,7 +625,7 @@ public:
 
   lldb::SearchFilterSP GetSearchFilter() { return m_filter_sp; }
 
-  bool AddName(const char *new_name, Error &error);
+  bool AddName(llvm::StringRef new_name, Status &error);
 
   void RemoveName(const char *name_to_remove) {
     if (name_to_remove)
