@@ -92,12 +92,14 @@ def G_BITCAST : GenericInstruction {
   let hasSideEffects = 0;
 }
 
+// Only supports scalar result types
 def G_CONSTANT : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins unknown:$imm);
   let hasSideEffects = 0;
 }
 
+// Only supports scalar result types
 def G_FCONSTANT : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins unknown:$imm);
@@ -254,21 +256,21 @@ def G_XOR : GenericInstruction {
 // Generic left-shift.
 def G_SHL : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
-  let InOperandList = (ins type0:$src1, type0:$src2);
+  let InOperandList = (ins type0:$src1, type1:$src2);
   let hasSideEffects = 0;
 }
 
 // Generic logical right-shift.
 def G_LSHR : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
-  let InOperandList = (ins type0:$src1, type0:$src2);
+  let InOperandList = (ins type0:$src1, type1:$src2);
   let hasSideEffects = 0;
 }
 
 // Generic arithmetic right-shift.
 def G_ASHR : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
-  let InOperandList = (ins type0:$src1, type0:$src2);
+  let InOperandList = (ins type0:$src1, type1:$src2);
   let hasSideEffects = 0;
 }
 
@@ -548,6 +550,20 @@ def G_FLOG10 : GenericInstruction {
 
 // Floating point ceiling of a value.
 def G_FCEIL : GenericInstruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
+  let hasSideEffects = 0;
+}
+
+// Floating point cosine of a value.
+def G_FCOS : GenericInstruction {
+  let OutOperandList = (outs type0:$dst);
+  let InOperandList = (ins type0:$src1);
+  let hasSideEffects = 0;
+}
+
+// Floating point sine of a value.
+def G_FSIN : GenericInstruction {
   let OutOperandList = (outs type0:$dst);
   let InOperandList = (ins type0:$src1);
   let hasSideEffects = 0;

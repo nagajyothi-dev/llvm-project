@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "RetainCountChecker.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 
 using namespace clang;
 using namespace ento;
@@ -326,6 +327,31 @@ void RetainCountChecker::checkPostStmt(const ObjCIvarRefExpr *IRE,
   C.addTransition(State);
 }
 
+static bool isReceiverUnconsumedSelf(const CallEvent &Call) {
+  if (const auto *MC = dyn_cast<ObjCMethodCall>(&Call)) {
+
+    // Check if the message is not consumed, we know it will not be used in
+    // an assignment, ex: "self = [super init]".
+    return MC->getMethodFamily() == OMF_init && MC->isReceiverSelfOrSuper() &&
+           !Call.getLocationContext()
+                ->getAnalysisDeclContext()
+                ->getParentMap()
+                .isConsumedExpr(Call.getOriginExpr());
+  }
+  return false;
+}
+
+const static RetainSummary *getSummary(RetainSummaryManager &Summaries,
+                                       const CallEvent &Call,
+                                       QualType ReceiverType) {
+  const Expr *CE = Call.getOriginExpr();
+  AnyCall C =
+      CE ? *AnyCall::forExpr(CE)
+         : AnyCall(cast<CXXDestructorDecl>(Call.getDecl()));
+  return Summaries.getSummary(C, Call.hasNonZeroCallbackArg(),
+                              isReceiverUnconsumedSelf(Call), ReceiverType);
+}
+
 void RetainCountChecker::checkPostCall(const CallEvent &Call,
                                        CheckerContext &C) const {
   RetainSummaryManager &Summaries = getSummaryManager(C);
@@ -341,7 +367,7 @@ void RetainCountChecker::checkPostCall(const CallEvent &Call,
     }
   }
 
-  const RetainSummary *Summ = Summaries.getSummary(Call, ReceiverType);
+  const RetainSummary *Summ = getSummary(Summaries, Call, ReceiverType);
 
   if (C.wasInlined) {
     processSummaryOfInlined(*Summ, Call, C);
@@ -575,7 +601,6 @@ void RetainCountChecker::checkSummary(const RetainSummary &Summ,
 
   // Helper tag for providing diagnostics: indicate whether dealloc was sent
   // at this location.
-  static CheckerProgramPointTag DeallocSentTag(this, DeallocTagDescription);
   bool DeallocSent = false;
 
   for (unsigned idx = 0, e = CallOrMsg.getNumArgs(); idx != e; ++idx) {
@@ -849,7 +874,6 @@ void RetainCountChecker::processNonLeakError(ProgramStateRef St,
 //===----------------------------------------------------------------------===//
 
 bool RetainCountChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
-  // Get the callee. We're only interested in simple C functions.
   ProgramStateRef state = C.getState();
   const FunctionDecl *FD = C.getCalleeDecl(CE);
   if (!FD)
@@ -874,18 +898,27 @@ bool RetainCountChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
 
   // Bind the return value.
   if (BSmr == BehaviorSummary::Identity ||
-      BSmr == BehaviorSummary::IdentityOrZero) {
-    SVal RetVal = state->getSVal(CE->getArg(0), LCtx);
+      BSmr == BehaviorSummary::IdentityOrZero ||
+      BSmr == BehaviorSummary::IdentityThis) {
+
+    const Expr *BindReturnTo =
+        (BSmr == BehaviorSummary::IdentityThis)
+            ? cast<CXXMemberCallExpr>(CE)->getImplicitObjectArgument()
+            : CE->getArg(0);
+    SVal RetVal = state->getSVal(BindReturnTo, LCtx);
 
     // If the receiver is unknown or the function has
     // 'rc_ownership_trusted_implementation' annotate attribute, conjure a
     // return value.
+    // FIXME: this branch is very strange.
     if (RetVal.isUnknown() ||
         (hasTrustedImplementationAnnotation && !ResultTy.isNull())) {
       SValBuilder &SVB = C.getSValBuilder();
       RetVal =
           SVB.conjureSymbolVal(nullptr, CE, LCtx, ResultTy, C.blockCount());
     }
+
+    // Bind the value.
     state = state->BindExpr(CE, LCtx, RetVal, /*Invalidate=*/false);
 
     if (BSmr == BehaviorSummary::IdentityOrZero) {
@@ -895,8 +928,7 @@ bool RetainCountChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
       // Assume that output is zero on the other branch.
       NullOutputState = NullOutputState->BindExpr(
           CE, LCtx, C.getSValBuilder().makeNull(), /*Invalidate=*/false);
-
-      C.addTransition(NullOutputState);
+      C.addTransition(NullOutputState, &CastFailTag);
 
       // And on the original branch assume that both input and
       // output are non-zero.
@@ -999,11 +1031,11 @@ ExplodedNode * RetainCountChecker::processReturn(const ReturnStmt *S,
 
   // FIXME: What is the convention for blocks? Is there one?
   if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(CD)) {
-    const RetainSummary *Summ = Summaries.getMethodSummary(MD);
+    const RetainSummary *Summ = Summaries.getSummary(AnyCall(MD));
     RE = Summ->getRetEffect();
   } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CD)) {
     if (!isa<CXXMethodDecl>(FD)) {
-      const RetainSummary *Summ = Summaries.getFunctionSummary(FD);
+      const RetainSummary *Summ = Summaries.getSummary(AnyCall(FD));
       RE = Summ->getRetEffect();
     }
   }
@@ -1276,38 +1308,36 @@ RetainCountChecker::processLeaks(ProgramStateRef state,
   return N;
 }
 
-static bool isISLObjectRef(QualType Ty) {
-  return StringRef(Ty.getAsString()).startswith("isl_");
-}
-
 void RetainCountChecker::checkBeginFunction(CheckerContext &Ctx) const {
   if (!Ctx.inTopFrame())
     return;
 
   RetainSummaryManager &SmrMgr = getSummaryManager(Ctx);
   const LocationContext *LCtx = Ctx.getLocationContext();
-  const FunctionDecl *FD = dyn_cast<FunctionDecl>(LCtx->getDecl());
+  const Decl *D = LCtx->getDecl();
+  Optional<AnyCall> C = AnyCall::forDecl(D);
 
-  if (!FD || SmrMgr.isTrustedReferenceCountImplementation(FD))
+  if (!C || SmrMgr.isTrustedReferenceCountImplementation(D))
     return;
 
   ProgramStateRef state = Ctx.getState();
-  const RetainSummary *FunctionSummary = SmrMgr.getFunctionSummary(FD);
+  const RetainSummary *FunctionSummary = SmrMgr.getSummary(*C);
   ArgEffects CalleeSideArgEffects = FunctionSummary->getArgEffects();
 
-  for (unsigned idx = 0, e = FD->getNumParams(); idx != e; ++idx) {
-    const ParmVarDecl *Param = FD->getParamDecl(idx);
+  for (unsigned idx = 0, e = C->param_size(); idx != e; ++idx) {
+    const ParmVarDecl *Param = C->parameters()[idx];
     SymbolRef Sym = state->getSVal(state->getRegion(Param, LCtx)).getAsSymbol();
 
     QualType Ty = Param->getType();
     const ArgEffect *AE = CalleeSideArgEffects.lookup(idx);
-    if (AE && AE->getKind() == DecRef && isISLObjectRef(Ty)) {
-      state = setRefBinding(
-          state, Sym, RefVal::makeOwned(ObjKind::Generalized, Ty));
-    } else if (isISLObjectRef(Ty)) {
-      state = setRefBinding(
-          state, Sym,
-          RefVal::makeNotOwned(ObjKind::Generalized, Ty));
+    if (AE) {
+      ObjKind K = AE->getObjKind();
+      if (K == ObjKind::Generalized || K == ObjKind::OS ||
+          (TrackNSCFStartParam && (K == ObjKind::ObjC || K == ObjKind::CF))) {
+        RefVal NewVal = AE->getKind() == DecRef ? RefVal::makeOwned(K, Ty)
+                                                : RefVal::makeNotOwned(K, Ty);
+        state = setRefBinding(state, Sym, NewVal);
+      }
     }
   }
 
@@ -1423,24 +1453,48 @@ void RetainCountChecker::printState(raw_ostream &Out, ProgramStateRef State,
 // Checker registration.
 //===----------------------------------------------------------------------===//
 
-void ento::registerRetainCountChecker(CheckerManager &Mgr) {
-  auto *Chk = Mgr.registerChecker<RetainCountChecker>();
-  Chk->TrackObjCAndCFObjects = true;
+void ento::registerRetainCountBase(CheckerManager &Mgr) {
+  Mgr.registerChecker<RetainCountChecker>();
+}
+
+bool ento::shouldRegisterRetainCountBase(const LangOptions &LO) {
+  return true;
 }
 
 // FIXME: remove this, hack for backwards compatibility:
 // it should be possible to enable the NS/CF retain count checker as
 // osx.cocoa.RetainCount, and it should be possible to disable
 // osx.OSObjectRetainCount using osx.cocoa.RetainCount:CheckOSObject=false.
-static bool hasPrevCheckOSObjectOptionDisabled(AnalyzerOptions &Options) {
-  auto I = Options.Config.find("osx.cocoa.RetainCount:CheckOSObject");
+static bool getOption(AnalyzerOptions &Options,
+                      StringRef Postfix,
+                      StringRef Value) {
+  auto I = Options.Config.find(
+    (StringRef("osx.cocoa.RetainCount:") + Postfix).str());
   if (I != Options.Config.end())
-    return I->getValue() == "false";
+    return I->getValue() == Value;
   return false;
 }
 
+void ento::registerRetainCountChecker(CheckerManager &Mgr) {
+  auto *Chk = Mgr.getChecker<RetainCountChecker>();
+  Chk->TrackObjCAndCFObjects = true;
+  Chk->TrackNSCFStartParam = getOption(Mgr.getAnalyzerOptions(),
+                                       "TrackNSCFStartParam",
+                                       "true");
+}
+
+bool ento::shouldRegisterRetainCountChecker(const LangOptions &LO) {
+  return true;
+}
+
 void ento::registerOSObjectRetainCountChecker(CheckerManager &Mgr) {
-  auto *Chk = Mgr.registerChecker<RetainCountChecker>();
-  if (!hasPrevCheckOSObjectOptionDisabled(Mgr.getAnalyzerOptions()))
+  auto *Chk = Mgr.getChecker<RetainCountChecker>();
+  if (!getOption(Mgr.getAnalyzerOptions(),
+                 "CheckOSObject",
+                 "false"))
     Chk->TrackOSObjects = true;
+}
+
+bool ento::shouldRegisterOSObjectRetainCountChecker(const LangOptions &LO) {
+  return true;
 }

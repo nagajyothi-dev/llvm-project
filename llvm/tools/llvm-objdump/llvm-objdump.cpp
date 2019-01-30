@@ -70,6 +70,11 @@
 using namespace llvm;
 using namespace object;
 
+cl::opt<unsigned long long> AdjustVMA(
+    "adjust-vma",
+    cl::desc("Increase the displayed address by the specified offset"),
+    cl::value_desc("offset"), cl::init(0));
+
 cl::opt<bool>
     llvm::AllHeaders("all-headers",
                      cl::desc("Display all available header information"));
@@ -179,6 +184,10 @@ static cl::alias SectionHeadersShorter("h",
                                        cl::desc("Alias for --section-headers"),
                                        cl::NotHidden,
                                        cl::aliasopt(SectionHeaders));
+
+static cl::opt<bool>
+    ShowLMA("show-lma",
+            cl::desc("Display LMA column when dumping ELF section headers"));
 
 cl::list<std::string>
 llvm::FilterSections("section", cl::desc("Operate on the specified sections only. "
@@ -558,6 +567,17 @@ static bool isArmElf(const ObjectFile *Obj) {
            Obj->getArch() == Triple::thumbeb));
 }
 
+static void printRelocation(const RelocationRef &Rel, uint64_t Address,
+                            uint8_t AddrSize) {
+  StringRef Fmt =
+      AddrSize > 4 ? "\t\t%016" PRIx64 ":  " : "\t\t\t%08" PRIx64 ":  ";
+  SmallString<16> Name;
+  SmallString<32> Val;
+  Rel.getTypeName(Name);
+  error(getRelocationValueString(Rel, Val));
+  outs() << format(Fmt.data(), Address) << Name << "\t" << Val << "\n";
+}
+
 class PrettyPrinter {
 public:
   virtual ~PrettyPrinter() = default;
@@ -618,21 +638,15 @@ public:
     auto HeadTail = PacketBundle.first.split('\n');
     auto Preamble = " { ";
     auto Separator = "";
-    StringRef Fmt = "\t\t\t%08" PRIx64 ":  ";
-    std::vector<RelocationRef>::const_iterator RelCur = Rels->begin();
-    std::vector<RelocationRef>::const_iterator RelEnd = Rels->end();
 
     // Hexagon's packets require relocations to be inline rather than
     // clustered at the end of the packet.
+    std::vector<RelocationRef>::const_iterator RelCur = Rels->begin();
+    std::vector<RelocationRef>::const_iterator RelEnd = Rels->end();
     auto PrintReloc = [&]() -> void {
       while ((RelCur != RelEnd) && (RelCur->getOffset() <= Address)) {
         if (RelCur->getOffset() == Address) {
-          SmallString<16> Name;
-          SmallString<32> Val;
-          RelCur->getTypeName(Name);
-          error(getRelocationValueString(*RelCur, Val));
-          OS << Separator << format(Fmt.data(), Address) << Name << "\t" << Val
-                << "\n";
+          printRelocation(*RelCur, Address, 4);
           return;
         }
         ++RelCur;
@@ -868,76 +882,43 @@ static size_t countSkippableZeroBytes(ArrayRef<uint8_t> Buf) {
   return N & ~0x3;
 }
 
-static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
-  if (StartAddress > StopAddress)
-    error("Start address should be less than stop address");
-
-  const Target *TheTarget = getTarget(Obj);
-
-  // Package up features to be passed to target/subtarget
-  SubtargetFeatures Features = Obj->getFeatures();
-  if (!MAttrs.empty())
-    for (unsigned I = 0; I != MAttrs.size(); ++I)
-      Features.AddFeature(MAttrs[I]);
-
-  std::unique_ptr<const MCRegisterInfo> MRI(
-      TheTarget->createMCRegInfo(TripleName));
-  if (!MRI)
-    report_error(Obj->getFileName(), "no register info for target " +
-                 TripleName);
-
-  // Set up disassembler.
-  std::unique_ptr<const MCAsmInfo> AsmInfo(
-      TheTarget->createMCAsmInfo(*MRI, TripleName));
-  if (!AsmInfo)
-    report_error(Obj->getFileName(), "no assembly info for target " +
-                 TripleName);
-  std::unique_ptr<const MCSubtargetInfo> STI(
-      TheTarget->createMCSubtargetInfo(TripleName, MCPU, Features.getString()));
-  if (!STI)
-    report_error(Obj->getFileName(), "no subtarget info for target " +
-                 TripleName);
-  std::unique_ptr<const MCInstrInfo> MII(TheTarget->createMCInstrInfo());
-  if (!MII)
-    report_error(Obj->getFileName(), "no instruction info for target " +
-                 TripleName);
-  MCObjectFileInfo MOFI;
-  MCContext Ctx(AsmInfo.get(), MRI.get(), &MOFI);
-  // FIXME: for now initialize MCObjectFileInfo with default values
-  MOFI.InitMCObjectFileInfo(Triple(TripleName), false, Ctx);
-
-  std::unique_ptr<MCDisassembler> DisAsm(
-    TheTarget->createMCDisassembler(*STI, Ctx));
-  if (!DisAsm)
-    report_error(Obj->getFileName(), "no disassembler for target " +
-                 TripleName);
-
-  std::unique_ptr<const MCInstrAnalysis> MIA(
-      TheTarget->createMCInstrAnalysis(MII.get()));
-
-  int AsmPrinterVariant = AsmInfo->getAssemblerDialect();
-  std::unique_ptr<MCInstPrinter> IP(TheTarget->createMCInstPrinter(
-      Triple(TripleName), AsmPrinterVariant, *AsmInfo, *MII, *MRI));
-  if (!IP)
-    report_error(Obj->getFileName(), "no instruction printer for target " +
-                 TripleName);
-  IP->setPrintImmHex(PrintImmHex);
-  PrettyPrinter &PIP = selectPrettyPrinter(Triple(TripleName));
-
-  StringRef Fmt = Obj->getBytesInAddress() > 4 ? "\t\t%016" PRIx64 ":  " :
-                                                 "\t\t\t%08" PRIx64 ":  ";
-
-  SourcePrinter SP(Obj, TheTarget->getName());
-
-  // Create a mapping, RelocSecs = SectionRelocMap[S], where sections
-  // in RelocSecs contain the relocations for section S.
-  std::error_code EC;
-  std::map<SectionRef, SmallVector<SectionRef, 1>> SectionRelocMap;
-  for (const SectionRef &Section : ToolSectionFilter(*Obj)) {
-    section_iterator Sec2 = Section.getRelocatedSection();
-    if (Sec2 != Obj->section_end())
-      SectionRelocMap[*Sec2].push_back(Section);
+// Returns a map from sections to their relocations.
+static std::map<SectionRef, std::vector<RelocationRef>>
+getRelocsMap(llvm::object::ObjectFile const &Obj) {
+  std::map<SectionRef, std::vector<RelocationRef>> Ret;
+  for (const SectionRef &Section : ToolSectionFilter(Obj)) {
+    section_iterator RelSec = Section.getRelocatedSection();
+    if (RelSec == Obj.section_end())
+      continue;
+    std::vector<RelocationRef> &V = Ret[*RelSec];
+    for (const RelocationRef &R : Section.relocations())
+      V.push_back(R);
+    // Sort relocations by address.
+    llvm::sort(V, isRelocAddressLess);
   }
+  return Ret;
+}
+
+// Used for --adjust-vma to check if address should be adjusted by the
+// specified value for a given section.
+// For ELF we do not adjust non-allocatable sections like debug ones,
+// because they are not loadable.
+// TODO: implement for other file formats.
+static bool shouldAdjustVA(const SectionRef &Section) {
+  const ObjectFile *Obj = Section.getObject();
+  if (isa<object::ELFObjectFileBase>(Obj))
+    return ELFSectionRef(Section).getFlags() & ELF::SHF_ALLOC;
+  return false;
+}
+
+static void disassembleObject(const Target *TheTarget, const ObjectFile *Obj,
+                              MCContext &Ctx, MCDisassembler *DisAsm,
+                              const MCInstrAnalysis *MIA, MCInstPrinter *IP,
+                              const MCSubtargetInfo *STI, PrettyPrinter &PIP,
+                              SourcePrinter &SP, bool InlineRelocs) {
+  std::map<SectionRef, std::vector<RelocationRef>> RelocMap;
+  if (InlineRelocs)
+    RelocMap = getRelocsMap(*Obj);
 
   // Create a mapping from virtual address to symbol name.  This is used to
   // pretty print the symbols while disassembling.
@@ -1062,19 +1043,6 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
       }
     }
 
-    // Make a list of all the relocations for this section.
-    std::vector<RelocationRef> Rels;
-    if (InlineRelocs) {
-      for (const SectionRef &RelocSec : SectionRelocMap[Section]) {
-        for (const RelocationRef &Reloc : RelocSec.relocations()) {
-          Rels.push_back(Reloc);
-        }
-      }
-    }
-
-    // Sort relocations by address.
-    llvm::sort(Rels, isRelocAddressLess);
-
     StringRef SegmentName = "";
     if (const MachOObjectFile *MachO = dyn_cast<const MachOObjectFile>(Obj)) {
       DataRefImpl DR = Section.getRawDataRefImpl();
@@ -1099,10 +1067,14 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
     ArrayRef<uint8_t> Bytes(reinterpret_cast<const uint8_t *>(BytesStr.data()),
                             BytesStr.size());
 
+    uint64_t VMAAdjustment = 0;
+    if (shouldAdjustVA(Section))
+      VMAAdjustment = AdjustVMA;
+
     uint64_t Size;
     uint64_t Index;
     bool PrintedSection = false;
-
+    std::vector<RelocationRef> Rels = RelocMap[Section];
     std::vector<RelocationRef>::const_iterator RelCur = Rels.begin();
     std::vector<RelocationRef>::const_iterator RelEnd = Rels.end();
     // Disassemble symbol by symbol.
@@ -1163,7 +1135,8 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
 
       outs() << '\n';
       if (!NoLeadingAddr)
-        outs() << format("%016" PRIx64 " ", SectionAddr + Start);
+        outs() << format("%016" PRIx64 " ",
+                         SectionAddr + Start + VMAAdjustment);
 
       StringRef SymbolName = std::get<1>(Symbols[SI]);
       if (Demangle)
@@ -1324,9 +1297,9 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
         if (Size == 0)
           Size = 1;
 
-        PIP.printInst(*IP, Disassembled ? &Inst : nullptr,
-                      Bytes.slice(Index, Size), SectionAddr + Index, outs(), "",
-                      *STI, &SP, &Rels);
+        PIP.printInst(
+            *IP, Disassembled ? &Inst : nullptr, Bytes.slice(Index, Size),
+            SectionAddr + Index + VMAAdjustment, outs(), "", *STI, &SP, &Rels);
         outs() << CommentStream.str();
         Comments.clear();
 
@@ -1392,31 +1365,99 @@ static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
         outs() << "\n";
 
         // Hexagon does this in pretty printer
-        if (Obj->getArch() != Triple::hexagon)
+        if (Obj->getArch() != Triple::hexagon) {
           // Print relocation for instruction.
           while (RelCur != RelEnd) {
-            uint64_t Addr = RelCur->getOffset();
-            SmallString<16> Name;
-            SmallString<32> Val;
-
+            uint64_t Offset = RelCur->getOffset();
             // If this relocation is hidden, skip it.
-            if (getHidden(*RelCur) || ((SectionAddr + Addr) < StartAddress)) {
+            if (getHidden(*RelCur) || ((SectionAddr + Offset) < StartAddress)) {
               ++RelCur;
               continue;
             }
 
-            // Stop when rel_cur's address is past the current instruction.
-            if (Addr >= Index + Size)
+            // Stop when RelCur's offset is past the current instruction.
+            if (Offset >= Index + Size)
               break;
-            RelCur->getTypeName(Name);
-            error(getRelocationValueString(*RelCur, Val));
-            outs() << format(Fmt.data(), SectionAddr + Addr) << Name << "\t"
-                   << Val << "\n";
+
+            // When --adjust-vma is used, update the address printed.
+            if (RelCur->getSymbol() != Obj->symbol_end()) {
+              Expected<section_iterator> SymSI =
+                  RelCur->getSymbol()->getSection();
+              if (SymSI && *SymSI != Obj->section_end() &&
+                  (shouldAdjustVA(**SymSI)))
+                Offset += AdjustVMA;
+            }
+
+            printRelocation(*RelCur, SectionAddr + Offset,
+                            Obj->getBytesInAddress());
             ++RelCur;
           }
+        }
       }
     }
   }
+}
+
+static void disassembleObject(const ObjectFile *Obj, bool InlineRelocs) {
+  if (StartAddress > StopAddress)
+    error("Start address should be less than stop address");
+
+  const Target *TheTarget = getTarget(Obj);
+
+  // Package up features to be passed to target/subtarget
+  SubtargetFeatures Features = Obj->getFeatures();
+  if (!MAttrs.empty())
+    for (unsigned I = 0; I != MAttrs.size(); ++I)
+      Features.AddFeature(MAttrs[I]);
+
+  std::unique_ptr<const MCRegisterInfo> MRI(
+      TheTarget->createMCRegInfo(TripleName));
+  if (!MRI)
+    report_error(Obj->getFileName(),
+                 "no register info for target " + TripleName);
+
+  // Set up disassembler.
+  std::unique_ptr<const MCAsmInfo> AsmInfo(
+      TheTarget->createMCAsmInfo(*MRI, TripleName));
+  if (!AsmInfo)
+    report_error(Obj->getFileName(),
+                 "no assembly info for target " + TripleName);
+  std::unique_ptr<const MCSubtargetInfo> STI(
+      TheTarget->createMCSubtargetInfo(TripleName, MCPU, Features.getString()));
+  if (!STI)
+    report_error(Obj->getFileName(),
+                 "no subtarget info for target " + TripleName);
+  std::unique_ptr<const MCInstrInfo> MII(TheTarget->createMCInstrInfo());
+  if (!MII)
+    report_error(Obj->getFileName(),
+                 "no instruction info for target " + TripleName);
+  MCObjectFileInfo MOFI;
+  MCContext Ctx(AsmInfo.get(), MRI.get(), &MOFI);
+  // FIXME: for now initialize MCObjectFileInfo with default values
+  MOFI.InitMCObjectFileInfo(Triple(TripleName), false, Ctx);
+
+  std::unique_ptr<MCDisassembler> DisAsm(
+      TheTarget->createMCDisassembler(*STI, Ctx));
+  if (!DisAsm)
+    report_error(Obj->getFileName(),
+                 "no disassembler for target " + TripleName);
+
+  std::unique_ptr<const MCInstrAnalysis> MIA(
+      TheTarget->createMCInstrAnalysis(MII.get()));
+
+  int AsmPrinterVariant = AsmInfo->getAssemblerDialect();
+  std::unique_ptr<MCInstPrinter> IP(TheTarget->createMCInstPrinter(
+      Triple(TripleName), AsmPrinterVariant, *AsmInfo, *MII, *MRI));
+  if (!IP)
+    report_error(Obj->getFileName(),
+                 "no instruction printer for target " + TripleName);
+  IP->setPrintImmHex(PrintImmHex);
+
+  PrettyPrinter &PIP = selectPrettyPrinter(Triple(TripleName));
+  SourcePrinter SP(Obj, TheTarget->getName());
+
+  disassembleObject(TheTarget, Obj, Ctx, DisAsm.get(), MIA.get(), IP.get(),
+                    STI.get(), PIP, SP, InlineRelocs);
 }
 
 void llvm::printRelocations(const ObjectFile *Obj) {
@@ -1480,22 +1521,51 @@ void llvm::printDynamicRelocations(const ObjectFile *Obj) {
   }
 }
 
+// Returns true if we need to show LMA column when dumping section headers. We
+// show it only when the platform is ELF and either we have at least one section
+// whose VMA and LMA are different and/or when --show-lma flag is used.
+static bool shouldDisplayLMA(const ObjectFile *Obj) {
+  if (!Obj->isELF())
+    return false;
+  for (const SectionRef &S : ToolSectionFilter(*Obj))
+    if (S.getAddress() != getELFSectionLMA(S))
+      return true;
+  return ShowLMA;
+}
+
 void llvm::printSectionHeaders(const ObjectFile *Obj) {
-  outs() << "Sections:\n"
-            "Idx Name          Size      Address          Type\n";
+  bool HasLMAColumn = shouldDisplayLMA(Obj);
+  if (HasLMAColumn)
+    outs() << "Sections:\n"
+              "Idx Name          Size     VMA              LMA              "
+              "Type\n";
+  else
+    outs() << "Sections:\n"
+              "Idx Name          Size     VMA          Type\n";
+
   for (const SectionRef &Section : ToolSectionFilter(*Obj)) {
     StringRef Name;
     error(Section.getName(Name));
-    uint64_t Address = Section.getAddress();
+    uint64_t VMA = Section.getAddress();
+    if (shouldAdjustVA(Section))
+      VMA += AdjustVMA;
+
     uint64_t Size = Section.getSize();
     bool Text = Section.isText();
     bool Data = Section.isData();
     bool BSS = Section.isBSS();
     std::string Type = (std::string(Text ? "TEXT " : "") +
                         (Data ? "DATA " : "") + (BSS ? "BSS" : ""));
-    outs() << format("%3d %-13s %08" PRIx64 " %016" PRIx64 " %s\n",
-                     (unsigned)Section.getIndex(), Name.str().c_str(), Size,
-                     Address, Type.c_str());
+
+    if (HasLMAColumn)
+      outs() << format("%3d %-13s %08" PRIx64 " %016" PRIx64 " %016" PRIx64
+                       " %s\n",
+                       (unsigned)Section.getIndex(), Name.str().c_str(), Size,
+                       VMA, getELFSectionLMA(Section), Type.c_str());
+    else
+      outs() << format("%3d %-13s %08" PRIx64 " %016" PRIx64 " %s\n",
+                       (unsigned)Section.getIndex(), Name.str().c_str(), Size,
+                       VMA, Type.c_str());
   }
   outs() << "\n";
 }

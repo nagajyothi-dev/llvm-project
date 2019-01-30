@@ -9,12 +9,14 @@
 #ifndef LLVM_CLANG_TOOLS_EXTRA_CLANGD_CLANGDUNIT_H
 #define LLVM_CLANG_TOOLS_EXTRA_CLANGD_CLANGDUNIT_H
 
+#include "Compiler.h"
 #include "Diagnostics.h"
 #include "FS.h"
 #include "Function.h"
 #include "Headers.h"
 #include "Path.h"
 #include "Protocol.h"
+#include "index/Index.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/PrecompiledPreamble.h"
 #include "clang/Lex/Preprocessor.h"
@@ -30,7 +32,7 @@ class raw_ostream;
 
 namespace vfs {
 class FileSystem;
-}
+} // namespace vfs
 } // namespace llvm
 
 namespace clang {
@@ -38,7 +40,7 @@ class PCHContainerOperations;
 
 namespace tooling {
 struct CompileCommand;
-}
+} // namespace tooling
 
 namespace clangd {
 
@@ -59,13 +61,6 @@ struct PreambleData {
   std::unique_ptr<PreambleFileStatusCache> StatCache;
 };
 
-/// Information required to run clang, e.g. to parse AST or do code completion.
-struct ParseInputs {
-  tooling::CompileCommand CompileCommand;
-  IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS;
-  std::string Contents;
-};
-
 /// Stores and provides access to parsed AST.
 class ParsedAST {
 public:
@@ -76,7 +71,8 @@ public:
         std::shared_ptr<const PreambleData> Preamble,
         std::unique_ptr<llvm::MemoryBuffer> Buffer,
         std::shared_ptr<PCHContainerOperations> PCHs,
-        IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS);
+        IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS, const SymbolIndex *Index,
+        const ParseOptions &Opts);
 
   ParsedAST(ParsedAST &&Other);
   ParsedAST &operator=(ParsedAST &&Other);
@@ -133,10 +129,6 @@ private:
 
 using PreambleParsedCallback =
     std::function<void(ASTContext &, std::shared_ptr<clang::Preprocessor>)>;
-
-/// Builds compiler invocation that could be used to build AST or preamble.
-std::unique_ptr<CompilerInvocation>
-buildCompilerInvocation(const ParseInputs &Inputs);
 
 /// Rebuild the preamble for the new inputs unless the old one can be reused.
 /// If \p OldPreamble can be reused, it is returned unchanged.

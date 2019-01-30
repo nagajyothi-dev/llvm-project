@@ -47,7 +47,6 @@ class Module;
 class SwitchInst;
 class Twine;
 class Value;
-class CallSite;
 }
 
 namespace clang {
@@ -2620,10 +2619,12 @@ public:
   bool sanitizePerformTypeCheck() const;
 
   /// Emit a check that \p V is the address of storage of the
-  /// appropriate size and alignment for an object of type \p Type.
+  /// appropriate size and alignment for an object of type \p Type
+  /// (or if ArraySize is provided, for an array of that bound).
   void EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc, llvm::Value *V,
                      QualType Type, CharUnits Alignment = CharUnits::Zero(),
-                     SanitizerSet SkippedChecks = SanitizerSet());
+                     SanitizerSet SkippedChecks = SanitizerSet(),
+                     llvm::Value *ArraySize = nullptr);
 
   /// Emit a check that \p Base points into an array object, which
   /// we can access at index \p Index. \p Accessed should be \c false if we
@@ -3581,10 +3582,10 @@ public:
   /// LLVM arguments and the types they were derived from.
   RValue EmitCall(const CGFunctionInfo &CallInfo, const CGCallee &Callee,
                   ReturnValueSlot ReturnValue, const CallArgList &Args,
-                  llvm::Instruction **callOrInvoke, SourceLocation Loc);
+                  llvm::CallBase **callOrInvoke, SourceLocation Loc);
   RValue EmitCall(const CGFunctionInfo &CallInfo, const CGCallee &Callee,
                   ReturnValueSlot ReturnValue, const CallArgList &Args,
-                  llvm::Instruction **callOrInvoke = nullptr) {
+                  llvm::CallBase **callOrInvoke = nullptr) {
     return EmitCall(CallInfo, Callee, ReturnValue, Args, callOrInvoke,
                     SourceLocation());
   }
@@ -3611,14 +3612,14 @@ public:
   SmallVector<llvm::OperandBundleDef, 1>
   getBundlesForFunclet(llvm::Value *Callee);
 
-  llvm::CallSite EmitCallOrInvoke(llvm::Value *Callee,
-                                  ArrayRef<llvm::Value *> Args,
-                                  const Twine &Name = "");
-  llvm::CallSite EmitRuntimeCallOrInvoke(llvm::Value *callee,
-                                         ArrayRef<llvm::Value*> args,
-                                         const Twine &name = "");
-  llvm::CallSite EmitRuntimeCallOrInvoke(llvm::Value *callee,
-                                         const Twine &name = "");
+  llvm::CallBase *EmitCallOrInvoke(llvm::Value *Callee,
+                                   ArrayRef<llvm::Value *> Args,
+                                   const Twine &Name = "");
+  llvm::CallBase *EmitRuntimeCallOrInvoke(llvm::Value *callee,
+                                          ArrayRef<llvm::Value *> args,
+                                          const Twine &name = "");
+  llvm::CallBase *EmitRuntimeCallOrInvoke(llvm::Value *callee,
+                                          const Twine &name = "");
   void EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
                                        ArrayRef<llvm::Value*> args);
 

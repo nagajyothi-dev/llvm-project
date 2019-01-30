@@ -19,7 +19,6 @@
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
@@ -528,6 +527,16 @@ void CodeGenFunction::EmitLabel(const LabelDecl *D) {
   }
 
   EmitBlock(Dest.getBlock());
+
+  // Emit debug info for labels.
+  if (CGDebugInfo *DI = getDebugInfo()) {
+    if (CGM.getCodeGenOpts().getDebugInfo() >=
+        codegenoptions::LimitedDebugInfo) {
+      DI->setLocation(D->getLocation());
+      DI->EmitLabel(D, Builder);
+    }
+  }
+
   incrementProfileCounter(D->getStmt());
 }
 

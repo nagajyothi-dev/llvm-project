@@ -66,7 +66,7 @@ StringRef RefCountBug::getDescription() const {
 RefCountBug::RefCountBug(const CheckerBase *Checker, RefCountBugType BT)
     : BugType(Checker, bugTypeToName(BT), categories::MemoryRefCount,
               /*SupressOnSink=*/BT == LeakWithinFunction || BT == LeakAtReturn),
-      BT(BT) {}
+      BT(BT), Checker(Checker) {}
 
 static bool isNumericLiteralExpression(const Expr *E) {
   // FIXME: This set of cases was copied from SemaExprObjC.
@@ -418,11 +418,44 @@ annotateConsumedSummaryMismatch(const ExplodedNode *N,
   return std::make_shared<PathDiagnosticEventPiece>(L, os.str());
 }
 
+/// Annotate the parameter at the analysis entry point.
+static std::shared_ptr<PathDiagnosticEventPiece>
+annotateStartParameter(const ExplodedNode *N, SymbolRef Sym,
+                       const SourceManager &SM) {
+  auto PP = N->getLocationAs<BlockEdge>();
+  if (!PP)
+    return nullptr;
+
+  const CFGBlock *Src = PP->getSrc();
+  const RefVal *CurrT = getRefBinding(N->getState(), Sym);
+
+  if (&Src->getParent()->getEntry() != Src || !CurrT ||
+      getRefBinding(N->getFirstPred()->getState(), Sym))
+    return nullptr;
+
+  const auto *VR = cast<VarRegion>(cast<SymbolRegionValue>(Sym)->getRegion());
+  const auto *PVD = cast<ParmVarDecl>(VR->getDecl());
+  PathDiagnosticLocation L = PathDiagnosticLocation(PVD, SM);
+
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  os << "Parameter '" << PVD->getNameAsString() << "' starts at +";
+  if (CurrT->getCount() == 1) {
+    os << "1, as it is marked as consuming";
+  } else {
+    assert(CurrT->getCount() == 0);
+    os << "0";
+  }
+  return std::make_shared<PathDiagnosticEventPiece>(L, os.str());
+}
+
 std::shared_ptr<PathDiagnosticPiece>
 RefCountReportVisitor::VisitNode(const ExplodedNode *N,
                               BugReporterContext &BRC, BugReport &BR) {
 
   const auto &BT = static_cast<const RefCountBug&>(BR.getBugType());
+  const auto *Checker =
+      static_cast<const RetainCountChecker *>(BT.getChecker());
 
   bool IsFreeUnowned = BT.getBugType() == RefCountBug::FreeNotOwned ||
                        BT.getBugType() == RefCountBug::DeallocNotOwned;
@@ -432,6 +465,9 @@ RefCountReportVisitor::VisitNode(const ExplodedNode *N,
   if (auto CE = N->getLocationAs<CallExitBegin>())
     if (auto PD = annotateConsumedSummaryMismatch(N, *CE, SM, CEMgr))
       return PD;
+
+  if (auto PD = annotateStartParameter(N, Sym, SM))
+    return PD;
 
   // FIXME: We will eventually need to handle non-statement-based events
   // (__attribute__((cleanup))).
@@ -509,8 +545,12 @@ RefCountReportVisitor::VisitNode(const ExplodedNode *N,
   bool DeallocSent = false;
 
   const ProgramPointTag *Tag = N->getLocation().getTag();
-  if (Tag && Tag->getTagDescription().contains(
-                 RetainCountChecker::DeallocTagDescription)) {
+
+  if (Tag == &Checker->getCastFailTag()) {
+    os << "Assuming dynamic cast returns null due to type mismatch";
+  }
+
+  if (Tag == &Checker->getDeallocSentTag()) {
     // We only have summaries attached to nodes after evaluating CallExpr and
     // ObjCMessageExprs.
     const Stmt *S = N->getLocation().castAs<StmtPoint>().getStmt();
@@ -667,7 +707,7 @@ static AllocationInfo GetAllocationSite(ProgramStateManager &StateMgr,
 
   if (AllocationNodeInCurrentOrParentContext &&
       AllocationNodeInCurrentOrParentContext->getLocationContext() !=
-          LeakContext)
+      LeakContext)
     FirstBinding = nullptr;
 
   return AllocationInfo(AllocationNodeInCurrentOrParentContext,
@@ -751,10 +791,19 @@ RefLeakReportVisitor::getEndPath(BugReporterContext &BRC,
         }
       } else {
         const FunctionDecl *FD = cast<FunctionDecl>(D);
-        os << "whose name ('" << *FD
-           << "') does not contain 'Copy' or 'Create'.  This violates the naming"
-              " convention rules given in the Memory Management Guide for Core"
-              " Foundation";
+        ObjKind K = RV->getObjKind();
+        if (K == ObjKind::ObjC || K == ObjKind::CF) {
+          os << "whose name ('" << *FD
+             << "') does not contain 'Copy' or 'Create'.  This violates the "
+                "naming"
+                " convention rules given in the Memory Management Guide for "
+                "Core"
+                " Foundation";
+        } else if (RV->getObjKind() == ObjKind::OS) {
+          std::string FuncName = FD->getNameAsString();
+          os << "whose name ('" << FuncName
+            << "') starts with '" << StringRef(FuncName).substr(0, 3) << "'";
+        }
       }
     }
   } else {

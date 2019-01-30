@@ -762,10 +762,6 @@ public:
     return RI.getRegSizeInBits(*getOpRegClass(MI, OpNo)) / 8;
   }
 
-  /// \returns true if it is legal for the operand at index \p OpNo
-  /// to read a VGPR.
-  bool canReadVGPR(const MachineInstr &MI, unsigned OpNo) const;
-
   /// Legalize the \p OpIndex operand of this instruction by inserting
   /// a MOV.  For example:
   /// ADD_I32_e32 VGPR0, 15
@@ -837,7 +833,7 @@ public:
   void insertReturn(MachineBasicBlock &MBB) const;
   /// Return the number of wait states that result from executing this
   /// instruction.
-  unsigned getNumWaitStates(const MachineInstr &MI) const;
+  static unsigned getNumWaitStates(const MachineInstr &MI);
 
   /// Returns the operand named \p Op.  If \p MI does not have an
   /// operand named \c Op, this function returns nullptr.

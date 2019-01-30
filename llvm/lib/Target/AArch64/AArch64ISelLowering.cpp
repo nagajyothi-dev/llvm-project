@@ -2972,8 +2972,6 @@ SDValue AArch64TargetLowering::LowerOperation(SDValue Op,
 //                      Calling Convention Implementation
 //===----------------------------------------------------------------------===//
 
-#include "AArch64GenCallingConv.inc"
-
 /// Selects the correct CCAssignFn for a given CallingConvention value.
 CCAssignFn *AArch64TargetLowering::CCAssignFnForCall(CallingConv::ID CC,
                                                      bool IsVarArg) const {
@@ -11600,6 +11598,9 @@ AArch64TargetLowering::shouldExpandAtomicLoadInIR(LoadInst *LI) const {
 // For the real atomic operations, we have ldxr/stxr up to 128 bits,
 TargetLowering::AtomicExpansionKind
 AArch64TargetLowering::shouldExpandAtomicRMWInIR(AtomicRMWInst *AI) const {
+  if (AI->isFloatingPointOperation())
+    return AtomicExpansionKind::CmpXChg;
+
   unsigned Size = AI->getType()->getPrimitiveSizeInBits();
   if (Size > 128) return AtomicExpansionKind::None;
   // Nand not supported in LSE.

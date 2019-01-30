@@ -18,7 +18,6 @@
 #include "ConstantEmitter.h"
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
-#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Intrinsics.h"
 
 using namespace clang;
@@ -1292,7 +1291,7 @@ static RValue EmitNewDeleteCall(CodeGenFunction &CGF,
                                 const FunctionDecl *CalleeDecl,
                                 const FunctionProtoType *CalleeType,
                                 const CallArgList &Args) {
-  llvm::Instruction *CallOrInvoke;
+  llvm::CallBase *CallOrInvoke;
   llvm::Constant *CalleePtr = CGF.CGM.GetAddrOfFunction(CalleeDecl);
   CGCallee Callee = CGCallee::forDirect(CalleePtr, GlobalDecl(CalleeDecl));
   RValue RV =
@@ -1308,15 +1307,8 @@ static RValue EmitNewDeleteCall(CodeGenFunction &CGF,
   llvm::Function *Fn = dyn_cast<llvm::Function>(CalleePtr);
   if (CalleeDecl->isReplaceableGlobalAllocationFunction() &&
       Fn && Fn->hasFnAttribute(llvm::Attribute::NoBuiltin)) {
-    // FIXME: Add addAttribute to CallSite.
-    if (llvm::CallInst *CI = dyn_cast<llvm::CallInst>(CallOrInvoke))
-      CI->addAttribute(llvm::AttributeList::FunctionIndex,
-                       llvm::Attribute::Builtin);
-    else if (llvm::InvokeInst *II = dyn_cast<llvm::InvokeInst>(CallOrInvoke))
-      II->addAttribute(llvm::AttributeList::FunctionIndex,
-                       llvm::Attribute::Builtin);
-    else
-      llvm_unreachable("unexpected kind of call instruction");
+    CallOrInvoke->addAttribute(llvm::AttributeList::FunctionIndex,
+                               llvm::Attribute::Builtin);
   }
 
   return RV;
@@ -1714,10 +1706,16 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
                      result.getAlignment());
 
   // Emit sanitizer checks for pointer value now, so that in the case of an
-  // array it was checked only once and not at each constructor call.
+  // array it was checked only once and not at each constructor call. We may
+  // have already checked that the pointer is non-null.
+  // FIXME: If we have an array cookie and a potentially-throwing allocator,
+  // we'll null check the wrong pointer here.
+  SanitizerSet SkippedChecks;
+  SkippedChecks.set(SanitizerKind::Null, nullCheck);
   EmitTypeCheck(CodeGenFunction::TCK_ConstructorCall,
-      E->getAllocatedTypeSourceInfo()->getTypeLoc().getBeginLoc(),
-      result.getPointer(), allocType);
+                E->getAllocatedTypeSourceInfo()->getTypeLoc().getBeginLoc(),
+                result.getPointer(), allocType, result.getAlignment(),
+                SkippedChecks, numElements);
 
   EmitNewInitializer(*this, E, allocType, elementTy, result, numElements,
                      allocSizeWithoutCookie);
