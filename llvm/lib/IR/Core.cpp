@@ -2329,6 +2329,10 @@ const char *LLVMIntrinsicCopyOverloadedName(unsigned ID,
   return strdup(Str.c_str());
 }
 
+unsigned LLVMLookupIntrinsicID(const char *Name, size_t NameLen) {
+  return Function::lookupIntrinsicID({Name, NameLen});
+}
+
 LLVMBool LLVMIntrinsicIsOverloaded(unsigned ID) {
   auto IID = llvm_map_to_intrinsic_id(ID);
   return llvm::Intrinsic::isOverloaded(IID);
@@ -2463,6 +2467,71 @@ void LLVMSetParamAlignment(LLVMValueRef Arg, unsigned align) {
   A->addAttr(Attribute::getWithAlignment(A->getContext(), align));
 }
 
+/*--.. Operations on ifuncs ................................................--*/
+
+LLVMValueRef LLVMAddGlobalIFunc(LLVMModuleRef M,
+                                const char *Name, size_t NameLen,
+                                LLVMTypeRef Ty, unsigned AddrSpace,
+                                LLVMValueRef Resolver) {
+  return wrap(GlobalIFunc::create(unwrap(Ty), AddrSpace,
+                                  GlobalValue::ExternalLinkage,
+                                  StringRef(Name, NameLen),
+                                  unwrap<Constant>(Resolver), unwrap(M)));
+}
+
+LLVMValueRef LLVMGetNamedGlobalIFunc(LLVMModuleRef M,
+                                     const char *Name, size_t NameLen) {
+  return wrap(unwrap(M)->getNamedIFunc(StringRef(Name, NameLen)));
+}
+
+LLVMValueRef LLVMGetFirstGlobalIFunc(LLVMModuleRef M) {
+  Module *Mod = unwrap(M);
+  Module::ifunc_iterator I = Mod->ifunc_begin();
+  if (I == Mod->ifunc_end())
+    return nullptr;
+  return wrap(&*I);
+}
+
+LLVMValueRef LLVMGetLastGlobalIFunc(LLVMModuleRef M) {
+  Module *Mod = unwrap(M);
+  Module::ifunc_iterator I = Mod->ifunc_end();
+  if (I == Mod->ifunc_begin())
+    return nullptr;
+  return wrap(&*--I);
+}
+
+LLVMValueRef LLVMGetNextGlobalIFunc(LLVMValueRef IFunc) {
+  GlobalIFunc *GIF = unwrap<GlobalIFunc>(IFunc);
+  Module::ifunc_iterator I(GIF);
+  if (++I == GIF->getParent()->ifunc_end())
+    return nullptr;
+  return wrap(&*I);
+}
+
+LLVMValueRef LLVMGetPreviousGlobalIFunc(LLVMValueRef IFunc) {
+  GlobalIFunc *GIF = unwrap<GlobalIFunc>(IFunc);
+  Module::ifunc_iterator I(GIF);
+  if (I == GIF->getParent()->ifunc_begin())
+    return nullptr;
+  return wrap(&*--I);
+}
+
+LLVMValueRef LLVMGetGlobalIFuncResolver(LLVMValueRef IFunc) {
+  return wrap(unwrap<GlobalIFunc>(IFunc)->getResolver());
+}
+
+void LLVMSetGlobalIFuncResolver(LLVMValueRef IFunc, LLVMValueRef Resolver) {
+  unwrap<GlobalIFunc>(IFunc)->setResolver(unwrap<Constant>(Resolver));
+}
+
+void LLVMEraseGlobalIFunc(LLVMValueRef IFunc) {
+  unwrap<GlobalIFunc>(IFunc)->eraseFromParent();
+}
+
+void LLVMRemoveGlobalIFunc(LLVMValueRef IFunc) {
+  unwrap<GlobalIFunc>(IFunc)->removeFromParent();
+}
+
 /*--.. Operations on basic blocks ..........................................--*/
 
 LLVMValueRef LLVMBasicBlockAsValue(LLVMBasicBlockRef BB) {
@@ -2538,6 +2607,20 @@ LLVMBasicBlockRef LLVMGetPreviousBasicBlock(LLVMBasicBlockRef BB) {
 LLVMBasicBlockRef LLVMCreateBasicBlockInContext(LLVMContextRef C,
                                                 const char *Name) {
   return wrap(llvm::BasicBlock::Create(*unwrap(C), Name));
+}
+
+void LLVMInsertExistingBasicBlockAfterInsertBlock(LLVMBuilderRef Builder,
+                                                  LLVMBasicBlockRef BB) {
+  BasicBlock *ToInsert = unwrap(BB);
+  BasicBlock *CurBB = unwrap(Builder)->GetInsertBlock();
+  assert(CurBB && "current insertion point is invalid!");
+  CurBB->getParent()->getBasicBlockList().insertAfter(CurBB->getIterator(),
+                                                      ToInsert);
+}
+
+void LLVMAppendExistingBasicBlock(LLVMValueRef Fn,
+                                  LLVMBasicBlockRef BB) {
+  unwrap<Function>(Fn)->getBasicBlockList().push_back(unwrap(BB));
 }
 
 LLVMBasicBlockRef LLVMAppendBasicBlockInContext(LLVMContextRef C,
@@ -2923,6 +3006,17 @@ void LLVMDisposeBuilder(LLVMBuilderRef Builder) {
 
 /*--.. Metadata builders ...................................................--*/
 
+LLVMMetadataRef LLVMGetCurrentDebugLocation2(LLVMBuilderRef Builder) {
+  return wrap(unwrap(Builder)->getCurrentDebugLocation().getAsMDNode());
+}
+
+void LLVMSetCurrentDebugLocation2(LLVMBuilderRef Builder, LLVMMetadataRef Loc) {
+  if (Loc)
+    unwrap(Builder)->SetCurrentDebugLocation(DebugLoc(unwrap<MDNode>(Loc)));
+  else
+    unwrap(Builder)->SetCurrentDebugLocation(DebugLoc());
+}
+
 void LLVMSetCurrentDebugLocation(LLVMBuilderRef Builder, LLVMValueRef L) {
   MDNode *Loc =
       L ? cast<MDNode>(unwrap<MetadataAsValue>(L)->getMetadata()) : nullptr;
@@ -2938,7 +3032,6 @@ LLVMValueRef LLVMGetCurrentDebugLocation(LLVMBuilderRef Builder) {
 void LLVMSetInstDebugLocation(LLVMBuilderRef Builder, LLVMValueRef Inst) {
   unwrap(Builder)->SetInstDebugLocation(unwrap<Instruction>(Inst));
 }
-
 
 /*--.. Instruction builders ................................................--*/
 

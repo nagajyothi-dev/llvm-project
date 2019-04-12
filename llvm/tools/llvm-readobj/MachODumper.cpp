@@ -1,4 +1,4 @@
-//===-- MachODump.cpp - Object file dumping utility for llvm --------------===//
+//===- MachODumper.cpp - Object file dumping utility for llvm -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -162,6 +162,7 @@ static const EnumEntry<uint32_t> MachOHeaderCpuSubtypesARM[] = {
 
 static const EnumEntry<uint32_t> MachOHeaderCpuSubtypesARM64[] = {
   LLVM_READOBJ_ENUM_ENT(MachO, CPU_SUBTYPE_ARM64_ALL),
+  LLVM_READOBJ_ENUM_ENT(MachO, CPU_SUBTYPE_ARM64E),
 };
 
 static const EnumEntry<uint32_t> MachOHeaderCpuSubtypesSPARC[] = {
@@ -661,9 +662,8 @@ void MachODumper::printStackMap() const {
 
   StringRef StackMapContents;
   StackMapSection.getContents(StackMapContents);
-  ArrayRef<uint8_t> StackMapContentsArray(
-      reinterpret_cast<const uint8_t*>(StackMapContents.data()),
-      StackMapContents.size());
+  ArrayRef<uint8_t> StackMapContentsArray =
+      arrayRefFromStringRef(StackMapContents);
 
   if (Obj->isLittleEndian())
     prettyPrintStackMap(

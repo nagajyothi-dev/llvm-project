@@ -205,21 +205,13 @@ define void @nonpow2_load_narrowing() {
   ret void
 }
 
-; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to legalize instruction: G_STORE %3:_(s96), %0:_(p0) :: (store 12 into %ir.c, align 16) (in function: nonpow2_store_narrowing
+; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to legalize instruction: %4:_(s64) = G_EXTRACT %3:_(s96), 0 (in function: nonpow2_store_narrowing)
 ; FALLBACK-WITH-REPORT-ERR: warning: Instruction selection used fallback path for nonpow2_store_narrowing
 ; FALLBACK-WITH-REPORT-OUT-LABEL: nonpow2_store_narrowing:
 define void @nonpow2_store_narrowing(i96* %c) {
   %a = add i128 undef, undef
   %b = trunc i128 %a to i96
   store i96 %b, i96* %c
-  ret void
-}
-
-; FALLBACK-WITH-REPORT-ERR: remark: <unknown>:0:0: unable to legalize instruction: G_STORE %0:_(s96), %1:_(p0) :: (store 12 into `i96* undef`, align 16) (in function: nonpow2_constant_narrowing)
-; FALLBACK-WITH-REPORT-ERR: warning: Instruction selection used fallback path for nonpow2_constant_narrowing
-; FALLBACK-WITH-REPORT-OUT-LABEL: nonpow2_constant_narrowing:
-define void @nonpow2_constant_narrowing() {
-  store i96 0, i96* undef
   ret void
 }
 

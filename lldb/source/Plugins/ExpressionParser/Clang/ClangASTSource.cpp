@@ -26,15 +26,14 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecordLayout.h"
 
+#include <memory>
 #include <vector>
 
 using namespace clang;
 using namespace lldb_private;
 
-//------------------------------------------------------------------
 // Scoped class that will remove an active lexical decl from the set when it
 // goes out of scope.
-//------------------------------------------------------------------
 namespace {
 class ScopedLexicalDeclEraser {
 public:
@@ -707,7 +706,7 @@ void ClangASTSource::FindExternalVisibleDecls(NameSearchContext &context) {
     return; // otherwise we may need to fall back
   }
 
-  context.m_namespace_map.reset(new ClangASTImporter::NamespaceMap);
+  context.m_namespace_map = std::make_shared<ClangASTImporter::NamespaceMap>();
 
   if (const NamespaceDecl *namespace_context =
           dyn_cast<NamespaceDecl>(context.m_decl_context)) {
@@ -1835,7 +1834,7 @@ bool ClangASTSource::layoutRecordType(const RecordDecl *record, uint64_t &size,
 }
 
 void ClangASTSource::CompleteNamespaceMap(
-    ClangASTImporter::NamespaceMapSP &namespace_map, const ConstString &name,
+    ClangASTImporter::NamespaceMapSP &namespace_map, ConstString name,
     ClangASTImporter::NamespaceMapSP &parent_map) const {
   static unsigned int invocation_id = 0;
   unsigned int current_id = invocation_id++;

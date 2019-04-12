@@ -212,6 +212,12 @@ public:
         return WrapperFrontendAction::CreateASTConsumer(CI, InFile);
       }
 
+      bool BeginInvocation(CompilerInstance &CI) override {
+        // Make the compiler parse all comments.
+        CI.getLangOpts().CommentOpts.ParseAllComments = true;
+        return WrapperFrontendAction::BeginInvocation(CI);
+      }
+
     private:
       index::IndexingOptions IndexOpts;
       CommentHandler *PragmaHandler;
@@ -248,9 +254,8 @@ public:
     auto Factory = llvm::make_unique<SymbolIndexActionFactory>(
         CollectorOpts, PragmaHandler.get());
 
-    std::vector<std::string> Args = {
-        "symbol_collector", "-fsyntax-only", "-xc++",
-        "-std=c++11",       "-include",      TestHeaderName};
+    std::vector<std::string> Args = {"symbol_collector", "-fsyntax-only",
+                                     "-xc++", "-include", TestHeaderName};
     Args.insert(Args.end(), ExtraArgs.begin(), ExtraArgs.end());
     // This allows to override the "-xc++" with something else, i.e.
     // -xobjective-c++.
@@ -325,9 +330,6 @@ TEST_F(SymbolCollectorTest, CollectSymbols) {
     // Namespace alias
     namespace baz = bar;
 
-    // FIXME: using declaration is not supported as the IndexAction will ignore
-    // implicit declarations (the implicit using shadow declaration) by default,
-    // and there is no way to customize this behavior at the moment.
     using bar::v2;
     } // namespace foo
   )";
@@ -354,6 +356,7 @@ TEST_F(SymbolCollectorTest, CollectSymbols) {
                    AllOf(QName("foo::int32_t"), ForCodeCompletion(true)),
                    AllOf(QName("foo::v1"), ForCodeCompletion(true)),
                    AllOf(QName("foo::bar::v2"), ForCodeCompletion(true)),
+                   AllOf(QName("foo::v2"), ForCodeCompletion(true)),
                    AllOf(QName("foo::baz"), ForCodeCompletion(true))}));
 }
 
@@ -388,17 +391,25 @@ TEST_F(SymbolCollectorTest, FileLocal) {
 
 TEST_F(SymbolCollectorTest, Template) {
   Annotations Header(R"(
-    // Template is indexed, specialization and instantiation is not.
-    template <class T> struct [[Tmpl]] {T $xdecl[[x]] = 0;};
-    template <> struct Tmpl<int> {};
-    extern template struct Tmpl<float>;
-    template struct Tmpl<double>;
+    // Primary template and explicit specialization are indexed, instantiation
+    // is not.
+    template <class T, class U> struct [[Tmpl]] {T $xdecl[[x]] = 0;};
+    template <> struct $specdecl[[Tmpl]]<int, bool> {};
+    template <class U> struct $partspecdecl[[Tmpl]]<bool, U> {};
+    extern template struct Tmpl<float, bool>;
+    template struct Tmpl<double, bool>;
   )");
   runSymbolCollector(Header.code(), /*Main=*/"");
   EXPECT_THAT(Symbols,
-              UnorderedElementsAreArray(
-                  {AllOf(QName("Tmpl"), DeclRange(Header.range())),
-                   AllOf(QName("Tmpl::x"), DeclRange(Header.range("xdecl")))}));
+              UnorderedElementsAre(
+                  AllOf(QName("Tmpl"), DeclRange(Header.range()),
+                        ForCodeCompletion(true)),
+                  AllOf(QName("Tmpl"), DeclRange(Header.range("specdecl")),
+                        ForCodeCompletion(false)),
+                  AllOf(QName("Tmpl"), DeclRange(Header.range("partspecdecl")),
+                        ForCodeCompletion(false)),
+                  AllOf(QName("Tmpl::x"), DeclRange(Header.range("xdecl")),
+                        ForCodeCompletion(false))));
 }
 
 TEST_F(SymbolCollectorTest, ObjCSymbols) {
@@ -708,6 +719,31 @@ TEST_F(SymbolCollectorTest, SymbolsInMainFile) {
               UnorderedElementsAre(QName("Foo"), QName("f1"), QName("f2"),
                                    QName("ff"), QName("foo"), QName("foo::Bar"),
                                    QName("main_f")));
+}
+
+TEST_F(SymbolCollectorTest, Documentation) {
+  const std::string Header = R"(
+    // Doc Foo
+    class Foo {
+      // Doc f
+      int f();
+    };
+  )";
+  CollectorOpts.StoreAllDocumentation = false;
+  runSymbolCollector(Header, /* Main */ "");
+  EXPECT_THAT(Symbols,
+              UnorderedElementsAre(
+                  AllOf(QName("Foo"), Doc("Doc Foo"), ForCodeCompletion(true)),
+                  AllOf(QName("Foo::f"), Doc(""), ReturnType(""),
+                        ForCodeCompletion(false))));
+
+  CollectorOpts.StoreAllDocumentation = true;
+  runSymbolCollector(Header, /* Main */ "");
+  EXPECT_THAT(Symbols,
+              UnorderedElementsAre(
+                  AllOf(QName("Foo"), Doc("Doc Foo"), ForCodeCompletion(true)),
+                  AllOf(QName("Foo::f"), Doc("Doc f"), ReturnType(""),
+                        ForCodeCompletion(false))));
 }
 
 TEST_F(SymbolCollectorTest, ClassMembers) {
@@ -1116,6 +1152,25 @@ TEST_F(SymbolCollectorTest, ImplementationDetail) {
               UnorderedElementsAre(
                   AllOf(QName("X_Y_Decl"), ImplementationDetail()),
                   AllOf(QName("Public"), Not(ImplementationDetail()))));
+}
+
+TEST_F(SymbolCollectorTest, UsingDecl) {
+  const char *Header = R"(
+  void foo();
+  namespace std {
+    using ::foo;
+  })";
+  runSymbolCollector(Header, /**/ "");
+  EXPECT_THAT(Symbols, Contains(QName("std::foo")));
+}
+
+TEST_F(SymbolCollectorTest, CBuiltins) {
+  // In C, printf in stdio.h is a redecl of an implicit builtin.
+  const char *Header = R"(
+    extern int printf(const char*, ...);
+  )";
+  runSymbolCollector(Header, /**/ "", {"-xc"});
+  EXPECT_THAT(Symbols, Contains(QName("printf")));
 }
 
 } // namespace

@@ -153,9 +153,7 @@ private:
   DISALLOW_COPY_AND_ASSIGN(OptionPermissions);
 };
 
-//----------------------------------------------------------------------
 // "platform select <platform-name>"
-//----------------------------------------------------------------------
 class CommandObjectPlatformSelect : public CommandObjectParsed {
 public:
   CommandObjectPlatformSelect(CommandInterpreter &interpreter)
@@ -218,9 +216,7 @@ protected:
   OptionGroupPlatform m_platform_options;
 };
 
-//----------------------------------------------------------------------
 // "platform list"
-//----------------------------------------------------------------------
 class CommandObjectPlatformList : public CommandObjectParsed {
 public:
   CommandObjectPlatformList(CommandInterpreter &interpreter)
@@ -261,9 +257,7 @@ protected:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform status"
-//----------------------------------------------------------------------
 class CommandObjectPlatformStatus : public CommandObjectParsed {
 public:
   CommandObjectPlatformStatus(CommandInterpreter &interpreter)
@@ -297,9 +291,7 @@ protected:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform connect <connect-url>"
-//----------------------------------------------------------------------
 class CommandObjectPlatformConnect : public CommandObjectParsed {
 public:
   CommandObjectPlatformConnect(CommandInterpreter &interpreter)
@@ -352,9 +344,7 @@ protected:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform disconnect"
-//----------------------------------------------------------------------
 class CommandObjectPlatformDisconnect : public CommandObjectParsed {
 public:
   CommandObjectPlatformDisconnect(CommandInterpreter &interpreter)
@@ -414,9 +404,7 @@ protected:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform settings"
-//----------------------------------------------------------------------
 class CommandObjectPlatformSettings : public CommandObjectParsed {
 public:
   CommandObjectPlatformSettings(CommandInterpreter &interpreter)
@@ -459,9 +447,7 @@ protected:
   OptionGroupFile m_option_working_dir;
 };
 
-//----------------------------------------------------------------------
 // "platform mkdir"
-//----------------------------------------------------------------------
 class CommandObjectPlatformMkDir : public CommandObjectParsed {
 public:
   CommandObjectPlatformMkDir(CommandInterpreter &interpreter)
@@ -511,9 +497,7 @@ public:
   OptionGroupOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform fopen"
-//----------------------------------------------------------------------
 class CommandObjectPlatformFOpen : public CommandObjectParsed {
 public:
   CommandObjectPlatformFOpen(CommandInterpreter &interpreter)
@@ -568,9 +552,7 @@ public:
   OptionGroupOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform fclose"
-//----------------------------------------------------------------------
 class CommandObjectPlatformFClose : public CommandObjectParsed {
 public:
   CommandObjectPlatformFClose(CommandInterpreter &interpreter)
@@ -604,9 +586,7 @@ public:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform fread"
-//----------------------------------------------------------------------
 
 static constexpr OptionDefinition g_platform_fread_options[] = {
     // clang-format off
@@ -699,9 +679,7 @@ protected:
   CommandOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform fwrite"
-//----------------------------------------------------------------------
 
 static constexpr OptionDefinition g_platform_fwrite_options[] = {
     // clang-format off
@@ -793,9 +771,7 @@ protected:
 
 class CommandObjectPlatformFile : public CommandObjectMultiword {
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   CommandObjectPlatformFile(CommandInterpreter &interpreter)
       : CommandObjectMultiword(
             interpreter, "platform file",
@@ -814,15 +790,11 @@ public:
   ~CommandObjectPlatformFile() override = default;
 
 private:
-  //------------------------------------------------------------------
   // For CommandObjectPlatform only
-  //------------------------------------------------------------------
   DISALLOW_COPY_AND_ASSIGN(CommandObjectPlatformFile);
 };
 
-//----------------------------------------------------------------------
 // "platform get-file remote-file-path host-file-path"
-//----------------------------------------------------------------------
 class CommandObjectPlatformGetFile : public CommandObjectParsed {
 public:
   CommandObjectPlatformGetFile(CommandInterpreter &interpreter)
@@ -897,9 +869,7 @@ public:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform get-size remote-file-path"
-//----------------------------------------------------------------------
 class CommandObjectPlatformGetSize : public CommandObjectParsed {
 public:
   CommandObjectPlatformGetSize(CommandInterpreter &interpreter)
@@ -963,9 +933,7 @@ public:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform put-file"
-//----------------------------------------------------------------------
 class CommandObjectPlatformPutFile : public CommandObjectParsed {
 public:
   CommandObjectPlatformPutFile(CommandInterpreter &interpreter)
@@ -1002,9 +970,7 @@ public:
   }
 };
 
-//----------------------------------------------------------------------
 // "platform process launch"
-//----------------------------------------------------------------------
 class CommandObjectPlatformProcessLaunch : public CommandObjectParsed {
 public:
   CommandObjectPlatformProcessLaunch(CommandInterpreter &interpreter)
@@ -1092,9 +1058,7 @@ protected:
   ProcessLaunchCommandOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform process list"
-//----------------------------------------------------------------------
 
 static OptionDefinition g_platform_process_list_options[] = {
     // clang-format off
@@ -1151,10 +1115,9 @@ protected:
           if (pid != LLDB_INVALID_PROCESS_ID) {
             ProcessInstanceInfo proc_info;
             if (platform_sp->GetProcessInfo(pid, proc_info)) {
-              ProcessInstanceInfo::DumpTableHeader(ostrm, platform_sp.get(),
-                                                   m_options.show_args,
+              ProcessInstanceInfo::DumpTableHeader(ostrm, m_options.show_args,
                                                    m_options.verbose);
-              proc_info.DumpAsTableRow(ostrm, platform_sp.get(),
+              proc_info.DumpAsTableRow(ostrm, platform_sp->GetUserIDResolver(),
                                        m_options.show_args, m_options.verbose);
               result.SetStatus(eReturnStatusSuccessFinishResult);
             } else {
@@ -1212,13 +1175,12 @@ protected:
                 result.AppendMessageWithFormat(" whose name %s \"%s\"",
                                                match_desc, match_name);
               result.AppendMessageWithFormat("\n");
-              ProcessInstanceInfo::DumpTableHeader(ostrm, platform_sp.get(),
-                                                   m_options.show_args,
+              ProcessInstanceInfo::DumpTableHeader(ostrm, m_options.show_args,
                                                    m_options.verbose);
               for (uint32_t i = 0; i < matches; ++i) {
                 proc_infos.GetProcessInfoAtIndex(i).DumpAsTableRow(
-                    ostrm, platform_sp.get(), m_options.show_args,
-                    m_options.verbose);
+                    ostrm, platform_sp->GetUserIDResolver(),
+                    m_options.show_args, m_options.verbose);
               }
             }
           }
@@ -1395,9 +1357,7 @@ protected:
   CommandOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform process info"
-//----------------------------------------------------------------------
 class CommandObjectPlatformProcessInfo : public CommandObjectParsed {
 public:
   CommandObjectPlatformProcessInfo(CommandInterpreter &interpreter)
@@ -1453,7 +1413,7 @@ protected:
               if (platform_sp->GetProcessInfo(pid, proc_info)) {
                 ostrm.Printf("Process information for process %" PRIu64 ":\n",
                              pid);
-                proc_info.Dump(ostrm, platform_sp.get());
+                proc_info.Dump(ostrm, platform_sp->GetUserIDResolver());
               } else {
                 ostrm.Printf("error: no process information is available for "
                              "process %" PRIu64 "\n",
@@ -1635,9 +1595,7 @@ protected:
 
 class CommandObjectPlatformProcess : public CommandObjectMultiword {
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   CommandObjectPlatformProcess(CommandInterpreter &interpreter)
       : CommandObjectMultiword(interpreter, "platform process",
                                "Commands to query, launch and attach to "
@@ -1658,15 +1616,11 @@ public:
   ~CommandObjectPlatformProcess() override = default;
 
 private:
-  //------------------------------------------------------------------
   // For CommandObjectPlatform only
-  //------------------------------------------------------------------
   DISALLOW_COPY_AND_ASSIGN(CommandObjectPlatformProcess);
 };
 
-//----------------------------------------------------------------------
 // "platform shell"
-//----------------------------------------------------------------------
 static constexpr OptionDefinition g_platform_shell_options[] = {
     // clang-format off
   { LLDB_OPT_SET_ALL, false, "timeout", 't', OptionParser::eRequiredArgument, nullptr, {}, 0, eArgTypeValue, "Seconds to wait for the remote host to finish running the command." },
@@ -1790,9 +1744,7 @@ public:
   CommandOptions m_options;
 };
 
-//----------------------------------------------------------------------
 // "platform install" - install a target to a remote end
-//----------------------------------------------------------------------
 class CommandObjectPlatformInstall : public CommandObjectParsed {
 public:
   CommandObjectPlatformInstall(CommandInterpreter &interpreter)

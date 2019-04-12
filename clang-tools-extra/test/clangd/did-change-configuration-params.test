@@ -24,7 +24,7 @@
 # CHECK-NEXT:  "params": {
 # CHECK-NEXT:    "diagnostics": [
 # CHECK-NEXT:      {
-# CHECK-NEXT:        "message": "Variable 'i' is uninitialized when used here",
+# CHECK-NEXT:        "message": "Variable 'i' is uninitialized when used here (fix available)",
 # CHECK-NEXT:        "range": {
 # CHECK-NEXT:          "end": {
 # CHECK-NEXT:            "character": 28,
@@ -41,7 +41,9 @@
 # CHECK-NEXT:    "uri": "file://{{.*}}/foo.c"
 # CHECK-NEXT:  }
 #
-# ERR: Updating file {{.*}}foo.c with command [{{.*}}clangd-test2] clang -c foo.c -Wall -Werror
+# ERR: Updating file {{.*}}foo.c with command
+# ERR: [{{.*}}clangd-test2]
+# ERR: clang -c foo.c -Wall -Werror
 # Don't reparse the second file:
 # ERR: Skipping rebuild of the AST for {{.*}}bar.c
 ---

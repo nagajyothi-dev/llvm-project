@@ -10,19 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-def isGCN : Predicate<"Subtarget->getGeneration() "
-                      ">= AMDGPUSubtarget::SOUTHERN_ISLANDS">,
-            AssemblerPredicate<"FeatureGCN">;
-def isSI : Predicate<"Subtarget->getGeneration() "
-                      "== AMDGPUSubtarget::SOUTHERN_ISLANDS">,
-           AssemblerPredicate<"FeatureSouthernIslands">;
-
-
 class InstSI <dag outs, dag ins, string asm = "",
               list<dag> pattern = []> :
   AMDGPUInst<outs, ins, asm, pattern>, GCNPredicateControl {
-  let SubtargetPredicate = isGCN;
-
   // Low bits - basic encoding information.
   field bit SALU = 0;
   field bit VALU = 0;
@@ -120,6 +110,10 @@ class InstSI <dag outs, dag ins, string asm = "",
   // This bit indicates that this is a D16 buffer instruction.
   field bit D16Buf = 0;
 
+  // This field indicates that FLAT instruction accesses FLAT_GLBL or
+  // FLAT_SCRATCH segment. Must be 0 for non-FLAT instructions.
+  field bit IsNonFlatSeg = 0;
+
   // This bit indicates that this uses the floating point double precision
   // rounding mode flags
   field bit FPDPRounding = 0;
@@ -181,7 +175,9 @@ class InstSI <dag outs, dag ins, string asm = "",
 
   let TSFlags{50} = D16Buf;
 
-  let TSFlags{51} = FPDPRounding;
+  let TSFlags{51} = IsNonFlatSeg;
+
+  let TSFlags{52} = FPDPRounding;
 
   let SchedRW = [Write32Bit];
 

@@ -46,17 +46,16 @@
 
 #include <csignal>
 
+#include "lldb/Host/FileAction.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Host/HostProcess.h"
 #include "lldb/Host/MonitoringProcessLauncher.h"
+#include "lldb/Host/ProcessLaunchInfo.h"
 #include "lldb/Host/ProcessLauncher.h"
 #include "lldb/Host/ThreadLauncher.h"
 #include "lldb/Host/posix/ConnectionFileDescriptorPosix.h"
-#include "lldb/Target/FileAction.h"
-#include "lldb/Target/ProcessLaunchInfo.h"
-#include "lldb/Target/UnixSignals.h"
 #include "lldb/Utility/DataBufferLLVM.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
@@ -117,10 +116,8 @@ HostThread Host::StartMonitoringChildProcess(
 }
 
 #ifndef __linux__
-//------------------------------------------------------------------
 // Scoped class that will disable thread canceling when it is constructed, and
 // exception safely restore the previous value it when it goes out of scope.
-//------------------------------------------------------------------
 class ScopedPThreadCancelDisabler {
 public:
   ScopedPThreadCancelDisabler() {
@@ -612,12 +609,6 @@ bool Host::OpenFileInExternalEditor(const FileSpec &file_spec,
 }
 
 #endif
-
-const UnixSignalsSP &Host::GetUnixSignals() {
-  static const auto s_unix_signals_sp =
-      UnixSignals::Create(HostInfo::GetArchitecture());
-  return s_unix_signals_sp;
-}
 
 std::unique_ptr<Connection> Host::CreateDefaultConnection(llvm::StringRef url) {
 #if defined(_WIN32)

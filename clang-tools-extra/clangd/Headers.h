@@ -12,7 +12,7 @@
 #include "Path.h"
 #include "Protocol.h"
 #include "SourceCode.h"
-#include "index/Index.h"
+#include "index/Symbol.h"
 #include "clang/Format/Format.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/PPCallbacks.h"
@@ -119,9 +119,12 @@ collectIncludeStructureCallback(const SourceManager &SM, IncludeStructure *Out);
 // Calculates insertion edit for including a new header in a file.
 class IncludeInserter {
 public:
+  // If \p HeaderSearchInfo is nullptr (e.g. when compile command is
+  // infeasible), this will only try to insert verbatim headers, and
+  // include path of non-verbatim header will not be shortened.
   IncludeInserter(StringRef FileName, StringRef Code,
                   const format::FormatStyle &Style, StringRef BuildDir,
-                  HeaderSearch &HeaderSearchInfo)
+                  HeaderSearch *HeaderSearchInfo)
       : FileName(FileName), Code(Code), BuildDir(BuildDir),
         HeaderSearchInfo(HeaderSearchInfo),
         Inserter(FileName, Code, Style.IncludeStyle) {}
@@ -162,7 +165,7 @@ private:
   StringRef FileName;
   StringRef Code;
   StringRef BuildDir;
-  HeaderSearch &HeaderSearchInfo;
+  HeaderSearch *HeaderSearchInfo = nullptr;
   llvm::StringSet<> IncludedHeaders; // Both written and resolved.
   tooling::HeaderIncludes Inserter;  // Computers insertion replacement.
 };

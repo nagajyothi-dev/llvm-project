@@ -4,10 +4,14 @@ import("//llvm/utils/gn/build/toolchain/compiler.gni")
 
 group("default") {
   deps = [
+    "//clang-tools-extra/test",
     "//clang/test",
     "//lld/test",
     "//llvm/test",
   ]
+  if (current_os == "linux") {
+    deps += [ "//compiler-rt" ]
+  }
   if (current_os == "linux" || current_os == "android") {
     deps += [ "//compiler-rt/test/hwasan" ]
   }

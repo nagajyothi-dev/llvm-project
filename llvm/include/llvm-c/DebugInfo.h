@@ -50,7 +50,6 @@ typedef enum {
   LLVMDIFlagIntroducedVirtual = 1 << 18,
   LLVMDIFlagBitField = 1 << 19,
   LLVMDIFlagNoReturn = 1 << 20,
-  LLVMDIFlagMainSubprogram = 1 << 21,
   LLVMDIFlagTypePassByValue = 1 << 22,
   LLVMDIFlagTypePassByReference = 1 << 23,
   LLVMDIFlagEnumClass = 1 << 24,
@@ -160,7 +159,8 @@ enum {
   LLVMDIObjCPropertyMetadataKind,
   LLVMDIImportedEntityMetadataKind,
   LLVMDIMacroMetadataKind,
-  LLVMDIMacroFileMetadataKind
+  LLVMDIMacroFileMetadataKind,
+  LLVMDICommonBlockMetadataKind
 };
 typedef unsigned LLVMMetadataKind;
 
@@ -452,6 +452,15 @@ unsigned LLVMDILocationGetColumn(LLVMMetadataRef Location);
 LLVMMetadataRef LLVMDILocationGetScope(LLVMMetadataRef Location);
 
 /**
+ * Get the "inline at" location associated with this debug location.
+ * \param Location     The debug location.
+ *
+ * @see DILocation::getInlinedAt()
+ */
+LLVMMetadataRef LLVMDILocationGetInlinedAt(LLVMMetadataRef Location);
+
+
+/**
  * Create a type array.
  * \param Builder        The DIBuilder.
  * \param Data           The type elements.
@@ -477,6 +486,19 @@ LLVMDIBuilderCreateSubroutineType(LLVMDIBuilderRef Builder,
                                   LLVMMetadataRef *ParameterTypes,
                                   unsigned NumParameterTypes,
                                   LLVMDIFlags Flags);
+
+/**
+ * Create debugging information entry for an enumerator.
+ * @param Builder        The DIBuilder.
+ * @param Name           Enumerator name.
+ * @param NameLen        Length of enumerator name.
+ * @param Value          Enumerator value.
+ * @param IsUnsigned     True if the value is unsigned.
+ */
+LLVMMetadataRef LLVMDIBuilderCreateEnumerator(LLVMDIBuilderRef Builder,
+                                              const char *Name, size_t NameLen,
+                                              int64_t Value,
+                                              LLVMBool IsUnsigned);
 
 /**
  * Create debugging information entry for an enumeration.
@@ -1178,6 +1200,22 @@ LLVMMetadataRef LLVMGetSubprogram(LLVMValueRef Func);
  * @see llvm::Function::setSubprogram()
  */
 void LLVMSetSubprogram(LLVMValueRef Func, LLVMMetadataRef SP);
+
+/**
+ * Get the debug location for the given instruction.
+ *
+ * @see llvm::Instruction::getDebugLoc()
+ */
+LLVMMetadataRef LLVMInstructionGetDebugLoc(LLVMValueRef Inst);
+
+/**
+ * Set the debug location for the given instruction.
+ *
+ * To clear the location metadata of the given instruction, pass NULL to \p Loc.
+ *
+ * @see llvm::Instruction::setDebugLoc()
+ */
+void LLVMInstructionSetDebugLoc(LLVMValueRef Inst, LLVMMetadataRef Loc);
 
 /**
  * Obtain the enumerated type of a Metadata instance.

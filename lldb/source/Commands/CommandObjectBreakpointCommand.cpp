@@ -26,9 +26,7 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
 // CommandObjectBreakpointCommandAdd
-//-------------------------------------------------------------------------
 
 // FIXME: "script-type" needs to have its contents determined dynamically, so
 // somebody can add a new scripting
@@ -222,9 +220,9 @@ are no syntax errors may indicate that a function was declared but never called.
 
   Options *GetOptions() override { return &m_options; }
 
-  void IOHandlerActivated(IOHandler &io_handler) override {
+  void IOHandlerActivated(IOHandler &io_handler, bool interactive) override {
     StreamFileSP output_sp(io_handler.GetOutputStreamFile());
-    if (output_sp) {
+    if (output_sp && interactive) {
       output_sp->PutCString(g_reader_instructions);
       output_sp->Flush();
     }
@@ -469,9 +467,7 @@ private:
 const char *CommandObjectBreakpointCommandAdd::g_reader_instructions =
     "Enter your debugger command(s).  Type 'DONE' to end.\n";
 
-//-------------------------------------------------------------------------
 // CommandObjectBreakpointCommandDelete
-//-------------------------------------------------------------------------
 
 static constexpr OptionDefinition g_breakpoint_delete_options[] = {
     // clang-format off
@@ -606,9 +602,7 @@ private:
   CommandOptions m_options;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectBreakpointCommandList
-//-------------------------------------------------------------------------
 
 class CommandObjectBreakpointCommandList : public CommandObjectParsed {
 public:
@@ -726,9 +720,7 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectBreakpointCommand
-//-------------------------------------------------------------------------
 
 CommandObjectBreakpointCommand::CommandObjectBreakpointCommand(
     CommandInterpreter &interpreter)
