@@ -1,29 +1,21 @@
 //===-- OptionValue.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Interpreter/OptionValue.h"
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Interpreter/OptionValues.h"
 #include "lldb/Utility/StringList.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
-// Get this value as a uint64_t value if it is encoded as a boolean,
-// uint64_t or int64_t. Other types will cause "fail_value" to be
-// returned
-//-------------------------------------------------------------------------
+// Get this value as a uint64_t value if it is encoded as a boolean, uint64_t
+// or int64_t. Other types will cause "fail_value" to be returned
 uint64_t OptionValue::GetUInt64Value(uint64_t fail_value, bool *success_ptr) {
   if (success_ptr)
     *success_ptr = true;
@@ -508,8 +500,8 @@ const char *OptionValue::GetBuiltinTypeAsCString(Type t) {
 
 lldb::OptionValueSP OptionValue::CreateValueFromCStringForTypeMask(
     const char *value_cstr, uint32_t type_mask, Status &error) {
-  // If only 1 bit is set in the type mask for a dictionary or array
-  // then we know how to decode a value from a cstring
+  // If only 1 bit is set in the type mask for a dictionary or array then we
+  // know how to decode a value from a cstring
   lldb::OptionValueSP value_sp;
   switch (type_mask) {
   case 1u << eTypeArch:
@@ -574,12 +566,9 @@ bool OptionValue::DumpQualifiedName(Stream &strm) const {
 }
 
 size_t OptionValue::AutoComplete(CommandInterpreter &interpreter,
-                                 llvm::StringRef s, int match_start_point,
-                                 int max_return_elements, bool &word_complete,
-                                 StringList &matches) {
-  word_complete = false;
-  matches.Clear();
-  return matches.GetSize();
+                                 CompletionRequest &request) {
+  request.SetWordComplete(false);
+  return request.GetNumberOfMatches();
 }
 
 Status OptionValue::SetValueFromString(llvm::StringRef value,

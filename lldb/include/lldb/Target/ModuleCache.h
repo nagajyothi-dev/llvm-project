@@ -1,9 +1,8 @@
 //===-- ModuleCache.h -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,12 +25,11 @@ namespace lldb_private {
 class Module;
 class UUID;
 
-//----------------------------------------------------------------------
-/// @class ModuleCache ModuleCache.h "lldb/Target/ModuleCache.h"
-/// @brief A module cache class.
+/// \class ModuleCache ModuleCache.h "lldb/Target/ModuleCache.h"
+/// A module cache class.
 ///
-/// Caches locally modules that are downloaded from remote targets.
-/// Each cached module maintains 2 views:
+/// Caches locally modules that are downloaded from remote targets. Each
+/// cached module maintains 2 views:
 ///  - UUID view:
 ///  /${CACHE_ROOT}/${PLATFORM_NAME}/.cache/${UUID}/${MODULE_FILENAME}
 ///  - Sysroot view:
@@ -42,9 +40,9 @@ class UUID;
 ///
 /// Example:
 /// UUID view   :
-/// /tmp/lldb/remote-linux/.cache/30C94DC6-6A1F-E951-80C3-D68D2B89E576-D5AE213C/libc.so.6
+/// /tmp/lldb/remote-
+/// linux/.cache/30C94DC6-6A1F-E951-80C3-D68D2B89E576-D5AE213C/libc.so.6
 /// Sysroot view: /tmp/lldb/remote-linux/ubuntu/lib/x86_64-linux-gnu/libc.so.6
-//----------------------------------------------------------------------
 
 class ModuleCache {
 public:

@@ -1,9 +1,8 @@
 //===-- MICmdBase.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,7 +14,6 @@
 #include "MICmnMIValueConst.h"
 
 //++
-//------------------------------------------------------------------------------------
 // Details: CMICmdBase constructor.
 // Type:    Method.
 // Args:    None.
@@ -31,7 +29,6 @@ CMICmdBase::CMICmdBase()
       m_ThreadArgMandatory(false), m_FrameArgMandatory(false) {}
 
 //++
-//------------------------------------------------------------------------------------
 // Details: CMICmdBase destructor.
 // Type:    Overrideable.
 // Args:    None.
@@ -41,7 +38,6 @@ CMICmdBase::CMICmdBase()
 CMICmdBase::~CMICmdBase() {}
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The invoker requires this function.
 // Type:    Overridden.
 // Args:    None.
@@ -51,7 +47,6 @@ CMICmdBase::~CMICmdBase() {}
 const SMICmdData &CMICmdBase::GetCmdData() const { return m_cmdData; }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The invoker requires this function.
 // Type:    Overridden.
 // Args:    None.
@@ -64,7 +59,6 @@ const CMIUtilString &CMICmdBase::GetErrorDescription() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The CMICmdFactory requires this function. Retrieve the command and
 // argument
 //          options description string.
@@ -76,7 +70,6 @@ const CMIUtilString &CMICmdBase::GetErrorDescription() const {
 const CMIUtilString &CMICmdBase::GetMiCmd() const { return m_strMiCmd; }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Help parse the arguments that are common to all commands.
 // Args:    None.
 // Return:  None
@@ -96,7 +89,6 @@ void CMICmdBase::AddCommonArgs() {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The invoker requires this function. A command must be given working
 // data and
 //          provide data about its status or provide information to other
@@ -111,7 +103,6 @@ void CMICmdBase::SetCmdData(const SMICmdData &vCmdData) {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The command factory requires this function. The factory calls this
 // function
 //          so it can obtain *this command's creation function.
@@ -125,7 +116,6 @@ CMICmdFactory::CmdCreatorFnPtr CMICmdBase::GetCmdCreatorFn() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: If a command is an event type (has callbacks registered with
 // SBListener) it
 //          needs to inform the Invoker that it has finished its work so that
@@ -144,7 +134,6 @@ void CMICmdBase::CmdFinishedTellInvoker() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Returns the final version of the MI result record built up in the
 // command's
 //          Acknowledge function. The one line text of MI result.
@@ -158,7 +147,6 @@ const CMIUtilString &CMICmdBase::GetMIResultRecord() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Retrieve from the command additional MI result to its 1 line
 // response.
 //          Because of using LLDB additional 'fake'/hack output is sometimes
@@ -174,7 +162,6 @@ const CMIUtilString &CMICmdBase::GetMIResultRecordExtra() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Hss *this command got additional MI result to its 1 line response.
 //          Because of using LLDB additional 'fake'/hack output is sometimes
 //          required to
@@ -190,7 +177,6 @@ bool CMICmdBase::HasMIResultRecordExtra() const {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Short cut function to enter error information into the command's
 // metadata
 //          object and set the command's error status.
@@ -213,7 +199,61 @@ void CMICmdBase::SetError(const CMIUtilString &rErrMsg) {
 }
 
 //++
-//------------------------------------------------------------------------------------
+// Details: Short cut function to check MI command's execute status and
+//          set an error in case of failure.
+// Type:    Method.
+// Args:    error - (R) Error description object.
+//          successHandler - (R) function describing actions to execute
+//          in case of success state of passed SBError object.
+//          errorHandler - (R) function describing actions to execute
+//          in case of fail status of passed SBError object.
+// Return:  bool.
+// Throws:  None.
+//--
+bool CMICmdBase::HandleSBError(const lldb::SBError &error,
+                               const std::function<bool()> &successHandler,
+                               const std::function<void()> &errorHandler) {
+  if (error.Success())
+    return successHandler();
+
+  SetError(error.GetCString());
+  errorHandler();
+  return MIstatus::failure;
+}
+
+//++
+// Details: Short cut function to check MI command's execute status and
+//          call specified handler function for success case.
+// Type:    Method.
+// Args:    error - (R) Error description object.
+//          successHandler - (R) function describing actions to execute
+//          in case of success state of passed SBError object.
+// Return:  bool.
+// Throws:  None.
+//--
+bool CMICmdBase::HandleSBErrorWithSuccess(
+    const lldb::SBError &error,
+    const std::function<bool()> &successHandler) {
+  return HandleSBError(error, successHandler);
+}
+
+//++
+// Details: Short cut function to check MI command's execute status and
+//          call specified handler function for error case.
+// Type:    Method.
+// Args:    error - (R) Error description object.
+//          errorHandler - (R) function describing actions to execute
+//          in case of fail status of passed SBError object.
+// Return:  bool.
+// Throws:  None.
+//--
+bool CMICmdBase::HandleSBErrorWithFailure(
+    const lldb::SBError &error,
+    const std::function<void()> &errorHandler) {
+  return HandleSBError(error, [] { return MIstatus::success; }, errorHandler);
+}
+
+//++
 // Details: Ask a command to provide its unique identifier.
 // Type:    Method.
 // Args:    A unique identifier for this command class.
@@ -229,7 +269,6 @@ MIuint CMICmdBase::GetGUID() {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: The invoker requires this function. The parses the command line
 // options
 //          arguments to extract values for each of those arguments.
@@ -246,7 +285,6 @@ bool CMICmdBase::ParseArgs() {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Having previously given CMICmdArgSet m_setCmdArgs all the argument
 // or option
 //          definitions for the command to handle proceed to parse and validate
@@ -273,7 +311,6 @@ bool CMICmdBase::ParseValidateCmdOptions() {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: If the MI Driver is not operating via a client i.e. Eclipse but say
 // operating
 //          on a executable passed in as a argument to the drive then what

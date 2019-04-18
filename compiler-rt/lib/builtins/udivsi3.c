@@ -1,9 +1,8 @@
 /* ===-- udivsi3.c - Implement __udivsi3 -----------------------------------===
  *
- *                     The LLVM Compiler Infrastructure
- *
- * This file is dual licensed under the MIT and the University of Illinois Open
- * Source Licenses. See LICENSE.TXT for details.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  * ===----------------------------------------------------------------------===
  *
@@ -64,8 +63,5 @@ __udivsi3(su_int n, su_int d)
 }
 
 #if defined(__ARM_EABI__)
-AEABI_RTABI su_int __aeabi_uidiv(su_int n, su_int d) {
-  return __udivsi3(n, d);
-}
+AEABI_RTABI su_int __aeabi_uidiv(su_int n, su_int d) COMPILER_RT_ALIAS(__udivsi3);
 #endif
-

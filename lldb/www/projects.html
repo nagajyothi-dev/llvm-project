@@ -403,6 +403,20 @@
                                             </li>
 
                                             <li>
+                                              Convert the dotest style tests to use lldbutil.run_to_source_breakpoint.
+
+                                              <p>
+                                                run_to_source_breakpoint & run_to_name_breakpoint provide a compact API that
+                                                does in one line what the first 10 or 20 lines of most of the old tests now do by
+                                                hand.  Using these functions makes tests much more readable, and by centralizing
+                                                common functionality will make maintaining the testsuites easier in the future.
+                                                This is more of a finger exercise, and perhaps best implemented by a rule like:
+                                                &quotIf you touch a test case, and it isn't using run_to_source_breakpoint, please
+                                                make it do so&quot.
+                                              </p>
+                                            </li>
+
+                                            <li>
                                               Unify Watchpoint's & Breakpoints.  
                                               <p>
                                                 Option handling isn't shared, and more importantly the PerformAction's have a lot 
@@ -451,6 +465,32 @@
                                                 and make the IR interpreter -- both for LLVM and LLDB -- better.  An alternate strategy
                                                 would be simply to JIT into the current process but have callbacks for non-stack memory
                                                 access.
+                                              </p>
+                                            </li>
+                                            <li>
+                                              Teach lldb to predict exception propagation at the throw site
+
+                                              <p>
+                                                There are a bunch of places in lldb where we need to know at the point where an
+                                                exception is thrown, what frame will catch the exception.
+                                              </p>
+                                              <p>
+                                              For instance, if an expression throws an exception, we need to know whether the
+                                              exception will be caught in the course of the expression evaluation.  If so it
+                                              would be safe to let the expression continue.  But since we would destroy the
+                                              state of the thread if we let the exception escape the expression, we currently
+                                              stop the expression evaluation if we see a throw.  If we knew where it would be
+                                              caught we could distinguish these two cases.
+                                              </p>
+                                              <p>
+                                              Similarly, when you step over a call that throws, you want to stop at the throw 
+                                              point if you know the exception will unwind past the frame you were stepping in,
+                                              but it would annoying to have the step abort every time an exception was thrown.
+                                              If we could predict the catching frame, we could do this right.
+                                              </p>
+                                              <p>
+                                                And of course, this would be a useful piece of information to display when stopped
+                                                at a throw point.
                                               </p>
                                             </li>
                                           </ol>

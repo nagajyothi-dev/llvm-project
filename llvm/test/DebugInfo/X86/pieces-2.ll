@@ -1,4 +1,4 @@
-; RUN: llc %s -filetype=obj -o - | llvm-dwarfdump - | FileCheck %s
+; RUN: llc %s -filetype=obj -o - | llvm-dwarfdump -v - | FileCheck %s
 ;
 ;    // Compile with -O1
 ;    typedef struct {
@@ -17,15 +17,10 @@
 ;
 ;
 ; CHECK: DW_TAG_variable [4]
-; CHECK-NEXT:   DW_AT_location [DW_FORM_data4]        ([[LOC:.*]])
+; CHECK-NEXT:   DW_AT_location [DW_FORM_data4] (
+; CHECK-NEXT:     [0x0000000000000004, 0x0000000000000005): DW_OP_reg0 RAX, DW_OP_piece 0x4)
 ; CHECK-NEXT:  DW_AT_name {{.*}}"i1"
-;
-; CHECK: .debug_loc
-; CHECK: [[LOC]]: Beginning address offset: 0x0000000000000004
-; CHECK-NEXT:        Ending address offset: 0x0000000000000005
-;                                           rax, piece 0x00000004
-; CHECK-NEXT:         Location description: 50 93 04
-;
+
 ; ModuleID = '/Volumes/Data/llvm/test/DebugInfo/X86/sroasplit-1.ll'
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.9.0"
@@ -49,7 +44,7 @@ entry:
 declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
 ; Function Attrs: nounwind
-declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture, i8* nocapture readonly, i64, i32, i1) #2
+declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture, i8* nocapture readonly, i64, i1) #2
 
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.value(metadata, metadata, metadata) #1
@@ -65,7 +60,7 @@ attributes #2 = { nounwind }
 !0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.5.0 ", isOptimized: false, emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, globals: !2, imports: !2)
 !1 = !DIFile(filename: "sroasplit-1.c", directory: "")
 !2 = !{}
-!4 = distinct !DISubprogram(name: "foo", line: 10, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 10, file: !1, scope: !5, type: !6, variables: !2)
+!4 = distinct !DISubprogram(name: "foo", line: 10, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 10, file: !1, scope: !5, type: !6, retainedNodes: !2)
 !5 = !DIFile(filename: "sroasplit-1.c", directory: "")
 !6 = !DISubroutineType(types: !7)
 !7 = !{!8, !9}

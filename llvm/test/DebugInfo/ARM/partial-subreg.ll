@@ -1,4 +1,4 @@
-; RUN: llc %s -filetype=obj -o - | llvm-dwarfdump - | FileCheck %s
+; RUN: llc %s -filetype=obj -o - | llvm-dwarfdump -v - | FileCheck %s
 ; This tests a fragment that partially covers subregister compositions.
 ;
 ; Our fragment is 96 bits long and lies in a 128-bit register, which
@@ -8,12 +8,33 @@
 ; CHECK: DW_TAG_subprogram
 ; CHECK:   DW_AT_name {{.*}}"subscript.get"
 ; CHECK:  DW_TAG_formal_parameter
-; CHECK-NEXT: DW_AT_location [DW_FORM_sec_offset]	(0x00000000)
-; CHECK: .debug_loc
-; CHECK: 0x00000000: Beginning address offset
-; CHECK-NEXT:           Ending address offset
-; CHECK-NEXT:            Location description: 90 90 02 93 08 90 91 02 93 04
-;                        d16, piece 0x00000008, d17, piece 0x00000004
+; CHECK-NEXT: DW_AT_location [DW_FORM_sec_offset]	({{.*}}
+; CHECK-NEXT:  [0x{{.*}}, 0x{{.*}}): DW_OP_regx D16, DW_OP_piece 0x8, DW_OP_regx D17, DW_OP_piece 0x4
+; CHECK-NEXT:  [0x{{.*}}, 0x{{.*}}): DW_OP_regx D16, DW_OP_piece 0x8, DW_OP_regx D17, DW_OP_piece 0x4
+
+; FIXME: The second location list entry should not be emitted.
+;
+; The input to LiveDebugValues is:
+;
+; bb.0.entry:
+;   [...]
+;   Bcc %bb.2, 1, killed $cpsr, debug-location !10; simd.swift:5900:12
+; bb.1:
+;   [...]
+;   DBG_VALUE $q8, $noreg, !"self", !DIExpression(DW_OP_LLVM_fragment, 0, 96)
+;   B %bb.3
+; bb.2.select.false:
+;   [...]
+;   DBG_VALUE $q8, $noreg, !"self", !DIExpression(DW_OP_LLVM_fragment, 0, 96)
+; bb.3.select.end:
+;   [...]
+;
+; The two DBG_VALUEs in the blocks describe different fragments of the
+; variable. However, LiveDebugValues is not aware of fragments, so it will
+; incorrectly insert a copy of the first DBG_VALUE in bb.3.select.end, since
+; the debug values in its predecessor blocks are described by the same
+; register.
+
 source_filename = "simd.ll"
 target datalayout = "e-m:o-p:32:32-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32"
 target triple = "armv7-apple-ios7.0"
@@ -50,7 +71,7 @@ attributes #0 = { nounwind readnone }
 !2 = !{}
 !3 = !{i32 2, !"Dwarf Version", i32 4}
 !4 = !{i32 2, !"Debug Info Version", i32 3}
-!5 = distinct !DISubprogram(name: "subscript.get", linkageName: "_TFV4simd8float2x3g9subscriptFSiVS_6float3", scope: !6, file: !1, type: !7, isLocal: false, isDefinition: true, isOptimized: true, unit: !0, variables: !2)
+!5 = distinct !DISubprogram(name: "subscript.get", linkageName: "_TFV4simd8float2x3g9subscriptFSiVS_6float3", scope: !6, file: !1, type: !7, isLocal: false, isDefinition: true, isOptimized: true, unit: !0, retainedNodes: !2)
 !6 = !DICompositeType(tag: DW_TAG_structure_type, name: "float2x3", scope: !0, file: !1, line: 5824, size: 256, align: 128, elements: !2, runtimeLang: DW_LANG_Swift, identifier: "_TtV4simd8float2x3")
 !7 = !DISubroutineType(types: !2)
 !8 = !DILocalVariable(name: "self", arg: 2, scope: !5, file: !1, line: 5897, type: !6, flags: DIFlagArtificial)

@@ -15,10 +15,11 @@ class CPPAutoTestCase(TestBase):
         compiler="gcc",
         bugnumber="GCC generates incomplete debug info")
     @expectedFailureAll(oslist=['windows'], bugnumber="llvm.org/pr26339")
+    @expectedFailureNetBSD
     def test_with_run_command(self):
         """Test that auto types work in the expression parser"""
         self.build()
-        self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
+        self.runCmd("file " + self.getBuildArtifact("a.out"), CURRENT_EXECUTABLE_SET)
 
         line = line_number('main.cpp', '// break here')
         lldbutil.run_break_set_by_file_and_line(

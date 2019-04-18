@@ -4,6 +4,7 @@ Test inferior restart when breakpoint is set on running target.
 
 import os
 import lldb
+from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 
 
@@ -12,11 +13,11 @@ class BreakpointSetRestart(TestBase):
     mydir = TestBase.compute_mydir(__file__)
     BREAKPOINT_TEXT = 'Set a breakpoint here'
 
+    @expectedFlakeyNetBSD
     def test_breakpoint_set_restart(self):
         self.build()
 
-        cwd = os.getcwd()
-        exe = os.path.join(cwd, 'a.out')
+        exe = self.getBuildArtifact("a.out")
 
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target, VALID_TARGET)
@@ -33,9 +34,7 @@ class BreakpointSetRestart(TestBase):
                 break
 
         bp = target.BreakpointCreateBySourceRegex(
-            self.BREAKPOINT_TEXT, lldb.SBFileSpec(
-                os.path.join(
-                    cwd, 'main.cpp')))
+            self.BREAKPOINT_TEXT, lldb.SBFileSpec('main.cpp'))
         self.assertTrue(
             bp.IsValid() and bp.GetNumLocations() == 1,
             VALID_BREAKPOINT)

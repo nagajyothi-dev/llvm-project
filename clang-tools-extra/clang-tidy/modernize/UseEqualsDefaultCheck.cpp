@@ -1,9 +1,8 @@
 //===--- UseEqualsDefaultCheck.cpp - clang-tidy----------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -77,12 +76,12 @@ static bool isCopyConstructorAndCanBeDefaulted(ASTContext *Context,
     if (match(
             cxxConstructorDecl(forEachConstructorInitializer(cxxCtorInitializer(
                 isBaseInitializer(),
-                withInitializer(cxxConstructExpr(allOf(
+                withInitializer(cxxConstructExpr(
                     hasType(equalsNode(Base)),
                     hasDeclaration(cxxConstructorDecl(isCopyConstructor())),
                     argumentCountIs(1),
                     hasArgument(
-                        0, declRefExpr(to(varDecl(equalsNode(Param))))))))))),
+                        0, declRefExpr(to(varDecl(equalsNode(Param)))))))))),
             *Ctor, *Context)
             .empty())
       return false;
@@ -97,10 +96,11 @@ static bool isCopyConstructorAndCanBeDefaulted(ASTContext *Context,
                 isMemberInitializer(), forField(equalsNode(Field)),
                 withInitializer(anyOf(
                     AccessToFieldInParam,
-                    cxxConstructExpr(allOf(
+                    initListExpr(has(AccessToFieldInParam)),
+                    cxxConstructExpr(
                         hasDeclaration(cxxConstructorDecl(isCopyConstructor())),
                         argumentCountIs(1),
-                        hasArgument(0, AccessToFieldInParam)))))))),
+                        hasArgument(0, AccessToFieldInParam))))))),
             *Ctor, *Context)
             .empty())
       return false;
@@ -144,21 +144,21 @@ static bool isCopyAssignmentAndCanBeDefaulted(ASTContext *Context,
     //   ((Base*)this)->operator=((Base)Other);
     //
     // So we are looking for a member call that fulfills:
-    if (match(compoundStmt(has(ignoringParenImpCasts(cxxMemberCallExpr(allOf(
-                  // - The object is an implicit cast of 'this' to a pointer to
-                  //   a base class.
-                  onImplicitObjectArgument(
-                      implicitCastExpr(hasImplicitDestinationType(
-                                           pointsTo(type(equalsNode(Base)))),
-                                       hasSourceExpression(cxxThisExpr()))),
-                  // - The called method is the operator=.
-                  callee(cxxMethodDecl(isCopyAssignmentOperator())),
-                  // - The argument is (an implicit cast to a Base of) the
-                  // argument taken by "Operator".
-                  argumentCountIs(1),
-                  hasArgument(0,
-                              declRefExpr(to(varDecl(equalsNode(Param)))))))))),
-              *Compound, *Context)
+    if (match(
+            compoundStmt(has(ignoringParenImpCasts(cxxMemberCallExpr(
+                // - The object is an implicit cast of 'this' to a pointer to
+                //   a base class.
+                onImplicitObjectArgument(
+                    implicitCastExpr(hasImplicitDestinationType(
+                                         pointsTo(type(equalsNode(Base)))),
+                                     hasSourceExpression(cxxThisExpr()))),
+                // - The called method is the operator=.
+                callee(cxxMethodDecl(isCopyAssignmentOperator())),
+                // - The argument is (an implicit cast to a Base of) the
+                // argument taken by "Operator".
+                argumentCountIs(1),
+                hasArgument(0, declRefExpr(to(varDecl(equalsNode(Param))))))))),
+            *Compound, *Context)
             .empty())
       return false;
   }
@@ -297,7 +297,7 @@ void UseEqualsDefaultCheck::check(const MatchFinder::MatchResult &Result) {
   // expansion locations are reported.
   SourceLocation Location = SpecialFunctionDecl->getLocation();
   if (Location.isMacroID())
-    Location = Body->getLocStart();
+    Location = Body->getBeginLoc();
 
   auto Diag = diag(Location, "use '= default' to define a trivial " +
                                  SpecialFunctionName);

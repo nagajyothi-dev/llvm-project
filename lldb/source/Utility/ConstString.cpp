@@ -1,9 +1,8 @@
 //===-- ConstString.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,21 +10,21 @@
 
 #include "lldb/Utility/Stream.h"
 
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/iterator.h"            // for iterator_facade_base
-#include "llvm/Support/Allocator.h"       // for BumpPtrAllocator
-#include "llvm/Support/FormatProviders.h" // for format_provider
+#include "llvm/ADT/iterator.h"
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/DJB.h"
+#include "llvm/Support/FormatProviders.h"
 #include "llvm/Support/RWMutex.h"
 #include "llvm/Support/Threading.h"
 
-#include <algorithm> // for min
+#include <algorithm>
 #include <array>
-#include <utility> // for make_pair, pair
+#include <utility>
 
-#include <inttypes.h> // for PRIu64
-#include <stdint.h>   // for uint8_t, uint32_t, uint64_t
-#include <string.h>   // for size_t, strlen
+#include <inttypes.h>
+#include <stdint.h>
+#include <string.h>
 
 using namespace lldb_private;
 
@@ -43,8 +42,8 @@ public:
 
   static size_t GetConstCStringLength(const char *ccstr) {
     if (ccstr != nullptr) {
-      // Since the entry is read only, and we derive the entry entirely from the
-      // pointer, we don't need the lock.
+      // Since the entry is read only, and we derive the entry entirely from
+      // the pointer, we don't need the lock.
       const StringPoolEntryType &entry = GetStringMapEntryFromKeyData(ccstr);
       return entry.getKey().size();
     }
@@ -111,54 +110,47 @@ public:
   }
 
   const char *
-  GetConstCStringAndSetMangledCounterPart(const char *demangled_cstr,
+  GetConstCStringAndSetMangledCounterPart(llvm::StringRef demangled,
                                           const char *mangled_ccstr) {
-    if (demangled_cstr != nullptr) {
-      const char *demangled_ccstr = nullptr;
+    const char *demangled_ccstr = nullptr;
 
-      {
-        llvm::StringRef string_ref(demangled_cstr);
-        const uint8_t h = hash(string_ref);
-        llvm::sys::SmartScopedWriter<false> wlock(m_string_pools[h].m_mutex);
+    {
+      const uint8_t h = hash(demangled);
+      llvm::sys::SmartScopedWriter<false> wlock(m_string_pools[h].m_mutex);
 
-        // Make string pool entry with the mangled counterpart already set
-        StringPoolEntryType &entry =
-            *m_string_pools[h]
-                 .m_string_map.insert(std::make_pair(string_ref, mangled_ccstr))
-                 .first;
+      // Make or update string pool entry with the mangled counterpart
+      StringPool &map = m_string_pools[h].m_string_map;
+      StringPoolEntryType &entry = *map.try_emplace(demangled).first;
 
-        // Extract the const version of the demangled_cstr
-        demangled_ccstr = entry.getKeyData();
-      }
+      entry.second = mangled_ccstr;
 
-      {
-        // Now assign the demangled const string as the counterpart of the
-        // mangled const string...
-        const uint8_t h = hash(llvm::StringRef(mangled_ccstr));
-        llvm::sys::SmartScopedWriter<false> wlock(m_string_pools[h].m_mutex);
-        GetStringMapEntryFromKeyData(mangled_ccstr).setValue(demangled_ccstr);
-      }
-
-      // Return the constant demangled C string
-      return demangled_ccstr;
+      // Extract the const version of the demangled_cstr
+      demangled_ccstr = entry.getKeyData();
     }
-    return nullptr;
+
+    {
+      // Now assign the demangled const string as the counterpart of the
+      // mangled const string...
+      const uint8_t h = hash(llvm::StringRef(mangled_ccstr));
+      llvm::sys::SmartScopedWriter<false> wlock(m_string_pools[h].m_mutex);
+      GetStringMapEntryFromKeyData(mangled_ccstr).setValue(demangled_ccstr);
+    }
+
+    // Return the constant demangled C string
+    return demangled_ccstr;
   }
 
   const char *GetConstTrimmedCStringWithLength(const char *cstr,
                                                size_t cstr_len) {
     if (cstr != nullptr) {
-      const size_t trimmed_len = std::min<size_t>(strlen(cstr), cstr_len);
+      const size_t trimmed_len = strnlen(cstr, cstr_len);
       return GetConstCStringWithLength(cstr, trimmed_len);
     }
     return nullptr;
   }
 
-  //------------------------------------------------------------------
-  // Return the size in bytes that this object and any items in its
-  // collection of uniqued strings + data count values takes in
-  // memory.
-  //------------------------------------------------------------------
+  // Return the size in bytes that this object and any items in its collection
+  // of uniqued strings + data count values takes in memory.
   size_t MemorySize() const {
     size_t mem_size = sizeof(Pool);
     for (const auto &pool : m_string_pools) {
@@ -171,7 +163,7 @@ public:
 
 protected:
   uint8_t hash(const llvm::StringRef &s) const {
-    uint32_t h = llvm::HashString(s);
+    uint32_t h = llvm::djbHash(s);
     return ((h >> 24) ^ (h >> 16) ^ (h >> 8) ^ h) & 0xff;
   }
 
@@ -183,17 +175,14 @@ protected:
   std::array<PoolEntry, 256> m_string_pools;
 };
 
-//----------------------------------------------------------------------
-// Frameworks and dylibs aren't supposed to have global C++
-// initializers so we hide the string pool in a static function so
-// that it will get initialized on the first call to this static
-// function.
+// Frameworks and dylibs aren't supposed to have global C++ initializers so we
+// hide the string pool in a static function so that it will get initialized on
+// the first call to this static function.
 //
-// Note, for now we make the string pool a pointer to the pool, because
-// we can't guarantee that some objects won't get destroyed after the
-// global destructor chain is run, and trying to make sure no destructors
-// touch ConstStrings is difficult.  So we leak the pool instead.
-//----------------------------------------------------------------------
+// Note, for now we make the string pool a pointer to the pool, because we
+// can't guarantee that some objects won't get destroyed after the global
+// destructor chain is run, and trying to make sure no destructors touch
+// ConstStrings is difficult.  So we leak the pool instead.
 static Pool &StringPool() {
   static llvm::once_flag g_pool_initialization_flag;
   static Pool *g_string_pool = nullptr;
@@ -213,7 +202,7 @@ ConstString::ConstString(const char *cstr, size_t cstr_len)
 ConstString::ConstString(const llvm::StringRef &s)
     : m_string(StringPool().GetConstCStringWithLength(s.data(), s.size())) {}
 
-bool ConstString::operator<(const ConstString &rhs) const {
+bool ConstString::operator<(ConstString rhs) const {
   if (m_string == rhs.m_string)
     return false;
 
@@ -228,7 +217,7 @@ bool ConstString::operator<(const ConstString &rhs) const {
   return lhs_string_ref.data() == nullptr;
 }
 
-Stream &lldb_private::operator<<(Stream &s, const ConstString &str) {
+Stream &lldb_private::operator<<(Stream &s, ConstString str) {
   const char *cstr = str.GetCString();
   if (cstr != nullptr)
     s << cstr;
@@ -240,14 +229,14 @@ size_t ConstString::GetLength() const {
   return Pool::GetConstCStringLength(m_string);
 }
 
-bool ConstString::Equals(const ConstString &lhs, const ConstString &rhs,
+bool ConstString::Equals(ConstString lhs, ConstString rhs,
                          const bool case_sensitive) {
   if (lhs.m_string == rhs.m_string)
     return true;
 
   // Since the pointers weren't equal, and identical ConstStrings always have
-  // identical pointers,
-  // the result must be false for case sensitive equality test.
+  // identical pointers, the result must be false for case sensitive equality
+  // test.
   if (case_sensitive)
     return false;
 
@@ -257,7 +246,7 @@ bool ConstString::Equals(const ConstString &lhs, const ConstString &rhs,
   return lhs_string_ref.equals_lower(rhs_string_ref);
 }
 
-int ConstString::Compare(const ConstString &lhs, const ConstString &rhs,
+int ConstString::Compare(ConstString lhs, ConstString rhs,
                          const bool case_sensitive) {
   // If the iterators are the same, this is the same string
   const char *lhs_cstr = lhs.m_string;
@@ -308,8 +297,8 @@ void ConstString::SetString(const llvm::StringRef &s) {
   m_string = StringPool().GetConstCStringWithLength(s.data(), s.size());
 }
 
-void ConstString::SetCStringWithMangledCounterpart(const char *demangled,
-                                                   const ConstString &mangled) {
+void ConstString::SetStringWithMangledCounterpart(llvm::StringRef demangled,
+                                                   ConstString mangled) {
   m_string = StringPool().GetConstCStringAndSetMangledCounterPart(
       demangled, mangled.m_string);
 }

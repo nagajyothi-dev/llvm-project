@@ -33,11 +33,12 @@ class ThreadsStackTracesTestCase(TestBase):
     @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
     @expectedFlakeyAndroid("llvm.org/26492", archs=["arm"])
     @expectedFlakeyLinux("llvm.org/pr27687")
+    @expectedFailureNetBSD
     @add_test_categories(['pyapi'])
     def test_stack_traces(self):
         """Test SBprocess and SBThread APIs with printing of the stack traces."""
         self.build()
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target, VALID_TARGET)

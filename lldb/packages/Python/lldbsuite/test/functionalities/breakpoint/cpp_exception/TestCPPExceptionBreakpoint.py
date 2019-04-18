@@ -21,6 +21,7 @@ class TestCPPExceptionBreakpoint (TestBase):
 
     @add_test_categories(['pyapi'])
     @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24538")
+    @expectedFailureNetBSD
     def test_cpp_exception_breakpoint(self):
         """Test setting and hitting the C++ exception breakpoint."""
         self.build()
@@ -32,7 +33,7 @@ class TestCPPExceptionBreakpoint (TestBase):
         self.main_source_spec = lldb.SBFileSpec(self.main_source)
 
     def do_cpp_exception_bkpt(self):
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         error = lldb.SBError()
 
         self.target = self.dbg.CreateTarget(exe)

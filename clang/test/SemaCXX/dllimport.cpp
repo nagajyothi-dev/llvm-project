@@ -16,18 +16,18 @@ namespace { struct Internal {}; }
 
 // Invalid usage.
 __declspec(dllimport) typedef int typedef1;
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to functions, variables, classes, and Objective-C interfaces}}
 typedef __declspec(dllimport) int typedef2;
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to}}
 typedef int __declspec(dllimport) typedef3;
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to}}
 typedef __declspec(dllimport) void (*FunTy)();
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to}}
 enum __declspec(dllimport) Enum {};
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to}}
 #if __has_feature(cxx_strong_enums)
 enum class __declspec(dllimport) EnumClass {};
-// expected-warning@-1{{'dllimport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllimport' attribute only applies to}}
 #endif
 
 
@@ -121,7 +121,9 @@ __declspec(dllimport) extern int GlobalRedecl5; // expected-warning{{redeclarati
 // External linkage is required.
 __declspec(dllimport) static int StaticGlobal; // expected-error{{'StaticGlobal' must have external linkage when declared 'dllimport'}}
 __declspec(dllimport) Internal InternalTypeGlobal; // expected-error{{'InternalTypeGlobal' must have external linkage when declared 'dllimport'}}
+#ifndef MS
 namespace    { __declspec(dllimport) int InternalGlobal; } // expected-error{{'(anonymous namespace)::InternalGlobal' must have external linkage when declared 'dllimport'}}
+#endif
 namespace ns { __declspec(dllimport) int ExternalGlobal; }
 
 __declspec(dllimport) auto InternalAutoTypeGlobal = Internal(); // expected-error{{'InternalAutoTypeGlobal' must have external linkage when declared 'dllimport'}}
@@ -213,7 +215,9 @@ template<typename T> __declspec(dllimport) extern int VarTmplRedecl4; // expecte
 // External linkage is required.
 template<typename T> __declspec(dllimport) static int StaticVarTmpl; // expected-error{{'StaticVarTmpl' must have external linkage when declared 'dllimport'}}
 template<typename T> __declspec(dllimport) Internal InternalTypeVarTmpl; // expected-error{{'InternalTypeVarTmpl' must have external linkage when declared 'dllimport'}}
+#ifndef MS
 namespace    { template<typename T> __declspec(dllimport) int InternalVarTmpl; } // expected-error{{'(anonymous namespace)::InternalVarTmpl' must have external linkage when declared 'dllimport'}}
+#endif
 namespace ns { template<typename T> __declspec(dllimport) int ExternalVarTmpl; }
 
 template<typename T> __declspec(dllimport) auto InternalAutoTypeVarTmpl = Internal(); // expected-error{{definition of dllimport data}} // expected-error{{'InternalAutoTypeVarTmpl' must have external linkage when declared 'dllimport'}}
@@ -574,7 +578,7 @@ private:
   __declspec(dllimport)                void privateDecl();
 public:
 
-  __declspec(dllimport)                int  Field; // expected-warning{{'dllimport' attribute only applies to variables, functions and classes}}
+  __declspec(dllimport)                int  Field; // expected-warning{{'dllimport' attribute only applies to}}
   __declspec(dllimport) static         int  StaticField;
   __declspec(dllimport) static         int  StaticFieldDef; // expected-note{{attribute is here}}
   __declspec(dllimport) static  const  int  StaticConstField;
@@ -1147,7 +1151,7 @@ private:
   __declspec(dllimport)                void privateDecl();
 public:
 
-  __declspec(dllimport)                int  Field; // expected-warning{{'dllimport' attribute only applies to variables, functions and classes}}
+  __declspec(dllimport)                int  Field; // expected-warning{{'dllimport' attribute only applies to}}
   __declspec(dllimport) static         int  StaticField;
   __declspec(dllimport) static         int  StaticFieldDef; // expected-note{{attribute is here}}
   __declspec(dllimport) static  const  int  StaticConstField;

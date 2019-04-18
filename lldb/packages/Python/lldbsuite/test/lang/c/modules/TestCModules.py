@@ -26,9 +26,10 @@ class CModulesTestCase(TestBase):
         oslist=["windows"],
         bugnumber="llvm.org/pr24489: Name lookup not working correctly on Windows")
     @skipIf(macos_version=["<", "10.12"])
+    @expectedFailureNetBSD
     def test_expr(self):
         self.build()
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         # Break inside the foo function which takes a bar_ptr argument.

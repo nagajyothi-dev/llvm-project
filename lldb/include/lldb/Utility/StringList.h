@@ -1,9 +1,8 @@
 //===-- StringList.h --------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,7 +11,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
-#include <stddef.h> // for size_t
+#include <stddef.h>
 #include <string>
 #include <vector>
 
@@ -29,7 +28,7 @@ class StringList {
 public:
   StringList();
 
-  StringList(const char *str);
+  explicit StringList(const char *str);
 
   StringList(const char **strv, int strc);
 
@@ -100,20 +99,17 @@ public:
   // Copy assignment for a vector of strings
   StringList &operator=(const std::vector<std::string> &rhs);
 
-  // This string list contains a list of valid auto completion
-  // strings, and the "s" is passed in. "matches" is filled in
-  // with zero or more string values that start with "s", and
-  // the first string to exactly match one of the string
-  // values in this collection, will have "exact_matches_idx"
-  // filled in to match the index, or "exact_matches_idx" will
-  // have SIZE_MAX
+  // This string list contains a list of valid auto completion strings, and the
+  // "s" is passed in. "matches" is filled in with zero or more string values
+  // that start with "s", and the first string to exactly match one of the
+  // string values in this collection, will have "exact_matches_idx" filled in
+  // to match the index, or "exact_matches_idx" will have SIZE_MAX
   size_t AutoComplete(llvm::StringRef s, StringList &matches,
                       size_t &exact_matches_idx) const;
 
   // Dump the StringList to the given lldb_private::Log, `log`, one item per
-  // line.
-  // If given, `name` will be used to identify the start and end of the list in
-  // the output.
+  // line. If given, `name` will be used to identify the start and end of the
+  // list in the output.
   virtual void LogDump(Log *log, const char *name = nullptr);
 
   // Static helper to convert an iterable of strings to a StringList, and then

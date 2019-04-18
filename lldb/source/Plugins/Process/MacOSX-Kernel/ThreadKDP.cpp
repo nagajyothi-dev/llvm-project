@@ -1,25 +1,24 @@
 //===-- ThreadKDP.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "ThreadKDP.h"
 
-#include "lldb/Utility/SafeMachO.h"
+#include "lldb/Host/SafeMachO.h"
 
 #include "lldb/Breakpoint/Watchpoint.h"
-#include "lldb/Core/ArchSpec.h"
-#include "lldb/Core/State.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
 #include "lldb/Target/StopInfo.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Unwind.h"
+#include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/DataExtractor.h"
+#include "lldb/Utility/State.h"
 #include "lldb/Utility/StreamString.h"
 
 #include "Plugins/Process/Utility/StopInfoMachException.h"
@@ -30,12 +29,12 @@
 #include "RegisterContextKDP_i386.h"
 #include "RegisterContextKDP_x86_64.h"
 
+#include <memory>
+
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // Thread Registers
-//----------------------------------------------------------------------
 
 ThreadKDP::ThreadKDP(Process &process, lldb::tid_t tid)
     : Thread(process, tid), m_thread_name(), m_dispatch_queue_name(),
@@ -52,11 +51,11 @@ ThreadKDP::~ThreadKDP() {
 
 const char *ThreadKDP::GetName() {
   if (m_thread_name.empty())
-    return NULL;
+    return nullptr;
   return m_thread_name.c_str();
 }
 
-const char *ThreadKDP::GetQueueName() { return NULL; }
+const char *ThreadKDP::GetQueueName() { return nullptr; }
 
 void ThreadKDP::RefreshStateAfterStop() {
   // Invalidate all registers in our register context. We don't set "force" to
@@ -65,8 +64,8 @@ void ThreadKDP::RefreshStateAfterStop() {
   // context by the time this function gets called. The KDPRegisterContext
   // class has been made smart enough to detect when it needs to invalidate
   // which registers are valid by putting hooks in the register read and
-  // register supply functions where they check the process stop ID and do
-  // the right thing.
+  // register supply functions where they check the process stop ID and do the
+  // right thing.
   const bool force = false;
   lldb::RegisterContextSP reg_ctx_sp(GetRegisterContext());
   if (reg_ctx_sp)
@@ -79,8 +78,8 @@ void ThreadKDP::Dump(Log *log, uint32_t index) {}
 
 bool ThreadKDP::ShouldStop(bool &step_more) { return true; }
 lldb::RegisterContextSP ThreadKDP::GetRegisterContext() {
-  if (m_reg_context_sp.get() == NULL)
-    m_reg_context_sp = CreateRegisterContextForFrame(NULL);
+  if (!m_reg_context_sp)
+    m_reg_context_sp = CreateRegisterContextForFrame(nullptr);
   return m_reg_context_sp;
 }
 
@@ -99,19 +98,20 @@ ThreadKDP::CreateRegisterContextForFrame(StackFrame *frame) {
                   ->GetCommunication()
                   .GetCPUType()) {
       case llvm::MachO::CPU_TYPE_ARM:
-        reg_ctx_sp.reset(new RegisterContextKDP_arm(*this, concrete_frame_idx));
+        reg_ctx_sp =
+            std::make_shared<RegisterContextKDP_arm>(*this, concrete_frame_idx);
         break;
       case llvm::MachO::CPU_TYPE_ARM64:
-        reg_ctx_sp.reset(
-            new RegisterContextKDP_arm64(*this, concrete_frame_idx));
+        reg_ctx_sp = std::make_shared<RegisterContextKDP_arm64>(
+            *this, concrete_frame_idx);
         break;
       case llvm::MachO::CPU_TYPE_I386:
-        reg_ctx_sp.reset(
-            new RegisterContextKDP_i386(*this, concrete_frame_idx));
+        reg_ctx_sp = std::make_shared<RegisterContextKDP_i386>(
+            *this, concrete_frame_idx);
         break;
       case llvm::MachO::CPU_TYPE_X86_64:
-        reg_ctx_sp.reset(
-            new RegisterContextKDP_x86_64(*this, concrete_frame_idx));
+        reg_ctx_sp = std::make_shared<RegisterContextKDP_x86_64>(
+            *this, concrete_frame_idx);
         break;
       default:
         llvm_unreachable("Add CPU type support in KDP");
@@ -119,7 +119,7 @@ ThreadKDP::CreateRegisterContextForFrame(StackFrame *frame) {
     }
   } else {
     Unwind *unwinder = GetUnwinder();
-    if (unwinder)
+    if (unwinder != nullptr)
       reg_ctx_sp = unwinder->CreateRegisterContextForFrame(frame);
   }
   return reg_ctx_sp;
@@ -151,8 +151,8 @@ void ThreadKDP::SetStopInfoFrom_KDP_EXCEPTION(
       const uint32_t exc_type = exc_reply_packet.GetU32(&offset);
       const uint32_t exc_code = exc_reply_packet.GetU32(&offset);
       const uint32_t exc_subcode = exc_reply_packet.GetU32(&offset);
-      // We have to make a copy of the stop info because the thread list
-      // will iterate through the threads and clear all stop infos..
+      // We have to make a copy of the stop info because the thread list will
+      // iterate through the threads and clear all stop infos..
 
       // Let the StopInfoMachException::CreateStopReasonWithMachException()
       // function update the PC if needed as we might hit a software breakpoint

@@ -1,9 +1,8 @@
 //===-- MachProcess.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -50,12 +49,6 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <SpringBoardServices/SBSWatchdogAssertion.h>
 #include <SpringBoardServices/SpringBoardServer.h>
-
-static bool IsSBProcess(nub_process_t pid) {
-  CFReleaser<CFArrayRef> appIdsForPID(
-      ::SBSCopyDisplayIdentifiersForProcessID(pid));
-  return appIdsForPID.get() != NULL;
-}
 
 #endif // WITH_SPRINGBOARD
 
@@ -112,7 +105,9 @@ static bool CallBoardSystemServiceOpenApplication(NSString *bundleIDNSStr,
   if (!cstr)
     cstr = "<Unknown Bundle ID>";
 
-  DNBLog("About to launch process for bundle ID: %s", cstr);
+  NSString *description = [options description];
+  DNBLog("About to launch process for bundle ID: %s - options:\n%s", cstr,
+    [description UTF8String]);
   [system_service
       openApplication:bundleIDNSStr
               options:options
@@ -188,6 +183,28 @@ static bool CallBoardSystemServiceOpenApplication(NSString *bundleIDNSStr,
 }
 #endif
 
+#if defined(WITH_BKS) || defined(WITH_FBS)
+static void SplitEventData(const char *data, std::vector<std::string> &elements)
+{
+  elements.clear();
+  if (!data)
+    return;
+
+  const char *start = data;
+
+  while (*start != '\0') {
+    const char *token = strchr(start, ':');
+    if (!token) {
+      elements.push_back(std::string(start));
+      return;
+    }
+    if (token != start)
+      elements.push_back(std::string(start, token - start));
+    start = ++token;
+  }
+}
+#endif
+
 #ifdef WITH_BKS
 #import <Foundation/Foundation.h>
 extern "C" {
@@ -222,21 +239,31 @@ static void SetBKSError(NSInteger error_code, DNBError &error) {
 static bool BKSAddEventDataToOptions(NSMutableDictionary *options,
                                      const char *event_data,
                                      DNBError &option_error) {
-  if (strcmp(event_data, "BackgroundContentFetching") == 0) {
-    DNBLog("Setting ActivateForEvent key in options dictionary.");
-    NSDictionary *event_details = [NSDictionary dictionary];
-    NSDictionary *event_dictionary = [NSDictionary
-        dictionaryWithObject:event_details
-                      forKey:
-                          BKSActivateForEventOptionTypeBackgroundContentFetching];
-    [options setObject:event_dictionary
-                forKey:BKSOpenApplicationOptionKeyActivateForEvent];
-    return true;
-  } else {
-    DNBLogError("Unrecognized event type: %s.  Ignoring.", event_data);
-    option_error.SetErrorString("Unrecognized event data.");
-    return false;
+  std::vector<std::string> values;
+  SplitEventData(event_data, values);
+  bool found_one = false;
+  for (std::string value : values)
+  {
+      if (value.compare("BackgroundContentFetching") == 0) {
+        DNBLog("Setting ActivateForEvent key in options dictionary.");
+        NSDictionary *event_details = [NSDictionary dictionary];
+        NSDictionary *event_dictionary = [NSDictionary
+            dictionaryWithObject:event_details
+                          forKey:
+                              BKSActivateForEventOptionTypeBackgroundContentFetching];
+        [options setObject:event_dictionary
+                    forKey:BKSOpenApplicationOptionKeyActivateForEvent];
+        found_one = true;
+      } else if (value.compare("ActivateSuspended") == 0) {
+        DNBLog("Setting ActivateSuspended key in options dictionary.");
+        [options setObject:@YES forKey: BKSOpenApplicationOptionKeyActivateSuspended];
+        found_one = true;
+      } else {
+        DNBLogError("Unrecognized event type: %s.  Ignoring.", value.c_str());
+        option_error.SetErrorString("Unrecognized event data");
+      }
   }
+  return found_one;
 }
 
 static NSMutableDictionary *BKSCreateOptionsDictionary(
@@ -300,7 +327,7 @@ static bool IsFBSProcess(nub_process_t pid) {
 #else
 static bool IsFBSProcess(nub_process_t pid) {
   // FIXME: What is the FBS equivalent of BKSApplicationStateMonitor
-  return true;
+  return false;
 }
 #endif
 
@@ -322,21 +349,31 @@ static void SetFBSError(NSInteger error_code, DNBError &error) {
 static bool FBSAddEventDataToOptions(NSMutableDictionary *options,
                                      const char *event_data,
                                      DNBError &option_error) {
-  if (strcmp(event_data, "BackgroundContentFetching") == 0) {
-    DNBLog("Setting ActivateForEvent key in options dictionary.");
-    NSDictionary *event_details = [NSDictionary dictionary];
-    NSDictionary *event_dictionary = [NSDictionary
-        dictionaryWithObject:event_details
-                      forKey:
-                          FBSActivateForEventOptionTypeBackgroundContentFetching];
-    [options setObject:event_dictionary
-                forKey:FBSOpenApplicationOptionKeyActivateForEvent];
-    return true;
-  } else {
-    DNBLogError("Unrecognized event type: %s.  Ignoring.", event_data);
-    option_error.SetErrorString("Unrecognized event data.");
-    return false;
+  std::vector<std::string> values;
+  SplitEventData(event_data, values);
+  bool found_one = false;
+  for (std::string value : values)
+  {
+      if (value.compare("BackgroundContentFetching") == 0) {
+        DNBLog("Setting ActivateForEvent key in options dictionary.");
+        NSDictionary *event_details = [NSDictionary dictionary];
+        NSDictionary *event_dictionary = [NSDictionary
+            dictionaryWithObject:event_details
+                          forKey:
+                              FBSActivateForEventOptionTypeBackgroundContentFetching];
+        [options setObject:event_dictionary
+                    forKey:FBSOpenApplicationOptionKeyActivateForEvent];
+        found_one = true;
+      } else if (value.compare("ActivateSuspended") == 0) {
+        DNBLog("Setting ActivateSuspended key in options dictionary.");
+        [options setObject:@YES forKey: FBSOpenApplicationOptionKeyActivateSuspended];
+        found_one = true;
+      } else {
+        DNBLogError("Unrecognized event type: %s.  Ignoring.", value.c_str());
+        option_error.SetErrorString("Unrecognized event data.");
+      }
   }
+  return found_one;
 }
 
 static NSMutableDictionary *
@@ -528,6 +565,76 @@ nub_addr_t MachProcess::GetTSDAddressForThread(
       plo_pthread_tsd_entry_size);
 }
 
+
+const char *MachProcess::GetDeploymentInfo(const struct load_command& lc,
+                                           uint64_t load_command_address,
+                                           uint32_t& major_version,
+                                           uint32_t& minor_version,
+                                           uint32_t& patch_version) {
+  uint32_t cmd = lc.cmd & ~LC_REQ_DYLD;
+  bool lc_cmd_known =
+    cmd == LC_VERSION_MIN_IPHONEOS || cmd == LC_VERSION_MIN_MACOSX ||
+    cmd == LC_VERSION_MIN_TVOS || cmd == LC_VERSION_MIN_WATCHOS;
+
+  if (lc_cmd_known) {
+    struct version_min_command vers_cmd;
+    if (ReadMemory(load_command_address, sizeof(struct version_min_command),
+                   &vers_cmd) != sizeof(struct version_min_command)) {
+      return nullptr;
+    }
+    major_version = vers_cmd.sdk >> 16;
+    minor_version = (vers_cmd.sdk >> 8) & 0xffu;
+    patch_version = vers_cmd.sdk & 0xffu;
+
+    switch (cmd) {
+    case LC_VERSION_MIN_IPHONEOS:
+      return "ios";
+    case LC_VERSION_MIN_MACOSX:
+      return "macosx";
+    case LC_VERSION_MIN_TVOS:
+      return "tvos";
+    case LC_VERSION_MIN_WATCHOS:
+      return "watchos";
+    default:
+      return nullptr;
+    }
+  }
+#if defined (LC_BUILD_VERSION)
+#ifndef PLATFORM_IOSSIMULATOR
+#define PLATFORM_IOSSIMULATOR 7
+#define PLATFORM_TVOSSIMULATOR 8
+#define PLATFORM_WATCHOSSIMULATOR 9
+#endif
+  if (cmd == LC_BUILD_VERSION) {
+    struct build_version_command build_vers;
+    if (ReadMemory(load_command_address, sizeof(struct build_version_command),
+                   &build_vers) != sizeof(struct build_version_command)) {
+      return nullptr;
+    }
+    major_version = build_vers.sdk >> 16;;
+    minor_version = (build_vers.sdk >> 8) & 0xffu;
+    patch_version = build_vers.sdk & 0xffu;
+
+    switch (build_vers.platform) {
+    case PLATFORM_MACOS:
+      return "macosx";
+    case PLATFORM_IOS:
+    case PLATFORM_IOSSIMULATOR:
+      return "ios";
+    case PLATFORM_TVOS:
+    case PLATFORM_TVOSSIMULATOR:
+      return "tvos";
+    case PLATFORM_WATCHOS:
+    case PLATFORM_WATCHOSSIMULATOR:
+      return "watchos";
+    case PLATFORM_BRIDGEOS:
+      return "bridgeos";
+    }
+  }
+#endif
+  return nullptr;
+}
+
 // Given an address, read the mach-o header and load commands out of memory to
 // fill in
 // the mach_o_information "inf" object.
@@ -626,52 +733,22 @@ bool MachProcess::GetMachOInformationFromMemory(
           sizeof(struct uuid_command))
         uuid_copy(inf.uuid, uuidcmd.uuid);
     }
-    bool lc_cmd_known =
-        lc.cmd == LC_VERSION_MIN_IPHONEOS || lc.cmd == LC_VERSION_MIN_MACOSX;
-#if defined(LC_VERSION_MIN_TVOS)
-    lc_cmd_known |= lc.cmd == LC_VERSION_MIN_TVOS;
-#endif
-#if defined(LC_VERSION_MIN_WATCHOS)
-    lc_cmd_known |= lc.cmd == LC_VERSION_MIN_WATCHOS;
-#endif
-    if (lc_cmd_known) {
-      struct version_min_command vers_cmd;
-      if (ReadMemory(load_cmds_p, sizeof(struct version_min_command),
-                     &vers_cmd) != sizeof(struct version_min_command)) {
-        return false;
-      }
-      switch (lc.cmd) {
-      case LC_VERSION_MIN_IPHONEOS:
-        inf.min_version_os_name = "iphoneos";
-        break;
-      case LC_VERSION_MIN_MACOSX:
-        inf.min_version_os_name = "macosx";
-        break;
-#if defined(LC_VERSION_MIN_TVOS)
-      case LC_VERSION_MIN_TVOS:
-        inf.min_version_os_name = "tvos";
-        break;
-#endif
-#if defined(LC_VERSION_MIN_WATCHOS)
-      case LC_VERSION_MIN_WATCHOS:
-        inf.min_version_os_name = "watchos";
-        break;
-#endif
-      default:
-        return false;
-      }
-      uint32_t xxxx = vers_cmd.sdk >> 16;
-      uint32_t yy = (vers_cmd.sdk >> 8) & 0xffu;
-      uint32_t zz = vers_cmd.sdk & 0xffu;
+
+    uint32_t major_version, minor_version, patch_version;
+    if (const char *platform = GetDeploymentInfo(lc, load_cmds_p,
+                                                 major_version, minor_version,
+                                                 patch_version)) {
+      inf.min_version_os_name = platform;
       inf.min_version_os_version = "";
-      inf.min_version_os_version += std::to_string(xxxx);
+      inf.min_version_os_version += std::to_string(major_version);
       inf.min_version_os_version += ".";
-      inf.min_version_os_version += std::to_string(yy);
-      if (zz != 0) {
+      inf.min_version_os_version += std::to_string(minor_version);
+      if (patch_version != 0) {
         inf.min_version_os_version += ".";
-        inf.min_version_os_version += std::to_string(zz);
+        inf.min_version_os_version += std::to_string(patch_version);
       }
     }
+
     load_cmds_p += lc.cmdsize;
   }
   return true;
@@ -699,8 +776,8 @@ JSONGenerator::ObjectSP MachProcess::FormatDynamicLibrariesIntoJSON(
     uuid_unparse_upper(image_infos[i].macho_info.uuid, uuidstr);
     image_info_dict_sp->AddStringItem("uuid", uuidstr);
 
-    if (image_infos[i].macho_info.min_version_os_name.empty() == false &&
-        image_infos[i].macho_info.min_version_os_version.empty() == false) {
+    if (!image_infos[i].macho_info.min_version_os_name.empty() &&
+        !image_infos[i].macho_info.min_version_os_version.empty()) {
       image_info_dict_sp->AddStringItem(
           "min_version_os_name", image_infos[i].macho_info.min_version_os_name);
       image_info_dict_sp->AddStringItem(
@@ -719,6 +796,8 @@ JSONGenerator::ObjectSP MachProcess::FormatDynamicLibrariesIntoJSON(
         (uint32_t)image_infos[i].macho_info.mach_header.cpusubtype);
     mach_header_dict_sp->AddIntegerItem(
         "filetype", image_infos[i].macho_info.mach_header.filetype);
+    mach_header_dict_sp->AddIntegerItem ("flags", 
+                         image_infos[i].macho_info.mach_header.flags);
 
     //          DynamicLoaderMacOSX doesn't currently need these fields, so
     //          don't send them.
@@ -726,8 +805,6 @@ JSONGenerator::ObjectSP MachProcess::FormatDynamicLibrariesIntoJSON(
     //            image_infos[i].macho_info.mach_header.ncmds);
     //            mach_header_dict_sp->AddIntegerItem ("sizeofcmds",
     //            image_infos[i].macho_info.mach_header.sizeofcmds);
-    //            mach_header_dict_sp->AddIntegerItem ("flags",
-    //            image_infos[i].macho_info.mach_header.flags);
     image_info_dict_sp->AddItem("mach_header", mach_header_dict_sp);
 
     JSONGenerator::ArraySP segments_sp(new JSONGenerator::Array());
@@ -1213,9 +1290,11 @@ bool MachProcess::Kill(const struct timespec *timeout_abstime) {
   ::ptrace(PT_KILL, m_pid, 0, 0);
   DNBError err;
   err.SetErrorToErrno();
-  DNBLogThreadedIf(LOG_PROCESS, "MachProcess::Kill() DoSIGSTOP() ::ptrace "
-                                "(PT_KILL, pid=%u, 0, 0) => 0x%8.8x (%s)",
-                   m_pid, err.Status(), err.AsString());
+  if (DNBLogCheckLogBit(LOG_PROCESS) || err.Fail()) {
+    err.LogThreaded("MachProcess::Kill() DoSIGSTOP() ::ptrace "
+            "(PT_KILL, pid=%u, 0, 0) => 0x%8.8x (%s)",
+            m_pid, err.Status(), err.AsString());
+  }
   m_thread_actions = DNBThreadResumeActions(eStateRunning, 0);
   PrivateResume();
 
@@ -1410,7 +1489,7 @@ bool MachProcess::Detach() {
   // Resume our task
   m_task.Resume();
 
-  // NULL our task out as we have already retored all exception ports
+  // NULL our task out as we have already restored all exception ports
   m_task.Clear();
 
   // Clear out any notion of the process we once were
@@ -1518,7 +1597,7 @@ nub_size_t MachProcess::WriteMemory(nub_addr_t addr, nub_size_t size,
 
 void MachProcess::ReplyToAllExceptions() {
   PTHREAD_MUTEX_LOCKER(locker, m_exception_messages_mutex);
-  if (m_exception_messages.empty() == false) {
+  if (!m_exception_messages.empty()) {
     MachException::Message::iterator pos;
     MachException::Message::iterator begin = m_exception_messages.begin();
     MachException::Message::iterator end = m_exception_messages.end();
@@ -1690,7 +1769,7 @@ bool MachProcess::DisableBreakpoint(nub_addr_t addr, bool remove) {
     if (bp->IsHardware()) {
       bool hw_disable_result = m_thread_list.DisableHardwareBreakpoint(bp);
 
-      if (hw_disable_result == true) {
+      if (hw_disable_result) {
         bp->SetEnabled(false);
         // Let the thread list know that a breakpoint has been modified
         if (remove) {
@@ -1721,7 +1800,7 @@ bool MachProcess::DisableBreakpoint(nub_addr_t addr, bool remove) {
           break_op_size) {
         bool verify = false;
         if (bp->IsEnabled()) {
-          // Make sure we have the a breakpoint opcode exists at this address
+          // Make sure a breakpoint opcode exists at this address
           if (memcmp(curr_break_op, break_op, break_op_size) == 0) {
             break_op_found = true;
             // We found a valid breakpoint opcode at this address, now restore
@@ -1825,7 +1904,7 @@ bool MachProcess::DisableWatchpoint(nub_addr_t addr, bool remove) {
     if (wp->IsHardware()) {
       bool hw_disable_result = m_thread_list.DisableHardwareWatchpoint(wp);
 
-      if (hw_disable_result == true) {
+      if (hw_disable_result) {
         wp->SetEnabled(false);
         if (remove)
           m_watchpoints.Remove(addr);
@@ -2095,7 +2174,7 @@ task_t MachProcess::ExceptionMessageBundleComplete() {
       m_thread_list.Dump();
 
     bool step_more = false;
-    if (m_thread_list.ShouldStop(step_more) && auto_resume == false) {
+    if (m_thread_list.ShouldStop(step_more) && !auto_resume) {
       // Wait for the eEventProcessRunningStateChanged event to be reset
       // before changing state to stopped to avoid race condition with
       // very fast start/stops
@@ -2380,45 +2459,29 @@ pid_t MachProcess::AttachForDebug(pid_t pid, char *err_str, size_t err_len) {
       const char *err_cstr = err.AsString();
       ::snprintf(err_str, err_len, "%s",
                  err_cstr ? err_cstr : "No such process");
+      DNBLogError ("MachProcess::AttachForDebug pid %d does not exist", pid);
       return INVALID_NUB_PROCESS;
     }
 
     SetState(eStateAttaching);
     m_pid = pid;
-// Let ourselves know we are going to be using SBS or BKS if the correct flag
-// bit is set...
-#if defined(WITH_FBS) || defined(WITH_BKS)
-    bool found_app_flavor = false;
-#endif
-
-#if defined(WITH_FBS)
-    if (!found_app_flavor && IsFBSProcess(pid)) {
-      found_app_flavor = true;
-      m_flags |= eMachProcessFlagsUsingFBS;
-    }
-#elif defined(WITH_BKS)
-    if (!found_app_flavor && IsBKSProcess(pid)) {
-      found_app_flavor = true;
-      m_flags |= eMachProcessFlagsUsingBKS;
-    }
-#elif defined(WITH_SPRINGBOARD)
-    if (IsSBProcess(pid))
-      m_flags |= eMachProcessFlagsUsingSBS;
-#endif
     if (!m_task.StartExceptionThread(err)) {
       const char *err_cstr = err.AsString();
       ::snprintf(err_str, err_len, "%s",
                  err_cstr ? err_cstr : "unable to start the exception thread");
       DNBLogThreadedIf(LOG_PROCESS, "error: failed to attach to pid %d", pid);
+      DNBLogError ("MachProcess::AttachForDebug failed to start exception thread: %s", err_str);
       m_pid = INVALID_NUB_PROCESS;
       return INVALID_NUB_PROCESS;
     }
 
     errno = 0;
-    if (::ptrace(PT_ATTACHEXC, pid, 0, 0))
+    if (::ptrace(PT_ATTACHEXC, pid, 0, 0)) {
       err.SetError(errno);
-    else
+      DNBLogError ("MachProcess::AttachForDebug failed to ptrace(PT_ATTACHEXC): %s", err.AsString());
+    } else {
       err.Clear();
+    }
 
     if (err.Success()) {
       m_flags |= eMachProcessFlagsAttached;
@@ -2430,7 +2493,17 @@ pid_t MachProcess::AttachForDebug(pid_t pid, char *err_str, size_t err_len) {
       return m_pid;
     } else {
       ::snprintf(err_str, err_len, "%s", err.AsString());
-      DNBLogThreadedIf(LOG_PROCESS, "error: failed to attach to pid %d", pid);
+      DNBLogError ("MachProcess::AttachForDebug error: failed to attach to pid %d", pid);
+
+      struct kinfo_proc kinfo;
+      int mib[] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, pid};
+      size_t len = sizeof(struct kinfo_proc);
+      if (sysctl(mib, sizeof(mib) / sizeof(mib[0]), &kinfo, &len, NULL, 0) == 0 && len > 0) {
+        if (kinfo.kp_proc.p_flag & P_TRACED) {
+          ::snprintf(err_str, err_len, "%s - process %d is already being debugged", err.AsString(), pid);
+          DNBLogError ("MachProcess::AttachForDebug pid %d is already being debugged", pid);
+        }
+      }
     }
   }
   return INVALID_NUB_PROCESS;
@@ -2862,7 +2935,7 @@ pid_t MachProcess::LaunchForDebug(
     const char *app_ext = strstr(path, ".app");
     if (app_ext && (app_ext[4] == '\0' || app_ext[4] == '/')) {
       std::string app_bundle_path(path, app_ext + strlen(".app"));
-      m_flags |= eMachProcessFlagsUsingFBS;
+      m_flags |= (eMachProcessFlagsUsingFBS | eMachProcessFlagsBoardCalculated);
       if (BoardServiceLaunchForDebug(app_bundle_path.c_str(), argv, envp,
                                      no_stdio, disable_aslr, event_data,
                                      launch_err) != 0)
@@ -2878,7 +2951,7 @@ pid_t MachProcess::LaunchForDebug(
     const char *app_ext = strstr(path, ".app");
     if (app_ext && (app_ext[4] == '\0' || app_ext[4] == '/')) {
       std::string app_bundle_path(path, app_ext + strlen(".app"));
-      m_flags |= eMachProcessFlagsUsingBKS;
+      m_flags |= (eMachProcessFlagsUsingBKS | eMachProcessFlagsBoardCalculated);
       if (BoardServiceLaunchForDebug(app_bundle_path.c_str(), argv, envp,
                                      no_stdio, disable_aslr, event_data,
                                      launch_err) != 0)
@@ -3105,7 +3178,8 @@ pid_t MachProcess::PosixSpawnChildForPTraceDebugging(
       ::chdir(working_directory);
 
     err.SetError(::posix_spawnp(&pid, path, &file_actions, &attr,
-                                (char *const *)argv, (char *const *)envp),
+                                const_cast<char *const *>(argv),
+                                const_cast<char *const *>(envp)),
                  DNBError::POSIX);
     if (err.Fail() || DNBLogCheckLogBit(LOG_PROCESS))
       err.LogThreaded("::posix_spawnp ( pid => %i, path = '%s', file_actions = "
@@ -3117,8 +3191,9 @@ pid_t MachProcess::PosixSpawnChildForPTraceDebugging(
     if (working_directory)
       ::chdir(working_directory);
 
-    err.SetError(::posix_spawnp(&pid, path, NULL, &attr, (char *const *)argv,
-                                (char *const *)envp),
+    err.SetError(::posix_spawnp(&pid, path, NULL, &attr,
+                                const_cast<char *const *>(argv),
+                                const_cast<char *const *>(envp)),
                  DNBError::POSIX);
     if (err.Fail() || DNBLogCheckLogBit(LOG_PROCESS))
       err.LogThreaded("::posix_spawnp ( pid => %i, path = '%s', file_actions = "
@@ -3215,7 +3290,7 @@ pid_t MachProcess::ForkChildForPTraceDebugging(const char *path,
       ::sleep(1);
 
       // Turn this process into
-      ::execv(path, (char *const *)argv);
+      ::execv(path, const_cast<char *const *>(argv));
     }
     // Exit with error code. Child process should have taken
     // over in above exec call and if the exec fails it will
@@ -3294,7 +3369,6 @@ pid_t MachProcess::SBLaunchForDebug(const char *path, char const *argv[],
   m_pid = MachProcess::SBForkChildForPTraceDebugging(path, argv, envp, no_stdio,
                                                      this, launch_err);
   if (m_pid != 0) {
-    m_flags |= eMachProcessFlagsUsingSBS;
     m_path = path;
     size_t i;
     char const *arg;
@@ -3649,7 +3723,7 @@ pid_t MachProcess::BoardServiceForkChildForPTraceDebugging(
   bool success = false;
 
 #ifdef WITH_BKS
-  if (m_flags & eMachProcessFlagsUsingBKS) {
+  if (ProcessUsingBackBoard()) {
     options =
         BKSCreateOptionsDictionary(app_bundle_path, launch_argv, launch_envp,
                                    stdio_path, disable_aslr, event_data);
@@ -3658,7 +3732,7 @@ pid_t MachProcess::BoardServiceForkChildForPTraceDebugging(
   }
 #endif
 #ifdef WITH_FBS
-  if (m_flags & eMachProcessFlagsUsingFBS) {
+  if (ProcessUsingFrontBoard()) {
     options =
         FBSCreateOptionsDictionary(app_bundle_path, launch_argv, launch_envp,
                                    stdio_path, disable_aslr, event_data);
@@ -3694,12 +3768,12 @@ bool MachProcess::BoardServiceSendEvent(const char *event_data,
 // This is an event I cooked up.  What you actually do is foreground the system
 // app, so:
 #ifdef WITH_BKS
-    if (m_flags & eMachProcessFlagsUsingBKS) {
+    if (ProcessUsingBackBoard()) {
       return_value = BKSCallOpenApplicationFunction(nil, nil, send_err, NULL);
     }
 #endif
 #ifdef WITH_FBS
-    if (m_flags & eMachProcessFlagsUsingFBS) {
+    if (ProcessUsingFrontBoard()) {
       return_value = FBSCallOpenApplicationFunction(nil, nil, send_err, NULL);
     }
 #endif
@@ -3723,7 +3797,7 @@ bool MachProcess::BoardServiceSendEvent(const char *event_data,
     NSMutableDictionary *options = [NSMutableDictionary dictionary];
 
 #ifdef WITH_BKS
-    if (m_flags & eMachProcessFlagsUsingBKS) {
+    if (ProcessUsingBackBoard()) {
       if (!BKSAddEventDataToOptions(options, event_data, send_err)) {
         [pool drain];
         return false;
@@ -3735,7 +3809,7 @@ bool MachProcess::BoardServiceSendEvent(const char *event_data,
     }
 #endif
 #ifdef WITH_FBS
-    if (m_flags & eMachProcessFlagsUsingFBS) {
+    if (ProcessUsingFrontBoard()) {
       if (!FBSAddEventDataToOptions(options, event_data, send_err)) {
         [pool drain];
         return false;
@@ -3831,3 +3905,41 @@ void MachProcess::FBSCleanupAfterAttach(const void *attach_token,
   [pool drain];
 }
 #endif // WITH_FBS
+
+
+void MachProcess::CalculateBoardStatus()
+{
+  if (m_flags & eMachProcessFlagsBoardCalculated)
+    return;
+  if (m_pid == 0)
+    return;
+
+#if defined (WITH_FBS) || defined (WITH_BKS)
+    bool found_app_flavor = false;
+#endif
+
+#if defined(WITH_FBS)
+    if (!found_app_flavor && IsFBSProcess(m_pid)) {
+      found_app_flavor = true;
+      m_flags |= eMachProcessFlagsUsingFBS;
+    }
+#endif
+#if defined(WITH_BKS)
+    if (!found_app_flavor && IsBKSProcess(m_pid)) {
+      found_app_flavor = true;
+      m_flags |= eMachProcessFlagsUsingBKS;
+    }
+#endif
+
+    m_flags |= eMachProcessFlagsBoardCalculated;
+}
+
+bool MachProcess::ProcessUsingBackBoard() {
+  CalculateBoardStatus();
+  return (m_flags & eMachProcessFlagsUsingBKS) != 0;
+}
+
+bool MachProcess::ProcessUsingFrontBoard() {
+  CalculateBoardStatus();
+  return (m_flags & eMachProcessFlagsUsingFBS) != 0;
+}

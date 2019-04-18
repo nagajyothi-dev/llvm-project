@@ -1,6 +1,3 @@
-include_directories(.)
-include_directories(../../Utility)
-
 set(PROC_WINDOWS_COMMON_SOURCES
   DebuggerThread.cpp
   LocalDebugDelegate.cpp
@@ -27,6 +24,7 @@ add_lldb_library(lldbPluginProcessWindowsCommon PLUGIN
     lldbCore
     lldbHost
     lldbInterpreter
+    lldbPluginDynamicLoaderWindowsDYLD
     lldbSymbol
     lldbTarget
     ws2_32

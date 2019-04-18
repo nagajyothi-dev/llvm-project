@@ -1,16 +1,10 @@
 //===-------------------- test_exception_storage.cpp ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
-// FIXME: cxa_exception.hpp directly references `std::unexpected` and friends.
-// This breaks this test when compiled in C++17. For now fix this by manually
-// re-enabling the STL functions.
-#define _LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS
 
 #include <cstdlib>
 #include <algorithm>

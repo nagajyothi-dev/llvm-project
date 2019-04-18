@@ -1,9 +1,8 @@
 //===-- ResourceScriptToken.cpp ---------------------------------*- C++-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===---------------------------------------------------------------------===//
 //
@@ -56,9 +55,25 @@ uint32_t RCToken::intValue() const {
   return Result;
 }
 
+bool RCToken::isLongInt() const {
+  return TokenKind == Kind::Int && std::toupper(TokenValue.back()) == 'L';
+}
+
 StringRef RCToken::value() const { return TokenValue; }
 
 Kind RCToken::kind() const { return TokenKind; }
+
+bool RCToken::isBinaryOp() const {
+  switch (TokenKind) {
+  case Kind::Plus:
+  case Kind::Minus:
+  case Kind::Pipe:
+  case Kind::Amp:
+    return true;
+  default:
+    return false;
+  }
+}
 
 static Error getStringError(const Twine &message) {
   return make_error<StringError>("Error parsing file: " + message,
@@ -88,7 +103,7 @@ private:
   // Check if tokenizer can start reading an identifier at current position.
   // The original tool did non specify the rules to determine what is a correct
   // identifier. We assume they should follow the C convention:
-  // [a-zA-z_][a-zA-Z0-9_]*.
+  // [a-zA-Z_][a-zA-Z0-9_]*.
   bool canStartIdentifier() const;
   // Check if tokenizer can continue reading an identifier.
   bool canContinueIdentifier() const;
@@ -105,6 +120,17 @@ private:
 
   bool canStartString() const;
 
+  // Check if tokenizer can start reading a single line comment (e.g. a comment
+  // that begins with '//')
+  bool canStartLineComment() const;
+
+  // Check if tokenizer can start or finish reading a block comment (e.g. a
+  // comment that begins with '/*' and ends with '*/')
+  bool canStartBlockComment() const;
+
+  // Throw away all remaining characters on the current line.
+  void skipCurrentLine();
+
   bool streamEof() const;
 
   // Classify the token that is about to be read from the current position.
@@ -117,6 +143,14 @@ private:
   StringRef Data;
   size_t DataLength, Pos;
 };
+
+void Tokenizer::skipCurrentLine() {
+  Pos = Data.find_first_of("\r\n", Pos);
+  Pos = Data.find_first_not_of("\r\n", Pos);
+
+  if (Pos == StringRef::npos)
+    Pos = DataLength;
+}
 
 Expected<std::vector<RCToken>> Tokenizer::run() {
   Pos = 0;
@@ -137,6 +171,10 @@ Expected<std::vector<RCToken>> Tokenizer::run() {
     const size_t TokenStart = Pos;
     if (Error TokenError = consumeToken(TokenKind))
       return std::move(TokenError);
+
+    // Comments are just deleted, don't bother saving them.
+    if (TokenKind == Kind::LineComment || TokenKind == Kind::StartComment)
+      continue;
 
     RCToken Token(TokenKind, Data.take_front(Pos).drop_front(TokenStart));
     if (TokenKind == Kind::Identifier) {
@@ -173,12 +211,25 @@ Error Tokenizer::consumeToken(const Kind TokenKind) {
   // One-character token consumption.
 #define TOKEN(Name)
 #define SHORT_TOKEN(Name, Ch) case Kind::Name:
-#include "ResourceScriptTokenList.h"
-#undef TOKEN
-#undef SHORT_TOKEN
+#include "ResourceScriptTokenList.def"
     advance();
     return Error::success();
 
+  case Kind::LineComment:
+    advance(2);
+    skipCurrentLine();
+    return Error::success();
+
+  case Kind::StartComment: {
+    advance(2);
+    auto EndPos = Data.find("*/", Pos);
+    if (EndPos == StringRef::npos)
+      return getStringError(
+          "Unclosed multi-line comment beginning at position " + Twine(Pos));
+    advance(EndPos - Pos);
+    advance(2);
+    return Error::success();
+  }
   case Kind::Identifier:
     while (!streamEof() && canContinueIdentifier())
       advance();
@@ -203,7 +254,10 @@ Error Tokenizer::consumeToken(const Kind TokenKind) {
       } else if (Data[Pos] == '"') {
         // Consume the ending double-quote.
         advance();
-        return Error::success();
+        // However, if another '"' follows this double-quote, the string didn't
+        // end and we just included '"' into the string.
+        if (!willNowRead("\""))
+          return Error::success();
       } else if (Data[Pos] == '\n') {
         return getStringError("String literal not terminated in the line.");
       }
@@ -226,18 +280,29 @@ bool Tokenizer::canStartIdentifier() const {
   assert(!streamEof());
 
   const char CurChar = Data[Pos];
-  return std::isalpha(CurChar) || CurChar == '_';
+  return std::isalpha(CurChar) || CurChar == '_' || CurChar == '.';
 }
 
 bool Tokenizer::canContinueIdentifier() const {
   assert(!streamEof());
   const char CurChar = Data[Pos];
-  return std::isalnum(CurChar) || CurChar == '_';
+  return std::isalnum(CurChar) || CurChar == '_' || CurChar == '.' ||
+         CurChar == '/' || CurChar == '\\';
 }
 
 bool Tokenizer::canStartInt() const {
   assert(!streamEof());
   return std::isdigit(Data[Pos]);
+}
+
+bool Tokenizer::canStartBlockComment() const {
+  assert(!streamEof());
+  return Data.drop_front(Pos).startswith("/*");
+}
+
+bool Tokenizer::canStartLineComment() const {
+  assert(!streamEof());
+  return Data.drop_front(Pos).startswith("//");
 }
 
 bool Tokenizer::canContinueInt() const {
@@ -252,6 +317,11 @@ bool Tokenizer::canStartString() const {
 bool Tokenizer::streamEof() const { return Pos == DataLength; }
 
 Kind Tokenizer::classifyCurrentToken() const {
+  if (canStartBlockComment())
+    return Kind::StartComment;
+  if (canStartLineComment())
+    return Kind::LineComment;
+
   if (canStartInt())
     return Kind::Int;
   if (canStartString())
@@ -268,9 +338,7 @@ Kind Tokenizer::classifyCurrentToken() const {
 #define SHORT_TOKEN(Name, Ch)                                                  \
   case Ch:                                                                     \
     return Kind::Name;
-#include "ResourceScriptTokenList.h"
-#undef TOKEN
-#undef SHORT_TOKEN
+#include "ResourceScriptTokenList.def"
 
   default:
     return Kind::Invalid;

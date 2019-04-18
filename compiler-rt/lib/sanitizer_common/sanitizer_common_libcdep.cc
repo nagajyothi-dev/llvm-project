@@ -1,9 +1,8 @@
 //===-- sanitizer_common_libcdep.cc ---------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,73 +10,13 @@
 // run-time libraries.
 //===----------------------------------------------------------------------===//
 
-#include "sanitizer_common.h"
-
 #include "sanitizer_allocator_interface.h"
-#include "sanitizer_file.h"
+#include "sanitizer_common.h"
 #include "sanitizer_flags.h"
-#include "sanitizer_stackdepot.h"
-#include "sanitizer_stacktrace.h"
-#include "sanitizer_symbolizer.h"
+#include "sanitizer_procmaps.h"
 
-#if SANITIZER_POSIX
-#include "sanitizer_posix.h"
-#endif
 
 namespace __sanitizer {
-
-#if !SANITIZER_FUCHSIA
-
-bool ReportFile::SupportsColors() {
-  SpinMutexLock l(mu);
-  ReopenIfNecessary();
-  return SupportsColoredOutput(fd);
-}
-
-static INLINE bool ReportSupportsColors() {
-  return report_file.SupportsColors();
-}
-
-#else  // SANITIZER_FUCHSIA
-
-// Fuchsia's logs always go through post-processing that handles colorization.
-static INLINE bool ReportSupportsColors() { return true; }
-
-#endif  // !SANITIZER_FUCHSIA
-
-bool ColorizeReports() {
-  // FIXME: Add proper Windows support to AnsiColorDecorator and re-enable color
-  // printing on Windows.
-  if (SANITIZER_WINDOWS)
-    return false;
-
-  const char *flag = common_flags()->color;
-  return internal_strcmp(flag, "always") == 0 ||
-         (internal_strcmp(flag, "auto") == 0 && ReportSupportsColors());
-}
-
-static void (*sandboxing_callback)();
-void SetSandboxingCallback(void (*f)()) {
-  sandboxing_callback = f;
-}
-
-void ReportErrorSummary(const char *error_type, const StackTrace *stack,
-                        const char *alt_tool_name) {
-#if !SANITIZER_GO
-  if (!common_flags()->print_summary)
-    return;
-  if (stack->size == 0) {
-    ReportErrorSummary(error_type);
-    return;
-  }
-  // Currently, we include the first stack frame into the report summary.
-  // Maybe sometimes we need to choose another frame (e.g. skip memcpy/etc).
-  uptr pc = StackTrace::GetPreviousInstructionPc(stack->trace[0]);
-  SymbolizedStack *frame = Symbolizer::GetOrInit()->SymbolizePC(pc);
-  ReportErrorSummary(error_type, frame->info, alt_tool_name);
-  frame->ClearAll();
-#endif
-}
 
 static void (*SoftRssLimitExceededCallback)(bool exceeded);
 void SetSoftRssLimitExceededCallback(void (*Callback)(bool exceeded)) {
@@ -85,18 +24,23 @@ void SetSoftRssLimitExceededCallback(void (*Callback)(bool exceeded)) {
   SoftRssLimitExceededCallback = Callback;
 }
 
-#if SANITIZER_LINUX && !SANITIZER_GO
+#if (SANITIZER_LINUX || SANITIZER_NETBSD) && !SANITIZER_GO
+// Weak default implementation for when sanitizer_stackdepot is not linked in.
+SANITIZER_WEAK_ATTRIBUTE StackDepotStats *StackDepotGetStats() {
+  return nullptr;
+}
+
 void BackgroundThread(void *arg) {
-  uptr hard_rss_limit_mb = common_flags()->hard_rss_limit_mb;
-  uptr soft_rss_limit_mb = common_flags()->soft_rss_limit_mb;
-  bool heap_profile = common_flags()->heap_profile;
+  const uptr hard_rss_limit_mb = common_flags()->hard_rss_limit_mb;
+  const uptr soft_rss_limit_mb = common_flags()->soft_rss_limit_mb;
+  const bool heap_profile = common_flags()->heap_profile;
   uptr prev_reported_rss = 0;
   uptr prev_reported_stack_depot_size = 0;
   bool reached_soft_rss_limit = false;
   uptr rss_during_last_reported_profile = 0;
   while (true) {
     SleepForMillis(100);
-    uptr current_rss_mb = GetRSS() >> 20;
+    const uptr current_rss_mb = GetRSS() >> 20;
     if (Verbosity()) {
       // If RSS has grown 10% since last time, print some information.
       if (prev_reported_rss * 11 / 10 < current_rss_mb) {
@@ -105,13 +49,15 @@ void BackgroundThread(void *arg) {
       }
       // If stack depot has grown 10% since last time, print it too.
       StackDepotStats *stack_depot_stats = StackDepotGetStats();
-      if (prev_reported_stack_depot_size * 11 / 10 <
-          stack_depot_stats->allocated) {
-        Printf("%s: StackDepot: %zd ids; %zdM allocated\n",
-               SanitizerToolName,
-               stack_depot_stats->n_uniq_ids,
-               stack_depot_stats->allocated >> 20);
-        prev_reported_stack_depot_size = stack_depot_stats->allocated;
+      if (stack_depot_stats) {
+        if (prev_reported_stack_depot_size * 11 / 10 <
+            stack_depot_stats->allocated) {
+          Printf("%s: StackDepot: %zd ids; %zdM allocated\n",
+                 SanitizerToolName,
+                 stack_depot_stats->n_uniq_ids,
+                 stack_depot_stats->allocated >> 20);
+          prev_reported_stack_depot_size = stack_depot_stats->allocated;
+        }
       }
     }
     // Check RSS against the limit.
@@ -153,18 +99,21 @@ void WriteToSyslog(const char *msg) {
 
   // Print one line at a time.
   // syslog, at least on Android, has an implicit message length limit.
-  do {
-    q = internal_strchr(p, '\n');
-    if (q)
-      *q = '\0';
+  while ((q = internal_strchr(p, '\n'))) {
+    *q = '\0';
     WriteOneLineToSyslog(p);
-    if (q)
-      p = q + 1;
-  } while (q);
+    p = q + 1;
+  }
+  // Print remaining characters, if there are any.
+  // Note that this will add an extra newline at the end.
+  // FIXME: buffer extra output. This would need a thread-local buffer, which
+  // on Android requires plugging into the tools (ex. ASan's) Thread class.
+  if (*p)
+    WriteOneLineToSyslog(p);
 }
 
 void MaybeStartBackgroudThread() {
-#if SANITIZER_LINUX && \
+#if (SANITIZER_LINUX || SANITIZER_NETBSD) && \
     !SANITIZER_GO  // Need to implement/test on other platforms.
   // Start the background thread if one of the rss limits is given.
   if (!common_flags()->hard_rss_limit_mb &&
@@ -175,11 +124,16 @@ void MaybeStartBackgroudThread() {
 #endif
 }
 
+static void (*sandboxing_callback)();
+void SetSandboxingCallback(void (*f)()) {
+  sandboxing_callback = f;
+}
+
 }  // namespace __sanitizer
 
 SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_sandbox_on_notify,
                              __sanitizer_sandbox_arguments *args) {
-  __sanitizer::PrepareForSandboxing(args);
+  __sanitizer::PlatformPrepareForSandboxing(args);
   if (__sanitizer::sandboxing_callback)
     __sanitizer::sandboxing_callback();
 }

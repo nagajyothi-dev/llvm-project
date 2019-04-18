@@ -1,4 +1,5 @@
 add_lldb_unittest(SymbolTests
+  LocateSymbolFileTest.cpp
   TestClangASTContext.cpp
   TestDWARFCallFrameInfo.cpp
   TestType.cpp
@@ -7,6 +8,7 @@ add_lldb_unittest(SymbolTests
     lldbHost
     lldbSymbol
     lldbUtilityHelpers
+    lldbPluginObjectFileELF
   )
 
 add_dependencies(SymbolTests yaml2obj)

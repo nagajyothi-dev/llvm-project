@@ -1,9 +1,8 @@
 //===- ScopPass.cpp - The base class of Passes that operate on Polly IR ---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,8 +12,11 @@
 
 #include "polly/ScopPass.h"
 #include "polly/ScopInfo.h"
-
-#include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/GlobalsModRef.h"
+#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 
 using namespace llvm;
 using namespace polly;
@@ -38,7 +40,19 @@ void ScopPass::print(raw_ostream &OS, const Module *M) const {
 
 void ScopPass::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<ScopInfoRegionPass>();
-  AU.setPreservesAll();
+
+  AU.addPreserved<AAResultsWrapperPass>();
+  AU.addPreserved<BasicAAWrapperPass>();
+  AU.addPreserved<LoopInfoWrapperPass>();
+  AU.addPreserved<DominatorTreeWrapperPass>();
+  AU.addPreserved<GlobalsAAWrapperPass>();
+  AU.addPreserved<ScopDetectionWrapperPass>();
+  AU.addPreserved<ScalarEvolutionWrapperPass>();
+  AU.addPreserved<SCEVAAWrapperPass>();
+  AU.addPreserved<OptimizationRemarkEmitterWrapperPass>();
+  AU.addPreserved<RegionInfoPass>();
+  AU.addPreserved<ScopInfoRegionPass>();
+  AU.addPreserved<TargetTransformInfoWrapperPass>();
 }
 
 namespace polly {
@@ -89,7 +103,7 @@ bool ScopAnalysisManagerFunctionProxy::Result::invalidate(
     for (auto &S : *SI)
       if (auto *scop = S.second.get())
         if (InnerAM)
-          InnerAM->clear(*scop);
+          InnerAM->clear(*scop, scop->getName());
 
     InnerAM = nullptr;
     return true; // Invalidate the proxy result as well.

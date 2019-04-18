@@ -17,18 +17,18 @@ struct External { int v; };
 
 // Invalid usage.
 __declspec(dllexport) typedef int typedef1;
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to functions, variables, classes, and Objective-C interfaces}}
 typedef __declspec(dllexport) int typedef2;
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to}}
 typedef int __declspec(dllexport) typedef3;
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to}}
 typedef __declspec(dllexport) void (*FunTy)();
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to}}
 enum __declspec(dllexport) Enum {};
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to}}
 #if __has_feature(cxx_strong_enums)
 enum class __declspec(dllexport) EnumClass {};
-// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+// expected-warning@-1{{'dllexport' attribute only applies to}}
 #endif
 
 
@@ -69,7 +69,9 @@ __declspec(dllexport) extern int GlobalRedecl4; // expected-warning{{redeclarati
 // External linkage is required.
 __declspec(dllexport) static int StaticGlobal; // expected-error{{'StaticGlobal' must have external linkage when declared 'dllexport'}}
 __declspec(dllexport) Internal InternalTypeGlobal; // expected-error{{'InternalTypeGlobal' must have external linkage when declared 'dllexport'}}
+#ifndef MS
 namespace    { __declspec(dllexport) int InternalGlobal; } // expected-error{{'(anonymous namespace)::InternalGlobal' must have external linkage when declared 'dllexport'}}
+#endif
 namespace ns { __declspec(dllexport) int ExternalGlobal; }
 
 __declspec(dllexport) auto InternalAutoTypeGlobal = Internal(); // expected-error{{'InternalAutoTypeGlobal' must have external linkage when declared 'dllexport'}}
@@ -124,7 +126,9 @@ template<typename T> __declspec(dllexport) extern int VarTmplRedecl3; // expecte
 // External linkage is required.
 template<typename T> __declspec(dllexport) static int StaticVarTmpl; // expected-error{{'StaticVarTmpl' must have external linkage when declared 'dllexport'}}
 template<typename T> __declspec(dllexport) Internal InternalTypeVarTmpl; // expected-error{{'InternalTypeVarTmpl' must have external linkage when declared 'dllexport'}}
+#ifndef MS
 namespace    { template<typename T> __declspec(dllexport) int InternalVarTmpl; } // expected-error{{'(anonymous namespace)::InternalVarTmpl' must have external linkage when declared 'dllexport'}}
+#endif
 namespace ns { template<typename T> __declspec(dllexport) int ExternalVarTmpl = 1; }
 
 template<typename T> __declspec(dllexport) auto InternalAutoTypeVarTmpl = Internal(); // expected-error{{'InternalAutoTypeVarTmpl' must have external linkage when declared 'dllexport'}}
@@ -565,7 +569,7 @@ private:
   __declspec(dllexport)                void privateDef();
 public:
 
-  __declspec(dllexport)                int  Field; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
+  __declspec(dllexport)                int  Field; // expected-warning{{'dllexport' attribute only applies to}}
   __declspec(dllexport) static         int  StaticField;
   __declspec(dllexport) static         int  StaticFieldDef;
   __declspec(dllexport) static  const  int  StaticConstField;
@@ -977,7 +981,7 @@ private:
   __declspec(dllexport)                void privateDef();
 public:
 
-  __declspec(dllexport)                int  Field; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
+  __declspec(dllexport)                int  Field; // expected-warning{{'dllexport' attribute only applies to}}
   __declspec(dllexport) static         int  StaticField;
   __declspec(dllexport) static         int  StaticFieldDef;
   __declspec(dllexport) static  const  int  StaticConstField;

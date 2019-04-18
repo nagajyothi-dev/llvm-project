@@ -1,17 +1,13 @@
 //===-- RegisterInfos_x86_64.h ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/Support/Compiler.h"
-#include <cstddef>
-#include <cstdint>
-
-// Project includes
+// This file is meant to be textually included. Do not #include modular
+// headers here.
 
 // Computes the offset of the given GPR in the user data area.
 #define GPR_OFFSET(regname) (LLVM_EXTENSION offsetof(GPR, regname))
@@ -19,25 +15,25 @@
 // Computes the offset of the given FPR in the extended data area.
 #define FPR_OFFSET(regname)                                                    \
   (LLVM_EXTENSION offsetof(UserArea, fpr) +                                    \
-   LLVM_EXTENSION offsetof(FPR, xstate) +                                      \
+   LLVM_EXTENSION offsetof(FPR, fxsave) +                                      \
    LLVM_EXTENSION offsetof(FXSAVE, regname))
 
 // Computes the offset of the YMM register assembled from register halves.
 // Based on DNBArchImplX86_64.cpp from debugserver
 #define YMM_OFFSET(reg_index)                                                  \
   (LLVM_EXTENSION offsetof(UserArea, fpr) +                                    \
-   LLVM_EXTENSION offsetof(FPR, xstate) +                                      \
+   LLVM_EXTENSION offsetof(FPR, xsave) +                                       \
    LLVM_EXTENSION offsetof(XSAVE, ymmh[0]) + (32 * reg_index))
 
-#define BNDR_OFFSET(reg_index) \
-    (LLVM_EXTENSION offsetof(UserArea, fpr) + \
-     LLVM_EXTENSION offsetof(FPR, xstate) + \
-     LLVM_EXTENSION offsetof(XSAVE, mpxr[reg_index]))
+#define BNDR_OFFSET(reg_index)                                                 \
+  (LLVM_EXTENSION offsetof(UserArea, fpr) +                                    \
+   LLVM_EXTENSION offsetof(FPR, xsave) +                                       \
+   LLVM_EXTENSION offsetof(XSAVE, mpxr[reg_index]))
 
-#define BNDC_OFFSET(reg_index) \
-    (LLVM_EXTENSION offsetof(UserArea, fpr) + \
-     LLVM_EXTENSION offsetof(FPR, xstate) + \
-     LLVM_EXTENSION offsetof(XSAVE, mpxc[reg_index]))
+#define BNDC_OFFSET(reg_index)                                                 \
+  (LLVM_EXTENSION offsetof(UserArea, fpr) +                                    \
+   LLVM_EXTENSION offsetof(FPR, xsave) +                                       \
+   LLVM_EXTENSION offsetof(XSAVE, mpxc[reg_index]))
 
 #ifdef DECLARE_REGISTER_INFOS_X86_64_STRUCT
 

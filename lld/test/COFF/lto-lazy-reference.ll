@@ -1,3 +1,4 @@
+; REQUIRES: x86
 ; RUN: llc -mtriple=i686-pc-windows-msvc -filetype=obj -o %T/lto-lazy-reference-quadruple.obj %S/Inputs/lto-lazy-reference-quadruple.ll
 ; RUN: llvm-as -o %T/lto-lazy-reference-dummy.bc %S/Inputs/lto-lazy-reference-dummy.ll
 ; RUN: rm -f %t.lib
@@ -7,6 +8,10 @@
 
 target datalayout = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32"
 target triple = "i686-pc-windows-msvc18.0.0"
+
+; Define fltused, since we don't link against the MS C runtime but are
+; using floats.
+@_fltused = dllexport global i32 0, align 4
 
 define double @main(double %x) {
 entry:

@@ -1,9 +1,8 @@
 //===-- SWIG Interface for SBSymbolContext ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,7 +11,7 @@ namespace lldb {
 %feature("docstring",
 "A context object that provides access to core debugger entities.
 
-Manay debugger functions require a context when doing lookups. This class
+Many debugger functions require a context when doing lookups. This class
 provides a common structure that can be used as the result of a query that
 can contain a single result.
 
@@ -57,6 +56,8 @@ public:
 
     bool
     IsValid () const;
+
+    explicit operator bool() const;
 
     lldb::SBModule        GetModule ();
     lldb::SBCompileUnit   GetCompileUnit ();

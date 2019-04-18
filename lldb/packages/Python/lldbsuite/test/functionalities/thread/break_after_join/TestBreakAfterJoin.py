@@ -32,11 +32,12 @@ class BreakpointAfterJoinTestCase(TestBase):
     @expectedFailureAll(
         oslist=["freebsd"],
         bugnumber="llvm.org/pr18190 thread states not properly maintained")
+    @expectedFailureNetBSD
     def test(self):
         """Test breakpoint handling after a thread join."""
         self.build(dictionary=self.getBuildFlags())
 
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         # This should create a breakpoint in the main thread.

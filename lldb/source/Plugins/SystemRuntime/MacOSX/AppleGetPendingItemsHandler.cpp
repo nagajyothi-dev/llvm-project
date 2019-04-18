@@ -1,19 +1,14 @@
 //===-- AppleGetPendingItemsHandler.cpp -------------------------------*- C++
 //-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "AppleGetPendingItemsHandler.h"
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 
 #include "lldb/Core/Module.h"
 #include "lldb/Core/Value.h"
@@ -121,11 +116,10 @@ void AppleGetPendingItemsHandler::Detach() {
   }
 }
 
-// Compile our __lldb_backtrace_recording_get_pending_items() function (from the
-// source above in g_get_pending_items_function_code) if we don't find that
-// function in the inferior
-// already with USE_BUILTIN_FUNCTION defined.  (e.g. this would be the case for
-// testing.)
+// Compile our __lldb_backtrace_recording_get_pending_items() function (from
+// the source above in g_get_pending_items_function_code) if we don't find that
+// function in the inferior already with USE_BUILTIN_FUNCTION defined.  (e.g.
+// this would be the case for testing.)
 //
 // Insert the __lldb_backtrace_recording_get_pending_items into the inferior
 // process if needed.
@@ -134,8 +128,7 @@ void AppleGetPendingItemsHandler::Detach() {
 // prepare for the call.
 //
 // Returns the address of the arguments written down in the inferior process,
-// which can be used to
-// make the function call.
+// which can be used to make the function call.
 
 lldb::addr_t AppleGetPendingItemsHandler::SetupGetPendingItemsFunction(
     Thread &thread, ValueList &get_pending_items_arglist) {
@@ -153,7 +146,7 @@ lldb::addr_t AppleGetPendingItemsHandler::SetupGetPendingItemsFunction(
 
     // First stage is to make the ClangUtility to hold our injected function:
 
-    if (!m_get_pending_items_impl_code.get()) {
+    if (!m_get_pending_items_impl_code) {
       if (g_get_pending_items_function_code != NULL) {
         Status error;
         m_get_pending_items_impl_code.reset(
@@ -212,10 +205,9 @@ lldb::addr_t AppleGetPendingItemsHandler::SetupGetPendingItemsFunction(
   }
 
   // Now write down the argument values for this particular call.  This looks
-  // like it might be a race condition
-  // if other threads were calling into here, but actually it isn't because we
-  // allocate a new args structure for
-  // this call by passing args_addr = LLDB_INVALID_ADDRESS...
+  // like it might be a race condition if other threads were calling into here,
+  // but actually it isn't because we allocate a new args structure for this
+  // call by passing args_addr = LLDB_INVALID_ADDRESS...
 
   if (!get_pending_items_caller->WriteFunctionArguments(
           exe_ctx, args_addr, get_pending_items_arglist, diagnostics)) {
@@ -248,7 +240,7 @@ AppleGetPendingItemsHandler::GetPendingItems(Thread &thread, addr_t queue,
 
   error.Clear();
 
-  if (thread.SafeToCallFunctions() == false) {
+  if (!thread.SafeToCallFunctions()) {
     if (log)
       log->Printf("Not safe to call functions on thread 0x%" PRIx64,
                   thread.GetID());
@@ -279,8 +271,7 @@ AppleGetPendingItemsHandler::GetPendingItems(Thread &thread, addr_t queue,
   //                                             uint64_t page_to_free_size)
 
   // Where the return_buffer argument points to a 24 byte region of memory
-  // already allocated by lldb in
-  // the inferior process.
+  // already allocated by lldb in the inferior process.
 
   CompilerType clang_void_ptr_type =
       clang_ast_context->GetBasicType(eBasicTypeVoid).GetPointerType();
@@ -351,8 +342,9 @@ AppleGetPendingItemsHandler::GetPendingItems(Thread &thread, addr_t queue,
   options.SetUnwindOnError(true);
   options.SetIgnoreBreakpoints(true);
   options.SetStopOthers(true);
-  options.SetTimeout(std::chrono::milliseconds(500));
+  options.SetTimeout(process_sp->GetUtilityExpressionTimeout());
   options.SetTryAllThreads(false);
+  options.SetIsForUtilityExpr(true);
   thread.CalculateExecutionContext(exe_ctx);
 
   if (get_pending_items_caller == NULL) {

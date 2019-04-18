@@ -17,11 +17,11 @@ set(CMAKE_MODULE_PATH
   ${CMAKE_MODULE_PATH}
   )
 
-if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR OR LIBCXXABI_STANDALONE_BUILD)
   project(libcxxabi CXX C)
 
   set(PACKAGE_NAME libcxxabi)
-  set(PACKAGE_VERSION 6.0.0svn)
+  set(PACKAGE_VERSION 9.0.0svn)
   set(PACKAGE_STRING "${PACKAGE_NAME} ${PACKAGE_VERSION}")
   set(PACKAGE_BUGREPORT "llvm-bugs@lists.llvm.org")
 
@@ -46,6 +46,7 @@ include(HandleCompilerRT)
 option(LIBCXXABI_ENABLE_EXCEPTIONS "Use exceptions." ON)
 option(LIBCXXABI_ENABLE_ASSERTIONS "Enable assertions independent of build mode." ON)
 option(LIBCXXABI_ENABLE_PEDANTIC "Compile with pedantic enabled." ON)
+option(LIBCXXABI_ENABLE_PIC "Build Position-Independent Code, even in static library" ON)
 option(LIBCXXABI_ENABLE_WERROR "Fail and stop if a warning is triggered." OFF)
 option(LIBCXXABI_USE_LLVM_UNWINDER "Build and use the LLVM unwinder." OFF)
 option(LIBCXXABI_ENABLE_STATIC_UNWINDER "Statically link the LLVM unwinder." OFF)
@@ -69,6 +70,7 @@ option(LIBCXXABI_BUILD_32_BITS "Build 32 bit libc++abi." ${LLVM_BUILD_32_BITS})
 option(LIBCXXABI_INCLUDE_TESTS "Generate build targets for the libc++abi unit tests." ${LLVM_INCLUDE_TESTS})
 set(LIBCXXABI_LIBDIR_SUFFIX "${LLVM_LIBDIR_SUFFIX}" CACHE STRING
     "Define suffix of library directory name (32/64)")
+option(LIBCXXABI_INSTALL_LIBRARY "Install the libc++abi library." ON)
 set(LIBCXXABI_TARGET_TRIPLE "" CACHE STRING "Target triple for cross compiling.")
 set(LIBCXXABI_GCC_TOOLCHAIN "" CACHE PATH "GCC toolchain for cross compiling.")
 set(LIBCXXABI_SYSROOT "" CACHE PATH "Sysroot for cross compiling.")
@@ -82,6 +84,20 @@ set(LIBCXXABI_LIBCXX_LIBRARY_PATH "" CACHE PATH "The path to libc++ library.")
 # system over a static libc++abi from the output directory.
 option(LIBCXXABI_ENABLE_SHARED "Build libc++abi as a shared library." ON)
 option(LIBCXXABI_ENABLE_STATIC "Build libc++abi as a static library." ON)
+
+cmake_dependent_option(LIBCXXABI_INSTALL_STATIC_LIBRARY
+  "Install the static libc++abi library." ON
+  "LIBCXXABI_ENABLE_STATIC;LIBCXXABI_INSTALL_LIBRARY" OFF)
+cmake_dependent_option(LIBCXXABI_INSTALL_SHARED_LIBRARY
+  "Install the shared libc++abi library." ON
+  "LIBCXXABI_ENABLE_SHARED;LIBCXXABI_INSTALL_LIBRARY" OFF)
+
+cmake_dependent_option(LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_STATIC_LIBRARY
+  "Statically link the LLVM unwinder to static library" ON
+  "LIBCXXABI_ENABLE_STATIC_UNWINDER;LIBCXXABI_ENABLE_STATIC" OFF)
+cmake_dependent_option(LIBCXXABI_STATICALLY_LINK_UNWINDER_IN_SHARED_LIBRARY
+  "Statically link the LLVM unwinder to shared library" ON
+  "LIBCXXABI_ENABLE_STATIC_UNWINDER;LIBCXXABI_ENABLE_SHARED" OFF)
 
 option(LIBCXXABI_BAREMETAL "Build libc++abi for baremetal targets." OFF)
 # The default terminate handler attempts to demangle uncaught exceptions, which
@@ -98,6 +114,7 @@ else()
   set(LIBCXXABI_LIBCXX_SRC_DIRS
     "${LLVM_MAIN_SRC_DIR}/projects/libcxx"
     "${LLVM_MAIN_SRC_DIR}/runtimes/libcxx"
+    "${LLVM_MAIN_SRC_DIR}/../libcxx"
     )
 endif()
 
@@ -108,12 +125,14 @@ endforeach()
 
 find_path(
   LIBCXXABI_LIBCXX_INCLUDES
-  vector
+  __config
   PATHS ${LIBCXXABI_LIBCXX_INCLUDES}
         ${LIBCXXABI_LIBCXX_PATH}/include
         ${CMAKE_BINARY_DIR}/${LIBCXXABI_LIBCXX_INCLUDES}
         ${LIBCXXABI_LIBCXX_INCLUDE_DIRS}
         ${LLVM_INCLUDE_DIR}/c++/v1
+  NO_DEFAULT_PATH
+  NO_CMAKE_FIND_ROOT_PATH
   )
 
 set(LIBCXXABI_LIBCXX_INCLUDES "${LIBCXXABI_LIBCXX_INCLUDES}" CACHE PATH
@@ -126,6 +145,7 @@ find_path(
         ${LIBCXXABI_LIBCXX_INCLUDES}/../
         ${LIBCXXABI_LIBCXX_SRC_DIRS}
   NO_DEFAULT_PATH
+  NO_CMAKE_FIND_ROOT_PATH
   )
 
 if (LIBCXXABI_LIBCXX_PATH STREQUAL "LIBCXXABI_LIBCXX_PATH-NOTFOUND")
@@ -135,6 +155,9 @@ endif()
 
 set(LIBCXXABI_LIBCXX_PATH "${LIBCXXABI_LIBCXX_PATH}" CACHE PATH
     "Specify path to libc++ source." FORCE)
+
+option(LIBCXXABI_HERMETIC_STATIC_LIBRARY
+  "Do not export any symbols from the static library." OFF)
 
 #===============================================================================
 # Configure System
@@ -150,18 +173,21 @@ set(CMAKE_MODULE_PATH
 set(LIBCXXABI_COMPILER    ${CMAKE_CXX_COMPILER})
 set(LIBCXXABI_SOURCE_DIR  ${CMAKE_CURRENT_SOURCE_DIR})
 set(LIBCXXABI_BINARY_DIR  ${CMAKE_CURRENT_BINARY_DIR})
-if (LLVM_LIBRARY_OUTPUT_INTDIR)
+
+string(REGEX MATCH "[0-9]+\\.[0-9]+(\\.[0-9]+)?" CLANG_VERSION
+       ${PACKAGE_VERSION})
+
+if(LLVM_ENABLE_PER_TARGET_RUNTIME_DIR AND NOT APPLE)
+  set(DEFAULT_INSTALL_PREFIX lib${LLVM_LIBDIR_SUFFIX}/clang/${CLANG_VERSION}/${LLVM_DEFAULT_TARGET_TRIPLE}/)
+  set(LIBCXXABI_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/${LLVM_DEFAULT_TARGET_TRIPLE}/lib${LIBCXXABI_LIBDIR_SUFFIX})
+elseif(LLVM_LIBRARY_OUTPUT_INTDIR)
   set(LIBCXXABI_LIBRARY_DIR ${LLVM_LIBRARY_OUTPUT_INTDIR})
 else()
   set(LIBCXXABI_LIBRARY_DIR ${CMAKE_BINARY_DIR}/lib${LIBCXXABI_LIBDIR_SUFFIX})
 endif()
 
-set(LIBCXXABI_INSTALL_PREFIX "" CACHE STRING
+set(LIBCXXABI_INSTALL_PREFIX ${DEFAULT_INSTALL_PREFIX} CACHE STRING
     "Define libc++abi destination prefix.")
-
-if (NOT LIBCXXABI_INSTALL_PREFIX MATCHES "^$|.*/")
-  message(FATAL_ERROR "LIBCXXABI_INSTALL_PREFIX has to end with \"/\".")
-endif()
 
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${LIBCXXABI_LIBRARY_DIR})
@@ -206,12 +232,22 @@ include(HandleLibcxxabiFlags)
 
 # Configure target flags
 add_target_flags_if(LIBCXXABI_BUILD_32_BITS "-m32")
-add_target_flags_if(LIBCXXABI_TARGET_TRIPLE
-          "--target=${LIBCXXABI_TARGET_TRIPLE}")
-add_target_flags_if(LIBCXXABI_GCC_TOOLCHAIN
-         "--gcc-toolchain=${LIBCXXABI_GCC_TOOLCHAIN}")
-add_target_flags_if(LIBCXXABI_SYSROOT
-          "--sysroot=${LIBCXXABI_SYSROOT}")
+
+if(LIBCXXABI_TARGET_TRIPLE)
+  add_target_flags("--target=${LIBCXXABI_TARGET_TRIPLE}")
+elseif(CMAKE_CXX_COMPILER_TARGET)
+  set(LIBCXXABI_TARGET_TRIPLE "${CMAKE_CXX_COMPILER_TARGET}")
+endif()
+if(LIBCXX_GCC_TOOLCHAIN)
+  add_target_flags("--gcc-toolchain=${LIBCXXABI_GCC_TOOLCHAIN}")
+elseif(CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN)
+  set(LIBCXXABI_GCC_TOOLCHAIN "${CMAKE_CXX_COMPILER_EXTERNAL_TOOLCHAIN}")
+endif()
+if(LIBCXXABI_SYSROOT)
+  add_target_flags("--sysroot=${LIBCXXABI_SYSROOT}")
+elseif(CMAKE_SYSROOT)
+  set(LIBCXXABI_SYSROOT "${CMAKE_SYSROOT}")
+endif()
 
 if (LIBCXXABI_TARGET_TRIPLE)
   set(TARGET_TRIPLE "${LIBCXXABI_TARGET_TRIPLE}")
@@ -225,10 +261,6 @@ if (LIBCXXABI_HAS_NOSTDINCXX_FLAG)
   # Remove -stdlib flags to prevent them from causing an unused flag warning.
   string(REPLACE "-stdlib=libc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   string(REPLACE "-stdlib=libstdc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-endif()
-
-if (LIBCXXABI_USE_COMPILER_RT)
-  list(APPEND LIBCXXABI_LINK_FLAGS "-rtlib=compiler-rt")
 endif()
 
 # Let the library headers know they are currently being used to build the
@@ -383,6 +415,10 @@ endif()
 # Prevent libc++abi from having library dependencies on libc++
 add_definitions(-D_LIBCPP_DISABLE_EXTERN_TEMPLATE)
 
+# Bring back `std::unexpected`, which is removed in C++17, to support
+# pre-C++17.
+add_definitions(-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS)
+
 if (MSVC)
   add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 endif()
@@ -423,7 +459,9 @@ if (LIBCXXABI_USE_LLVM_UNWINDER OR LLVM_NATIVE_ARCH MATCHES ARM)
           ${CMAKE_BINARY_DIR}/${LIBCXXABI_LIBUNWIND_INCLUDES}
           ${LLVM_MAIN_SRC_DIR}/projects/libunwind/include
           ${LLVM_MAIN_SRC_DIR}/runtimes/libunwind/include
+          ${LLVM_MAIN_SRC_DIR}/../libunwind/include
     NO_DEFAULT_PATH
+    NO_CMAKE_FIND_ROOT_PATH
   )
 
   if (LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL STREQUAL "LIBCXXABI_LIBUNWIND_INCLUDES_INTERNAL-NOTFOUND")
@@ -439,18 +477,21 @@ endif()
 # soname, etc...
 add_subdirectory(src)
 
-if (NOT LIBCXXABI_INCLUDE_TESTS OR (LIBCXXABI_STANDALONE_BUILD AND NOT LIBCXXABI_ENABLE_SHARED))
-  # We can't reasonably test the system C++ library with a static libc++abi.
-  # We either need to be able to replace libc++abi at run time (with a shared
-  # libc++abi), or we need to be able to replace the C++ runtime (with a non-
-  # standalone build).
-  message(WARNING "The libc++abi tests aren't valid when libc++abi is built "
-                  "standalone (i.e. outside of llvm/projects/libcxxabi ) and "
-                  "is built without a shared library.  Either build a shared "
-                  "library, build libc++abi at the same time as you build "
-                  "libc++, or do without testing.  No check target will be "
-                  "available!")
-else()
-  add_subdirectory(test)
-  add_subdirectory(fuzz)
+if (LIBCXXABI_INCLUDE_TESTS)
+  if (LIBCXXABI_STANDALONE_BUILD AND NOT LIBCXXABI_ENABLE_SHARED)
+    # We can't reasonably test the system C++ library with a static
+    # libc++abi.  We either need to be able to replace libc++abi at
+    # run time (with a shared libc++abi), or we need to be able to
+    # replace the C++ runtime (with a non- standalone build).
+    message(WARNING "The libc++abi tests aren't valid when libc++abi "
+                    "is built standalone (i.e. outside of "
+                    "llvm/projects/libcxxabi ) and is built without "
+                    "a shared library.  Either build a shared "
+                    "library, build libc++abi at the same time as "
+                    "you build libc++, or do without testing.  No "
+                    "check target will be available!")
+  else()
+    add_subdirectory(test)
+    add_subdirectory(fuzz)
+  endif()
 endif()

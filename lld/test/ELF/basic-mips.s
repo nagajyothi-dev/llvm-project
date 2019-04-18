@@ -1,9 +1,8 @@
+# REQUIRES: mips
 # RUN: llvm-mc -filetype=obj -triple=mipsel-unknown-linux %s -o %t.o
 # RUN: ld.lld %t.o -o %t.exe
 # RUN: llvm-readobj -file-headers -sections -program-headers -symbols %t.exe \
 # RUN:   | FileCheck %s
-
-# REQUIRES: mips
 
 # Exits with return code 1 on Linux.
         .globl  __start
@@ -19,7 +18,7 @@ __start:
 # CHECK-NEXT:     DataEncoding: LittleEndian (0x1)
 # CHECK-NEXT:     FileVersion: 1
 # CHECK-NEXT:     OS/ABI: SystemV (0x0)
-# CHECK-NEXT:     ABIVersion: 0
+# CHECK-NEXT:     ABIVersion: 1
 # CHECK-NEXT:     Unused: (00 00 00 00 00 00 00)
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Type: Executable (0x2)
@@ -35,7 +34,7 @@ __start:
 # CHECK-NEXT:   ]
 # CHECK-NEXT:   HeaderSize: 52
 # CHECK-NEXT:   ProgramHeaderEntrySize: 32
-# CHECK-NEXT:   ProgramHeaderCount: 5
+# CHECK-NEXT:   ProgramHeaderCount: 7
 # CHECK-NEXT:   SectionHeaderEntrySize: 40
 # CHECK-NEXT:   SectionHeaderCount: 11
 # CHECK-NEXT:   StringTableSectionIndex: 9
@@ -62,8 +61,8 @@ __start:
 # CHECK-NEXT:     Flags [ (0x2)
 # CHECK-NEXT:       SHF_ALLOC (0x2)
 # CHECK-NEXT:     ]
-# CHECK-NEXT:     Address: 0x100D8
-# CHECK-NEXT:     Offset: 0xD8
+# CHECK-NEXT:     Address: 0x10118
+# CHECK-NEXT:     Offset: 0x118
 # CHECK-NEXT:     Size: 24
 # CHECK-NEXT:     Link: 0
 # CHECK-NEXT:     Info: 0
@@ -77,8 +76,8 @@ __start:
 # CHECK-NEXT:     Flags [ (0x2)
 # CHECK-NEXT:       SHF_ALLOC (0x2)
 # CHECK-NEXT:     ]
-# CHECK-NEXT:     Address: 0x100F0
-# CHECK-NEXT:     Offset: 0xF0
+# CHECK-NEXT:     Address: 0x10130
+# CHECK-NEXT:     Offset: 0x130
 # CHECK-NEXT:     Size: 24
 # CHECK-NEXT:     Link: 0
 # CHECK-NEXT:     Info: 0
@@ -164,7 +163,7 @@ __start:
 # CHECK-NEXT:     Link: 0
 # CHECK-NEXT:     Info: 0
 # CHECK-NEXT:     AddressAlignment: 1
-# CHECK-NEXT:     EntrySize: 0
+# CHECK-NEXT:     EntrySize: 1
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Section {
 # CHECK-NEXT:     Index: 8
@@ -228,7 +227,7 @@ __start:
 # CHECK-NEXT:     Other [ (0x2)
 # CHECK-NEXT:       STV_HIDDEN (0x2)
 # CHECK-NEXT:     ]
-# CHECK-NEXT:     Section: Absolute
+# CHECK-NEXT:     Section: .got
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Symbol {
 # CHECK-NEXT:     Name: __start
@@ -246,8 +245,8 @@ __start:
 # CHECK-NEXT:     Offset: 0x34
 # CHECK-NEXT:     VirtualAddress: 0x10034
 # CHECK-NEXT:     PhysicalAddress: 0x10034
-# CHECK-NEXT:     FileSize: 160
-# CHECK-NEXT:     MemSize: 160
+# CHECK-NEXT:     FileSize: 224
+# CHECK-NEXT:     MemSize: 224
 # CHECK-NEXT:     Flags [ (0x4)
 # CHECK-NEXT:       PF_R (0x4)
 # CHECK-NEXT:     ]
@@ -258,8 +257,8 @@ __start:
 # CHECK-NEXT:     Offset: 0x0
 # CHECK-NEXT:     VirtualAddress: 0x10000
 # CHECK-NEXT:     PhysicalAddress: 0x10000
-# CHECK-NEXT:     FileSize: 264
-# CHECK-NEXT:     MemSize: 264
+# CHECK-NEXT:     FileSize: 328
+# CHECK-NEXT:     MemSize: 328
 # CHECK-NEXT:     Flags [ (0x4)
 # CHECK-NEXT:       PF_R (0x4)
 # CHECK-NEXT:     ]
@@ -292,16 +291,40 @@ __start:
 # CHECK-NEXT:     Alignment: 65536
 # CHECK-NEXT:   }
 # CHECK-NEXT:   ProgramHeader {
-# CHECK-NEXT:    Type: PT_GNU_STACK
-# CHECK-NEXT:    Offset: 0x0
-# CHECK-NEXT:    VirtualAddress: 0x0
-# CHECK-NEXT:    PhysicalAddress: 0x0
-# CHECK-NEXT:    FileSize: 0
-# CHECK-NEXT:    MemSize: 0
-# CHECK-NEXT:    Flags [
-# CHECK-NEXT:      PF_R
-# CHECK-NEXT:      PF_W
-# CHECK-NEXT:    ]
-# CHECK-NEXT:    Alignment: 0
-# CHECK-NEXT:  }
-# CHECK-NEXT:]
+# CHECK-NEXT:     Type: PT_GNU_STACK
+# CHECK-NEXT:     Offset: 0x0
+# CHECK-NEXT:     VirtualAddress: 0x0
+# CHECK-NEXT:     PhysicalAddress: 0x0
+# CHECK-NEXT:     FileSize: 0
+# CHECK-NEXT:     MemSize: 0
+# CHECK-NEXT:     Flags [
+# CHECK-NEXT:       PF_R
+# CHECK-NEXT:       PF_W
+# CHECK-NEXT:     ]
+# CHECK-NEXT:     Alignment: 0
+# CHECK-NEXT:   }
+# CHECK-NEXT:   ProgramHeader {
+# CHECK-NEXT:     Type: PT_MIPS_REGINFO
+# CHECK-NEXT:     Offset: 0x130
+# CHECK-NEXT:     VirtualAddress: 0x10130
+# CHECK-NEXT:     PhysicalAddress: 0x10130
+# CHECK-NEXT:     FileSize: 24
+# CHECK-NEXT:     MemSize: 24
+# CHECK-NEXT:     Flags [ (0x4)
+# CHECK-NEXT:       PF_R (0x4)
+# CHECK-NEXT:     ]
+# CHECK-NEXT:     Alignment: 4
+# CHECK-NEXT:   }
+# CHECK-NEXT:   ProgramHeader {
+# CHECK-NEXT:     Type: PT_MIPS_ABIFLAGS
+# CHECK-NEXT:     Offset: 0x118
+# CHECK-NEXT:     VirtualAddress: 0x10118
+# CHECK-NEXT:     PhysicalAddress: 0x10118
+# CHECK-NEXT:     FileSize: 24
+# CHECK-NEXT:     MemSize: 24
+# CHECK-NEXT:     Flags [ (0x4)
+# CHECK-NEXT:       PF_R (0x4)
+# CHECK-NEXT:     ]
+# CHECK-NEXT:     Alignment: 8
+# CHECK-NEXT:   }
+# CHECK-NEXT: ]

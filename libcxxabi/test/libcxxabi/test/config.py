@@ -1,15 +1,15 @@
 #===----------------------------------------------------------------------===##
 #
-#                     The LLVM Compiler Infrastructure
-#
-# This file is dual licensed under the MIT and the University of Illinois Open
-# Source Licenses. See LICENSE.TXT for details.
+# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 #===----------------------------------------------------------------------===##
 import os
 import sys
 
 from libcxx.test.config import Configuration as LibcxxConfiguration
+from libcxx.test.config import intMacroValue
 
 
 class Configuration(LibcxxConfiguration):
@@ -34,7 +34,7 @@ class Configuration(LibcxxConfiguration):
         super(Configuration, self).configure_obj_root()
 
     def has_cpp_feature(self, feature, required_value):
-        return int(self.cxx.dumpMacros().get('__cpp_' + feature, 0)) >= required_value
+        return intMacroValue(self.cxx.dumpMacros().get('__cpp_' + feature, '0')) >= required_value
 
     def configure_features(self):
         super(Configuration, self).configure_features()
@@ -49,7 +49,10 @@ class Configuration(LibcxxConfiguration):
             self.config.available_features.add('libcxxabi-has-system-unwinder')
 
     def configure_compile_flags(self):
-        self.cxx.compile_flags += ['-DLIBCXXABI_NO_TIMER']
+        self.cxx.compile_flags += [
+            '-DLIBCXXABI_NO_TIMER',
+            '-D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS',
+        ]
         if self.get_lit_bool('enable_exceptions', True):
             self.cxx.compile_flags += ['-funwind-tables']
         else:

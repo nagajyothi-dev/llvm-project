@@ -1,18 +1,13 @@
 //===-- NSError.cpp ---------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
 #include "clang/AST/DeclCXX.h"
 
-// Project includes
 #include "Cocoa.h"
 
 #include "lldb/Core/ValueObject.h"
@@ -168,7 +163,7 @@ public:
 
   bool MightHaveChildren() override { return true; }
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override {
+  size_t GetIndexOfChildWithName(ConstString name) override {
     static ConstString g___userInfo("_userInfo");
     if (name == g___userInfo)
       return 0;
@@ -177,12 +172,11 @@ public:
 
 private:
   // the child here can be "real" (i.e. an actual child of the root) or
-  // synthetized from raw memory
-  // if the former, I need to store a plain pointer to it - or else a loop of
-  // references will cause this entire hierarchy of values to leak
-  // if the latter, then I need to store a SharedPointer to it - so that it only
-  // goes away when everyone else in the cluster goes away
-  // oh joy!
+  // synthetized from raw memory if the former, I need to store a plain pointer
+  // to it - or else a loop of references will cause this entire hierarchy of
+  // values to leak if the latter, then I need to store a SharedPointer to it -
+  // so that it only goes away when everyone else in the cluster goes away oh
+  // joy!
   ValueObject *m_child_ptr;
   ValueObjectSP m_child_sp;
 };

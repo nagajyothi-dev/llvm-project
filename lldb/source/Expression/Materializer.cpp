@@ -1,19 +1,13 @@
 //===-- Materializer.cpp ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Expression/Materializer.h"
 #include "lldb/Core/DumpDataExtractor.h"
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Core/ValueObjectConstResult.h"
 #include "lldb/Core/ValueObjectVariable.h"
 #include "lldb/Expression/ExpressionVariable.h"
@@ -27,6 +21,9 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RegisterValue.h"
+
+#include <memory>
 
 using namespace lldb_private;
 
@@ -50,7 +47,8 @@ uint32_t Materializer::AddStructMember(Entity &entity) {
 }
 
 void Materializer::Entity::SetSizeAndAlignmentFromType(CompilerType &type) {
-  m_size = type.GetByteSize(nullptr);
+  if (llvm::Optional<uint64_t> size = type.GetByteSize(nullptr))
+    m_size = *size;
 
   uint32_t bit_alignment = type.GetTypeBitAlign();
 
@@ -77,7 +75,8 @@ public:
   void MakeAllocation(IRMemoryMap &map, Status &err) {
     Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
-    // Allocate a spare memory area to store the persistent variable's contents.
+    // Allocate a spare memory area to store the persistent variable's
+    // contents.
 
     Status allocate_error;
     const bool zero_memory = false;
@@ -230,8 +229,8 @@ public:
               ExpressionVariable::EVIsProgramReference &&
           !m_persistent_variable_sp->m_live_sp) {
         // If the reference comes from the program, then the
-        // ClangExpressionVariable's
-        // live variable data hasn't been set up yet.  Do this now.
+        // ClangExpressionVariable's live variable data hasn't been set up yet.
+        // Do this now.
 
         lldb::addr_t location;
         Status read_error;
@@ -256,10 +255,8 @@ public:
             frame_bottom != LLDB_INVALID_ADDRESS && location >= frame_bottom &&
             location <= frame_top) {
           // If the variable is resident in the stack frame created by the
-          // expression,
-          // then it cannot be relied upon to stay around.  We treat it as
-          // needing
-          // reallocation.
+          // expression, then it cannot be relied upon to stay around.  We
+          // treat it as needing reallocation.
           m_persistent_variable_sp->m_flags |=
               ExpressionVariable::EVIsLLDBAllocated;
           m_persistent_variable_sp->m_flags |=
@@ -533,7 +530,7 @@ public:
 
         if (data.GetByteSize() < m_variable_sp->GetType()->GetByteSize()) {
           if (data.GetByteSize() == 0 &&
-              m_variable_sp->LocationExpression().IsValid() == false) {
+              !m_variable_sp->LocationExpression().IsValid()) {
             err.SetErrorStringWithFormat("the variable '%s' has no location, "
                                          "it may have been optimized out",
                                          m_variable_sp->GetName().AsCString());
@@ -542,7 +539,8 @@ public:
                 "size of variable %s (%" PRIu64
                 ") is larger than the ValueObject's size (%" PRIu64 ")",
                 m_variable_sp->GetName().AsCString(),
-                m_variable_sp->GetType()->GetByteSize(), data.GetByteSize());
+                m_variable_sp->GetType()->GetByteSize().getValueOr(0),
+                data.GetByteSize());
           }
           return;
         }
@@ -564,8 +562,8 @@ public:
 
         m_temporary_allocation_size = data.GetByteSize();
 
-        m_original_data.reset(
-            new DataBufferHeap(data.GetDataStart(), data.GetByteSize()));
+        m_original_data = std::make_shared<DataBufferHeap>(data.GetDataStart(),
+                                                           data.GetByteSize());
 
         if (!alloc_error.Success()) {
           err.SetErrorStringWithFormat(
@@ -799,7 +797,11 @@ public:
 
       ExecutionContextScope *exe_scope = map.GetBestExecutionContextScope();
 
-      size_t byte_size = m_type.GetByteSize(exe_scope);
+      llvm::Optional<uint64_t> byte_size = m_type.GetByteSize(exe_scope);
+      if (!byte_size) {
+        err.SetErrorString("can't get size of type");
+        return;
+      }
       size_t bit_align = m_type.GetTypeBitAlign();
       size_t byte_align = (bit_align + 7) / 8;
 
@@ -810,10 +812,10 @@ public:
       const bool zero_memory = true;
 
       m_temporary_allocation = map.Malloc(
-          byte_size, byte_align,
+          *byte_size, byte_align,
           lldb::ePermissionsReadable | lldb::ePermissionsWritable,
           IRMemoryMap::eAllocationPolicyMirror, zero_memory, alloc_error);
-      m_temporary_allocation_size = byte_size;
+      m_temporary_allocation_size = *byte_size;
 
       if (!alloc_error.Success()) {
         err.SetErrorStringWithFormat(
@@ -889,9 +891,11 @@ public:
       return;
     }
 
-    ConstString name = m_delegate
-                           ? m_delegate->GetName()
-                           : persistent_state->GetNextPersistentVariableName();
+    ConstString name =
+        m_delegate
+            ? m_delegate->GetName()
+            : persistent_state->GetNextPersistentVariableName(
+                  *target_sp, persistent_state->GetPersistentVariablePrefix());
 
     lldb::ExpressionVariableSP ret = persistent_state->CreatePersistentVariable(
         exe_scope, name, m_type, map.GetByteOrder(), map.GetAddressByteSize());
@@ -1213,8 +1217,8 @@ public:
       return;
     }
 
-    m_register_contents.reset(new DataBufferHeap(register_data.GetDataStart(),
-                                                 register_data.GetByteSize()));
+    m_register_contents = std::make_shared<DataBufferHeap>(
+        register_data.GetDataStart(), register_data.GetByteSize());
 
     Status write_error;
 

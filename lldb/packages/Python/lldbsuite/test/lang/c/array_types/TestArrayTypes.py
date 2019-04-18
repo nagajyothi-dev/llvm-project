@@ -24,7 +24,7 @@ class ArrayTypesTestCase(TestBase):
     def test_and_run_command(self):
         """Test 'frame variable var_name' on some variables with array types."""
         self.build()
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         lldbutil.run_break_set_by_file_and_line(
@@ -81,11 +81,12 @@ class ArrayTypesTestCase(TestBase):
             VARIABLES_DISPLAYED_CORRECTLY,
             startstr='(long [6])')
 
+    @expectedFailureNetBSD
     @add_test_categories(['pyapi'])
     def test_and_python_api(self):
         """Use Python APIs to inspect variables with array types."""
         self.build()
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target, VALID_TARGET)
@@ -174,6 +175,8 @@ class ArrayTypesTestCase(TestBase):
         self.DebugSBValue(variable)
         self.assertTrue(variable.GetNumChildren() == 4,
                         "Variable 'strings' should have 4 children")
+        byte_size = variable.GetByteSize()
+        self.assertTrue(byte_size >= 4*4 and byte_size <= 1024)
 
         child3 = variable.GetChildAtIndex(3)
         self.DebugSBValue(child3)

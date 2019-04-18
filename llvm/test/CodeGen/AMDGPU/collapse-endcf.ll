@@ -1,6 +1,7 @@
-; RUN: llc -march=amdgcn -mcpu=tahiti -verify-machineinstrs < %s | FileCheck -check-prefix=GCN %s
+; RUN: llc -march=amdgcn -mcpu=tahiti -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,ALL %s
+; RUN: llc -march=amdgcn -mcpu=tahiti -verify-machineinstrs -amdgpu-opt-exec-mask-pre-ra=0 < %s | FileCheck -enable-var-scope -check-prefixes=DISABLED,ALL %s
 
-; GCN-LABEL: {{^}}simple_nested_if:
+; ALL-LABEL: {{^}}simple_nested_if:
 ; GCN:      s_and_saveexec_b64 [[SAVEEXEC:s\[[0-9:]+\]]]
 ; GCN-NEXT: ; mask branch [[ENDIF:BB[0-9_]+]]
 ; GCN-NEXT: s_cbranch_execz [[ENDIF]]
@@ -9,7 +10,13 @@
 ; GCN-NEXT: {{^BB[0-9_]+}}:
 ; GCN:      store_dword
 ; GCN-NEXT: {{^}}[[ENDIF]]:
-; GCN-NEXT: s_endpgm
+; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC]]
+; GCN: ds_write_b32
+; GCN: s_endpgm
+
+
+; DISABLED: s_or_b64 exec, exec
+; DISABLED: s_or_b64 exec, exec
 define amdgpu_kernel void @simple_nested_if(i32 addrspace(1)* nocapture %arg) {
 bb:
   %tmp = tail call i32 @llvm.amdgcn.workitem.id.x()
@@ -29,10 +36,11 @@ bb.inner.then:                                    ; preds = %bb.outer.then
   br label %bb.outer.end
 
 bb.outer.end:                                     ; preds = %bb.outer.then, %bb.inner.then, %bb
+  store i32 3, i32 addrspace(3)* null
   ret void
 }
 
-; GCN-LABEL: {{^}}uncollapsable_nested_if:
+; ALL-LABEL: {{^}}uncollapsable_nested_if:
 ; GCN:      s_and_saveexec_b64 [[SAVEEXEC_OUTER:s\[[0-9:]+\]]]
 ; GCN-NEXT: ; mask branch [[ENDIF_OUTER:BB[0-9_]+]]
 ; GCN-NEXT: s_cbranch_execz [[ENDIF_OUTER]]
@@ -44,7 +52,9 @@ bb.outer.end:                                     ; preds = %bb.outer.then, %bb.
 ; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC_INNER]]
 ; GCN:      store_dword
 ; GCN-NEXT: {{^}}[[ENDIF_OUTER]]:
-; GCN-NEXT: s_endpgm
+; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC_OUTER]]
+; GCN: ds_write_b32
+; GCN: s_endpgm
 define amdgpu_kernel void @uncollapsable_nested_if(i32 addrspace(1)* nocapture %arg) {
 bb:
   %tmp = tail call i32 @llvm.amdgcn.workitem.id.x()
@@ -70,10 +80,11 @@ bb.inner.end:                                     ; preds = %bb.inner.then, %bb.
   br label %bb.outer.end
 
 bb.outer.end:                                     ; preds = %bb.inner.then, %bb
+  store i32 3, i32 addrspace(3)* null
   ret void
 }
 
-; GCN-LABEL: {{^}}nested_if_if_else:
+; ALL-LABEL: {{^}}nested_if_if_else:
 ; GCN:      s_and_saveexec_b64 [[SAVEEXEC_OUTER:s\[[0-9:]+\]]]
 ; GCN-NEXT: ; mask branch [[ENDIF_OUTER:BB[0-9_]+]]
 ; GCN-NEXT: s_cbranch_execz [[ENDIF_OUTER]]
@@ -88,7 +99,9 @@ bb.outer.end:                                     ; preds = %bb.inner.then, %bb
 ; GCN-NEXT: ; mask branch [[ENDIF_OUTER]]
 ; GCN:      store_dword
 ; GCN-NEXT: {{^}}[[ENDIF_OUTER]]:
-; GCN-NEXT: s_endpgm
+; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC_OUTER]]
+; GCN: ds_write_b32
+; GCN: s_endpgm
 define amdgpu_kernel void @nested_if_if_else(i32 addrspace(1)* nocapture %arg) {
 bb:
   %tmp = tail call i32 @llvm.amdgcn.workitem.id.x()
@@ -114,10 +127,11 @@ bb.else:                                             ; preds = %bb.outer.then
   br label %bb.outer.end
 
 bb.outer.end:                                        ; preds = %bb, %bb.then, %bb.else
+  store i32 3, i32 addrspace(3)* null
   ret void
 }
 
-; GCN-LABEL: {{^}}nested_if_else_if:
+; ALL-LABEL: {{^}}nested_if_else_if:
 ; GCN:      s_and_saveexec_b64 [[SAVEEXEC_OUTER:s\[[0-9:]+\]]]
 ; GCN-NEXT: s_xor_b64 [[SAVEEXEC_OUTER2:s\[[0-9:]+\]]], exec, [[SAVEEXEC_OUTER]]
 ; GCN-NEXT: ; mask branch [[THEN_OUTER:BB[0-9_]+]]
@@ -138,11 +152,15 @@ bb.outer.end:                                        ; preds = %bb, %bb.then, %b
 ; GCN-NEXT: {{^BB[0-9_]+}}:
 ; GCN:      store_dword
 ; GCN-NEXT: s_and_saveexec_b64 [[SAVEEXEC_INNER_IF_OUTER_THEN:s\[[0-9:]+\]]]
-; GCN-NEXT: ; mask branch [[ENDIF_OUTER]]
+; GCN-NEXT: ; mask branch [[FLOW1:BB[0-9_]+]]
 ; GCN-NEXT: {{^BB[0-9_]+}}:
 ; GCN:      store_dword
+; GCN-NEXT: [[FLOW1]]:
+; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC_INNER_IF_OUTER_THEN]]
 ; GCN-NEXT: {{^}}[[ENDIF_OUTER]]:
-; GCN-NEXT: s_endpgm
+; GCN-NEXT: s_or_b64 exec, exec, [[SAVEEXEC_OUTER]]
+; GCN: ds_write_b32
+; GCN: s_endpgm
 define amdgpu_kernel void @nested_if_else_if(i32 addrspace(1)* nocapture %arg) {
 bb:
   %tmp = tail call i32 @llvm.amdgcn.workitem.id.x()
@@ -174,10 +192,11 @@ bb.inner.then2:
   br label %bb.outer.end
 
 bb.outer.end:
+  store i32 3, i32 addrspace(3)* null
   ret void
 }
 
-; GCN-LABEL: {{^}}s_endpgm_unsafe_barrier:
+; ALL-LABEL: {{^}}s_endpgm_unsafe_barrier:
 ; GCN:      s_and_saveexec_b64 [[SAVEEXEC:s\[[0-9:]+\]]]
 ; GCN-NEXT: ; mask branch [[ENDIF:BB[0-9_]+]]
 ; GCN-NEXT: {{^BB[0-9_]+}}:
@@ -202,8 +221,68 @@ bb.end:                                           ; preds = %bb.then, %bb
   ret void
 }
 
+; Make sure scc liveness is updated if sor_b64 is removed
+; ALL-LABEL: {{^}}scc_liveness:
+
+; GCN: [[BB1_LOOP:BB[0-9]+_[0-9]+]]:
+; GCN: s_andn2_b64 exec, exec,
+; GCN-NEXT: s_cbranch_execnz [[BB1_LOOP]]
+
+; GCN: buffer_load_dword v{{[0-9]+}}, v{{[0-9]+}}, s{{\[[0-9]+:[0-9]+\]}}, s{{[0-9]+}} offen
+; GCN: s_and_b64 exec, exec, {{vcc|s\[[0-9:]+\]}}
+
+; GCN-NOT: s_or_b64 exec, exec
+
+; GCN: s_or_b64 exec, exec, s{{\[[0-9]+:[0-9]+\]}}
+; GCN: s_andn2_b64
+; GCN-NEXT: s_cbranch_execnz
+
+; GCN: s_or_b64 exec, exec, s{{\[[0-9]+:[0-9]+\]}}
+; GCN: buffer_store_dword
+; GCN: buffer_store_dword
+; GCN: buffer_store_dword
+; GCN: buffer_store_dword
+; GCN: s_setpc_b64
+define void @scc_liveness(i32 %arg) local_unnamed_addr #0 {
+bb:
+  br label %bb1
+
+bb1:                                              ; preds = %Flow1, %bb1, %bb
+  %tmp = icmp slt i32 %arg, 519
+  br i1 %tmp, label %bb2, label %bb1
+
+bb2:                                              ; preds = %bb1
+  %tmp3 = icmp eq i32 %arg, 0
+  br i1 %tmp3, label %bb4, label %bb10
+
+bb4:                                              ; preds = %bb2
+  %tmp6 = load float, float addrspace(5)* undef
+  %tmp7 = fcmp olt float %tmp6, 0.0
+  br i1 %tmp7, label %bb8, label %Flow
+
+bb8:                                              ; preds = %bb4
+  %tmp9 = insertelement <4 x float> undef, float 0.0, i32 1
+  br label %Flow
+
+Flow:                                             ; preds = %bb8, %bb4
+  %tmp8 = phi <4 x float> [ %tmp9, %bb8 ], [ zeroinitializer, %bb4 ]
+  br label %bb10
+
+bb10:                                             ; preds = %Flow, %bb2
+  %tmp11 = phi <4 x float> [ zeroinitializer, %bb2 ], [ %tmp8, %Flow ]
+  br i1 %tmp3, label %bb12, label %Flow1
+
+Flow1:                                            ; preds = %bb10
+  br label %bb1
+
+bb12:                                             ; preds = %bb10
+  store volatile <4 x float> %tmp11, <4 x float> addrspace(5)* undef, align 16
+  ret void
+}
+
 declare i32 @llvm.amdgcn.workitem.id.x() #0
 declare void @llvm.amdgcn.s.barrier() #1
 
 attributes #0 = { nounwind readnone speculatable }
 attributes #1 = { nounwind convergent }
+attributes #2 = { nounwind }

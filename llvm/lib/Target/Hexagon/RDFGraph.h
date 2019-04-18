@@ -1,9 +1,8 @@
 //===- RDFGraph.h -----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -111,7 +110,7 @@
 //
 //   DFG dump:[
 //   f1: Function foo
-//   b2: === BB#0 === preds(0), succs(0):
+//   b2: === %bb.0 === preds(0), succs(0):
 //   p3: phi [d4<r0>(,d12,u9):]
 //   p5: phi [d6<r1>(,,u10):]
 //   s7: add [d8<r2>(,,u13):, u9<r0>(d4):, u10<r1>(d6):]
@@ -183,7 +182,7 @@
 //   This is typically used to prevent keeping registers artificially live
 //   in cases when they are defined via predicated instructions. For example:
 //     r0 = add-if-true cond, r10, r11                (1)
-//     r0 = add-if-false cond, r12, r13, r0<imp-use>  (2)
+//     r0 = add-if-false cond, r12, r13, implicit r0  (2)
 //     ... = r0                                       (3)
 //   Before (1), r0 is not intended to be live, and the use of r0 in (3) is
 //   not meant to be reached by any def preceding (1). However, since the
@@ -846,10 +845,8 @@ namespace rdf {
     using BlockRefsMap = std::map<NodeId, RegisterSet>;
 
     void buildStmt(NodeAddr<BlockNode*> BA, MachineInstr &In);
-    void buildBlockRefs(NodeAddr<BlockNode*> BA, BlockRefsMap &RefM);
-    void recordDefsForDF(BlockRefsMap &PhiM, BlockRefsMap &RefM,
-        NodeAddr<BlockNode*> BA);
-    void buildPhis(BlockRefsMap &PhiM, BlockRefsMap &RefM,
+    void recordDefsForDF(BlockRefsMap &PhiM, NodeAddr<BlockNode*> BA);
+    void buildPhis(BlockRefsMap &PhiM, RegisterSet &AllRefs,
         NodeAddr<BlockNode*> BA);
     void removeUnusedPhis();
 
@@ -927,10 +924,6 @@ namespace rdf {
     return MM;
   }
 
-  template <typename T> struct Print;
-  template <typename T>
-  raw_ostream &operator<< (raw_ostream &OS, const Print<T> &P);
-
   template <typename T>
   struct Print {
     Print(const T &x, const DataFlowGraph &g) : Obj(x), G(g) {}
@@ -944,6 +937,29 @@ namespace rdf {
     PrintNode(const NodeAddr<T> &x, const DataFlowGraph &g)
       : Print<NodeAddr<T>>(x, g) {}
   };
+
+  raw_ostream &operator<<(raw_ostream &OS, const Print<RegisterRef> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeId> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeAddr<DefNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeAddr<UseNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<NodeAddr<PhiUseNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeAddr<RefNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeList> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeSet> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<NodeAddr<PhiNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<NodeAddr<StmtNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<NodeAddr<InstrNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<NodeAddr<BlockNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<NodeAddr<FuncNode *>> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<RegisterSet> &P);
+  raw_ostream &operator<<(raw_ostream &OS, const Print<RegisterAggr> &P);
+  raw_ostream &operator<<(raw_ostream &OS,
+                          const Print<DataFlowGraph::DefStack> &P);
 
 } // end namespace rdf
 

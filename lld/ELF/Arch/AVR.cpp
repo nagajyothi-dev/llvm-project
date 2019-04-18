@@ -1,9 +1,8 @@
 //===- AVR.cpp ------------------------------------------------------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -26,10 +25,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Error.h"
 #include "InputFiles.h"
 #include "Symbols.h"
 #include "Target.h"
+#include "lld/Common/ErrorHandler.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Support/Endian.h"
 
@@ -43,24 +42,21 @@ using namespace lld::elf;
 namespace {
 class AVR final : public TargetInfo {
 public:
-  RelExpr getRelExpr(uint32_t Type, const SymbolBody &S, const InputFile &File,
+  AVR();
+  RelExpr getRelExpr(RelType Type, const Symbol &S,
                      const uint8_t *Loc) const override;
-  void relocateOne(uint8_t *Loc, uint32_t Type, uint64_t Val) const override;
+  void relocateOne(uint8_t *Loc, RelType Type, uint64_t Val) const override;
 };
 } // namespace
 
-RelExpr AVR::getRelExpr(uint32_t Type, const SymbolBody &S,
-                        const InputFile &File, const uint8_t *Loc) const {
-  switch (Type) {
-  case R_AVR_CALL:
-    return R_ABS;
-  default:
-    error(toString(&File) + ": unknown relocation type: " + toString(Type));
-    return R_HINT;
-  }
+AVR::AVR() { NoneRel = R_AVR_NONE; }
+
+RelExpr AVR::getRelExpr(RelType Type, const Symbol &S,
+                        const uint8_t *Loc) const {
+  return R_ABS;
 }
 
-void AVR::relocateOne(uint8_t *Loc, uint32_t Type, uint64_t Val) const {
+void AVR::relocateOne(uint8_t *Loc, RelType Type, uint64_t Val) const {
   switch (Type) {
   case R_AVR_CALL: {
     uint16_t Hi = Val >> 17;

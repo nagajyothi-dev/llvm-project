@@ -1,9 +1,8 @@
 //===- Float2Int.cpp - Demote floating point ops to work on integers ------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -138,7 +137,7 @@ void Float2IntPass::findRoots(Function &F, SmallPtrSet<Instruction*,8> &Roots) {
 
 // Helper - mark I as having been traversed, having range R.
 void Float2IntPass::seen(Instruction *I, ConstantRange R) {
-  DEBUG(dbgs() << "F2I: " << *I << ":" << R << "\n");
+  LLVM_DEBUG(dbgs() << "F2I: " << *I << ":" << R << "\n");
   auto IT = SeenInsts.find(I);
   if (IT != SeenInsts.end())
     IT->second = std::move(R);
@@ -148,10 +147,10 @@ void Float2IntPass::seen(Instruction *I, ConstantRange R) {
 
 // Helper - get a range representing a poison value.
 ConstantRange Float2IntPass::badRange() {
-  return ConstantRange(MaxIntegerBW + 1, true);
+  return ConstantRange::getFull(MaxIntegerBW + 1);
 }
 ConstantRange Float2IntPass::unknownRange() {
-  return ConstantRange(MaxIntegerBW + 1, false);
+  return ConstantRange::getEmpty(MaxIntegerBW + 1);
 }
 ConstantRange Float2IntPass::validateRange(ConstantRange R) {
   if (R.getBitWidth() > MaxIntegerBW + 1)
@@ -195,7 +194,7 @@ void Float2IntPass::walkBackwards(const SmallPtrSetImpl<Instruction*> &Roots) {
       // Path terminated cleanly - use the type of the integer input to seed
       // the analysis.
       unsigned BW = I->getOperand(0)->getType()->getPrimitiveSizeInBits();
-      auto Input = ConstantRange(BW, true);
+      auto Input = ConstantRange::getFull(BW);
       auto CastOp = (Instruction::CastOps)I->getOpcode();
       seen(I, validateRange(Input.castOp(CastOp, MaxIntegerBW+1)));
       continue;
@@ -359,7 +358,7 @@ bool Float2IntPass::validateAndTransform() {
         for (User *U : I->users()) {
           Instruction *UI = dyn_cast<Instruction>(U);
           if (!UI || SeenInsts.find(UI) == SeenInsts.end()) {
-            DEBUG(dbgs() << "F2I: Failing because of " << *U << "\n");
+            LLVM_DEBUG(dbgs() << "F2I: Failing because of " << *U << "\n");
             Fail = true;
             break;
           }
@@ -380,7 +379,7 @@ bool Float2IntPass::validateAndTransform() {
     // lower limits, plus one so it can be signed.
     unsigned MinBW = std::max(R.getLower().getMinSignedBits(),
                               R.getUpper().getMinSignedBits()) + 1;
-    DEBUG(dbgs() << "F2I: MinBitwidth=" << MinBW << ", R: " << R << "\n");
+    LLVM_DEBUG(dbgs() << "F2I: MinBitwidth=" << MinBW << ", R: " << R << "\n");
 
     // If we've run off the realms of the exactly representable integers,
     // the floating point result will differ from an integer approximation.
@@ -391,11 +390,12 @@ bool Float2IntPass::validateAndTransform() {
     unsigned MaxRepresentableBits
       = APFloat::semanticsPrecision(ConvertedToTy->getFltSemantics()) - 1;
     if (MinBW > MaxRepresentableBits) {
-      DEBUG(dbgs() << "F2I: Value not guaranteed to be representable!\n");
+      LLVM_DEBUG(dbgs() << "F2I: Value not guaranteed to be representable!\n");
       continue;
     }
     if (MinBW > 64) {
-      DEBUG(dbgs() << "F2I: Value requires more than 64 bits to represent!\n");
+      LLVM_DEBUG(
+          dbgs() << "F2I: Value requires more than 64 bits to represent!\n");
       continue;
     }
 
@@ -490,7 +490,7 @@ void Float2IntPass::cleanup() {
 }
 
 bool Float2IntPass::runImpl(Function &F) {
-  DEBUG(dbgs() << "F2I: Looking at function " << F.getName() << "\n");
+  LLVM_DEBUG(dbgs() << "F2I: Looking at function " << F.getName() << "\n");
   // Clear out all state.
   ECs = EquivalenceClasses<Instruction*>();
   SeenInsts.clear();

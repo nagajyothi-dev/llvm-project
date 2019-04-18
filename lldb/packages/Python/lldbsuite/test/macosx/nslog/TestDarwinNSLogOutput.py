@@ -14,20 +14,21 @@ import platform
 import re
 import sys
 
-from lldbsuite.test import decorators
-from lldbsuite.test import lldbtest
+from lldbsuite.test.decorators import *
+from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbtest_config
 
 
-@decorators.skipUnlessDarwin
-class DarwinNSLogOutputTestCase(lldbtest.TestBase):
+class DarwinNSLogOutputTestCase(TestBase):
     NO_DEBUG_INFO_TESTCASE = True
+    mydir = TestBase.compute_mydir(__file__)
 
-    mydir = lldbtest.TestBase.compute_mydir(__file__)
+    @skipUnlessDarwin
+    @skipIfRemote   # this test is currently written using lldb commands & assumes running on local system
 
     def setUp(self):
         # Call super's setUp().
-        super(DarwinNSLogOutputTestCase, self).setUp()
+        TestBase.setUp(self)
         self.child = None
         self.child_prompt = '(lldb) '
         self.strict_sources = False
@@ -36,11 +37,11 @@ class DarwinNSLogOutputTestCase(lldbtest.TestBase):
         self.source = 'main.m'
 
         # Output filename.
-        self.exe_name = 'a.out'
+        self.exe_name = self.getBuildArtifact("a.out")
         self.d = {'OBJC_SOURCES': self.source, 'EXE': self.exe_name}
 
         # Locate breakpoint.
-        self.line = lldbtest.line_number(self.source, '// break here')
+        self.line = line_number(self.source, '// break here')
 
     def tearDown(self):
         # Shut down the process if it's still running.
@@ -59,8 +60,13 @@ class DarwinNSLogOutputTestCase(lldbtest.TestBase):
 
         # So that the child gets torn down after the test.
         import pexpect
-        self.child = pexpect.spawn('%s %s %s' % (lldbtest_config.lldbExec,
-                                                 self.lldbOption, exe))
+        import sys
+        if sys.version_info.major == 3:
+          self.child = pexpect.spawnu('%s %s %s' % (lldbtest_config.lldbExec,
+                                                    self.lldbOption, exe))
+        else:
+          self.child = pexpect.spawn('%s %s %s' % (lldbtest_config.lldbExec,
+                                                   self.lldbOption, exe))
         child = self.child
 
         # Turn on logging for what the child sends back.
@@ -94,7 +100,8 @@ class DarwinNSLogOutputTestCase(lldbtest.TestBase):
         self.expect(re.compile(r"stop reason = breakpoint"))
 
     def runCmd(self, cmd):
-        self.child.sendline(cmd)
+        if self.child:
+            self.child.sendline(cmd)
 
     def expect_prompt(self, exactly=True):
         self.expect(self.child_prompt, exactly=exactly)
@@ -109,7 +116,7 @@ class DarwinNSLogOutputTestCase(lldbtest.TestBase):
         self.build(dictionary=self.d)
         self.setTearDownCleanup(dictionary=self.d)
 
-        exe = os.path.join(os.getcwd(), self.exe_name)
+        exe = self.getBuildArtifact(self.exe_name)
         self.run_lldb_to_breakpoint(exe, self.source, self.line,
                                     settings_commands=settings_commands)
         self.expect_prompt()

@@ -1,3 +1,4 @@
+# REQUIRES: x86
 # RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj -o %t1.obj %s
 # RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj -o %t2.obj %s
 
@@ -12,4 +13,6 @@ f:
 	retq
 
 	.section	.debug_info,"dr"
+	.quad	f
+	.section	.eh_frame,"dr"
 	.quad	f

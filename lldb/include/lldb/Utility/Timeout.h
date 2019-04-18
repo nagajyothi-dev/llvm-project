@@ -1,9 +1,8 @@
 //===-- Timeout.h -----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,9 +21,9 @@ namespace lldb_private {
 // from Timeout<std::milli> to Timeout<std::micro>.
 //
 // The intended meaning of the values is:
-// - llvm::None - no timeout, the call should wait forever
-// - 0 - poll, only complete the call if it will not block
-// - >0 - wait for a given number of units for the result
+// - llvm::None - no timeout, the call should wait forever - 0 - poll, only
+// complete the call if it will not block - >0 - wait for a given number of
+// units for the result
 template <typename Ratio>
 class Timeout : public llvm::Optional<std::chrono::duration<int64_t, Ratio>> {
 private:

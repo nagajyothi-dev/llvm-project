@@ -1,9 +1,8 @@
-//===-- Bitcode/Reader/ValueEnumerator.h - Number values --------*- C++ -*-===//
+//===-- Bitcode/Reader/ValueList.h - Number values --------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,13 +10,20 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/ValueHandle.h"
+#ifndef LLVM_LIB_BITCODE_READER_VALUELIST_H
+#define LLVM_LIB_BITCODE_READER_VALUELIST_H
 
+#include "llvm/IR/ValueHandle.h"
+#include <cassert>
+#include <utility>
 #include <vector>
 
 namespace llvm {
+
 class Constant;
+class LLVMContext;
+class Type;
+class Value;
 
 class BitcodeReaderValueList {
   std::vector<WeakTrackingVH> ValuePtrs;
@@ -29,12 +35,13 @@ class BitcodeReaderValueList {
   ///
   /// The key of this vector is the placeholder constant, the value is the slot
   /// number that holds the resolved value.
-  typedef std::vector<std::pair<Constant *, unsigned>> ResolveConstantsTy;
+  using ResolveConstantsTy = std::vector<std::pair<Constant *, unsigned>>;
   ResolveConstantsTy ResolveConstants;
   LLVMContext &Context;
 
 public:
   BitcodeReaderValueList(LLVMContext &C) : Context(C) {}
+
   ~BitcodeReaderValueList() {
     assert(ResolveConstants.empty() && "Constants not resolved?");
   }
@@ -73,4 +80,6 @@ public:
   void resolveConstantForwardRefs();
 };
 
-} // namespace llvm
+} // end namespace llvm
+
+#endif // LLVM_LIB_BITCODE_READER_VALUELIST_H

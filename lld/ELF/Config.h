@@ -1,15 +1,15 @@
 //===- Config.h -------------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLD_ELF_CONFIG_H
 #define LLD_ELF_CONFIG_H
 
+#include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
@@ -17,14 +17,14 @@
 #include "llvm/Support/CachePruning.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Endian.h"
-
+#include <atomic>
 #include <vector>
 
 namespace lld {
 namespace elf {
 
 class InputFile;
-struct Symbol;
+class InputSectionBase;
 
 enum ELFKind {
   ELFNoneKind,
@@ -40,17 +40,26 @@ enum class BuildIdKind { None, Fast, Md5, Sha1, Hexstring, Uuid };
 // For --discard-{all,locals,none}.
 enum class DiscardPolicy { Default, All, Locals, None };
 
+// For --icf={none,safe,all}.
+enum class ICFLevel { None, Safe, All };
+
 // For --strip-{all,debug}.
 enum class StripPolicy { None, All, Debug };
 
 // For --unresolved-symbols.
-enum class UnresolvedPolicy { ReportError, Warn, Ignore, IgnoreAll };
+enum class UnresolvedPolicy { ReportError, Warn, Ignore };
+
+// For --orphan-handling.
+enum class OrphanHandlingPolicy { Place, Warn, Error };
 
 // For --sort-section and linkerscript sorting rules.
 enum class SortSectionPolicy { Default, None, Alignment, Name, Priority };
 
 // For --target2
 enum class Target2Policy { Abs, Rel, GotRel };
+
+// For tracking ARM Float Argument PCS
+enum class ARMVFPArgKind { Default, Base, VFP, ToolChain };
 
 struct SymbolVersion {
   llvm::StringRef Name;
@@ -67,90 +76,127 @@ struct VersionDefinition {
   size_t NameOff = 0; // Offset in the string table
 };
 
-// Structure for mapping renamed symbols
-struct RenamedSymbol {
-  Symbol *Target;
-  uint8_t OriginalBinding;
-};
-
 // This struct contains the global configuration for the linker.
 // Most fields are direct mapping from the command line options
 // and such fields have the same name as the corresponding options.
 // Most fields are initialized by the driver.
 struct Configuration {
-  InputFile *FirstElf = nullptr;
   uint8_t OSABI = 0;
   llvm::CachePruningPolicy ThinLTOCachePolicy;
   llvm::StringMap<uint64_t> SectionStartMap;
   llvm::StringRef Chroot;
   llvm::StringRef DynamicLinker;
+  llvm::StringRef DwoDir;
   llvm::StringRef Entry;
   llvm::StringRef Emulation;
   llvm::StringRef Fini;
   llvm::StringRef Init;
   llvm::StringRef LTOAAPipeline;
+  llvm::StringRef LTOCSProfileFile;
   llvm::StringRef LTONewPmPasses;
+  llvm::StringRef LTOObjPath;
+  llvm::StringRef LTOSampleProfile;
   llvm::StringRef MapFile;
   llvm::StringRef OutputFile;
   llvm::StringRef OptRemarksFilename;
+  llvm::StringRef OptRemarksPasses;
+  llvm::StringRef ProgName;
+  llvm::StringRef PrintSymbolOrder;
   llvm::StringRef SoName;
   llvm::StringRef Sysroot;
   llvm::StringRef ThinLTOCacheDir;
+  llvm::StringRef ThinLTOIndexOnlyArg;
+  std::pair<llvm::StringRef, llvm::StringRef> ThinLTOObjectSuffixReplace;
+  std::pair<llvm::StringRef, llvm::StringRef> ThinLTOPrefixReplace;
   std::string Rpath;
   std::vector<VersionDefinition> VersionDefinitions;
-  std::vector<llvm::StringRef> Argv;
   std::vector<llvm::StringRef> AuxiliaryList;
   std::vector<llvm::StringRef> FilterList;
   std::vector<llvm::StringRef> SearchPaths;
   std::vector<llvm::StringRef> SymbolOrderingFile;
   std::vector<llvm::StringRef> Undefined;
+  std::vector<SymbolVersion> DynamicList;
   std::vector<SymbolVersion> VersionScriptGlobals;
   std::vector<SymbolVersion> VersionScriptLocals;
   std::vector<uint8_t> BuildIdVector;
-  llvm::MapVector<Symbol *, RenamedSymbol> RenamedSymbols;
+  llvm::MapVector<std::pair<const InputSectionBase *, const InputSectionBase *>,
+                  uint64_t>
+      CallGraphProfile;
   bool AllowMultipleDefinition;
+  bool AllowShlibUndefined;
+  bool AndroidPackDynRelocs;
+  bool ARMHasBlx = false;
+  bool ARMHasMovtMovw = false;
+  bool ARMJ1J2BranchEncoding = false;
   bool AsNeeded = false;
   bool Bsymbolic;
   bool BsymbolicFunctions;
-  bool ColorDiagnostics = false;
+  bool CallGraphProfileSort;
+  bool CheckSections;
   bool CompressDebugSections;
+  bool Cref;
   bool DefineCommon;
   bool Demangle = true;
   bool DisableVerify;
   bool EhFrameHdr;
+  bool EmitLLVM;
   bool EmitRelocs;
   bool EnableNewDtags;
+  bool ExecuteOnly;
   bool ExportDynamic;
-  bool FatalWarnings;
+  bool FixCortexA53Errata843419;
+  bool FormatBinary = false;
   bool GcSections;
   bool GdbIndex;
-  bool GnuHash;
-  bool ICF;
+  bool GnuHash = false;
+  bool GnuUnique;
+  bool HasDynamicList = false;
+  bool HasDynSymTab;
+  bool IgnoreDataAddressEquality;
+  bool IgnoreFunctionAddressEquality;
+  bool LTOCSProfileGenerate;
+  bool LTODebugPassManager;
+  bool LTONewPassManager;
+  bool MergeArmExidx;
   bool MipsN32Abi = false;
-  bool NoGnuUnique;
-  bool NoUndefinedVersion;
   bool NoinhibitExec;
   bool Nostdlib;
   bool OFormatBinary;
   bool Omagic;
   bool OptRemarksWithHotness;
+  bool PicThunk;
   bool Pie;
   bool PrintGcSections;
+  bool PrintIcfSections;
   bool Relocatable;
+  bool RelrPackDynRelocs;
   bool SaveTemps;
   bool SingleRoRx;
   bool Shared;
   bool Static = false;
-  bool SysvHash;
+  bool SysvHash = false;
   bool Target1Rel;
-  bool Threads;
   bool Trace;
-  bool Verbose;
+  bool ThinLTOEmitImportsFiles;
+  bool ThinLTOIndexOnly;
+  bool TocOptimize;
+  bool UndefinedVersion;
+  bool UseAndroidRelrTags = false;
+  bool WarnBackrefs;
   bool WarnCommon;
+  bool WarnIfuncTextrel;
   bool WarnMissingEntry;
+  bool WarnSymbolOrdering;
+  bool WriteAddends;
   bool ZCombreloc;
+  bool ZCopyreloc;
   bool ZExecstack;
-  bool ZNocopyreloc;
+  bool ZGlobal;
+  bool ZHazardplt;
+  bool ZInitfirst;
+  bool ZInterpose;
+  bool ZKeepTextSectionPrefix;
+  bool ZNodefaultlib;
   bool ZNodelete;
   bool ZNodlopen;
   bool ZNow;
@@ -158,25 +204,29 @@ struct Configuration {
   bool ZRelro;
   bool ZRodynamic;
   bool ZText;
-  bool ExitEarly;
+  bool ZRetpolineplt;
   bool ZWxneeded;
   DiscardPolicy Discard;
+  ICFLevel ICF;
+  OrphanHandlingPolicy OrphanHandling;
   SortSectionPolicy SortSection;
   StripPolicy Strip;
   UnresolvedPolicy UnresolvedSymbols;
   Target2Policy Target2;
+  ARMVFPArgKind ARMVFPArgs = ARMVFPArgKind::Default;
   BuildIdKind BuildId = BuildIdKind::None;
   ELFKind EKind = ELFNoneKind;
   uint16_t DefaultSymbolVersion = llvm::ELF::VER_NDX_GLOBAL;
   uint16_t EMachine = llvm::ELF::EM_NONE;
-  uint64_t ErrorLimit = 20;
-  uint64_t ImageBase;
+  llvm::Optional<uint64_t> ImageBase;
   uint64_t MaxPageSize;
+  uint64_t MipsGotSize;
   uint64_t ZStackSize;
   unsigned LTOPartitions;
   unsigned LTOO;
   unsigned Optimize;
   unsigned ThinLTOJobs;
+  int32_t SplitStackAdjustSize;
 
   // The following config options do not directly correspond to any
   // particualr command line options.
@@ -208,6 +258,23 @@ struct Configuration {
   // if that's true.)
   bool IsMips64EL;
 
+  // True if we need to set the DF_STATIC_TLS flag to an output file,
+  // which works as a hint to the dynamic loader that the file contains
+  // code compiled with the static TLS model. The thread-local variable
+  // compiled with the static TLS model is faster but less flexible, and
+  // it may not be loaded using dlopen().
+  //
+  // We set this flag to true when we see a relocation for the static TLS
+  // model. Once this becomes true, it will never become false.
+  //
+  // Since the flag is updated by multi-threaded code, we use std::atomic.
+  // (Writing to a variable is not considered thread-safe even if the
+  // variable is boolean and we always set the same value from all threads.)
+  std::atomic<bool> HasStaticTlsModel{false};
+
+  // Holds set of ELF header flags for the target.
+  uint32_t EFlags = 0;
+
   // The ELF spec defines two types of relocation table entries, RELA and
   // REL. RELA is a triplet of (offset, info, addend) while REL is a
   // tuple of (offset, info). Addends for REL are implicit and read from
@@ -234,6 +301,12 @@ struct Configuration {
 // The only instance of Configuration struct.
 extern Configuration *Config;
 
+static inline void errorOrWarn(const Twine &Msg) {
+  if (!Config->NoinhibitExec)
+    error(Msg);
+  else
+    warn(Msg);
+}
 } // namespace elf
 } // namespace lld
 

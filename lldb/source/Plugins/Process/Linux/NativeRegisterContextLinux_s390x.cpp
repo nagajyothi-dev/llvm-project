@@ -1,20 +1,19 @@
 //===-- NativeRegisterContextLinux_s390x.cpp --------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #if defined(__s390x__) && defined(__linux__)
 
 #include "NativeRegisterContextLinux_s390x.h"
-
-#include "lldb/Core/RegisterValue.h"
+#include "Plugins/Process/Linux/NativeProcessLinux.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
 
 #include "Plugins/Process/Utility/RegisterContextLinux_s390x.h"
@@ -26,9 +25,7 @@
 using namespace lldb_private;
 using namespace lldb_private::process_linux;
 
-// ----------------------------------------------------------------------------
 // Private namespace.
-// ----------------------------------------------------------------------------
 
 namespace {
 // s390x 64-bit general purpose registers.
@@ -90,24 +87,19 @@ static const RegisterSet g_reg_sets_s390x[k_num_register_sets] = {
 
 #define REG_CONTEXT_SIZE (sizeof(s390_regs) + sizeof(s390_fp_regs) + 4)
 
-// ----------------------------------------------------------------------------
 // Required ptrace defines.
-// ----------------------------------------------------------------------------
 
 #define NT_S390_LAST_BREAK 0x306  /* s390 breaking event address */
 #define NT_S390_SYSTEM_CALL 0x307 /* s390 system call restart data */
 
-NativeRegisterContextLinux *
+std::unique_ptr<NativeRegisterContextLinux>
 NativeRegisterContextLinux::CreateHostNativeRegisterContextLinux(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx) {
-  return new NativeRegisterContextLinux_s390x(target_arch, native_thread,
-                                              concrete_frame_idx);
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread) {
+  return llvm::make_unique<NativeRegisterContextLinux_s390x>(target_arch,
+                                                             native_thread);
 }
 
-// ----------------------------------------------------------------------------
 // NativeRegisterContextLinux_s390x members.
-// ----------------------------------------------------------------------------
 
 static RegisterInfoInterface *
 CreateRegisterInfoInterface(const ArchSpec &target_arch) {
@@ -117,9 +109,8 @@ CreateRegisterInfoInterface(const ArchSpec &target_arch) {
 }
 
 NativeRegisterContextLinux_s390x::NativeRegisterContextLinux_s390x(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx)
-    : NativeRegisterContextLinux(native_thread, concrete_frame_idx,
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread)
+    : NativeRegisterContextLinux(native_thread,
                                  CreateRegisterInfoInterface(target_arch)) {
   // Set up data about ranges of valid registers.
   switch (target_arch.GetMachine()) {
@@ -374,10 +365,10 @@ Status NativeRegisterContextLinux_s390x::ReadAllRegisterValues(
   DoReadRegisterSet(NT_S390_SYSTEM_CALL, dst, 4);
   dst += 4;
 
-  // To enable inferior function calls while the process is stopped in
-  // an interrupted system call, we need to clear the system call flag.
-  // It will be restored to its original value by WriteAllRegisterValues.
-  // Again we ignore error if the regset is unsupported.
+  // To enable inferior function calls while the process is stopped in an
+  // interrupted system call, we need to clear the system call flag. It will be
+  // restored to its original value by WriteAllRegisterValues. Again we ignore
+  // error if the regset is unsupported.
   uint32_t system_call = 0;
   DoWriteRegisterSet(NT_S390_SYSTEM_CALL, &system_call, 4);
 

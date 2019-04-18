@@ -32,7 +32,7 @@ attributes #1 = { nounwind ssp }
 !llvm.dbg.cu = !{!4}
 !llvm.module.flags = !{!7}
 
-!0 = !DIGlobalVariableExpression(var: !1)
+!0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
 !1 = !DIGlobalVariable(name: "i", scope: !2, file: !2, line: 5, type: !3, isLocal: false, isDefinition: true)
 !2 = !DIFile(filename: "bar.c", directory: "/tmp/")
 !3 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
@@ -46,7 +46,7 @@ attributes #1 = { nounwind ssp }
 !11 = !DILocation(line: 15, scope: !12)
 !12 = distinct !DILexicalBlock(scope: !8, file: !2, line: 14)
 !13 = !DILocalVariable(name: "j", arg: 1, scope: !14, file: !2, line: 9, type: !3)
-!14 = distinct !DISubprogram(name: "foo", scope: !2, file: !2, line: 9, type: !15, isLocal: true, isDefinition: true, scopeLine: 9, virtualIndex: 6, isOptimized: true, unit: !4, variables: !17)
+!14 = distinct !DISubprogram(name: "foo", scope: !2, file: !2, line: 9, type: !15, isLocal: true, isDefinition: true, scopeLine: 9, virtualIndex: 6, isOptimized: true, unit: !4, retainedNodes: !17)
 !15 = !DISubroutineType(types: !16)
 !16 = !{!3, !3}
 !17 = !{!13, !18}

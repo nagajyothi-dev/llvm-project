@@ -1,20 +1,16 @@
 //===-- RegisterContextPOSIXCore_x86_64.h -----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_RegisterContextCorePOSIX_x86_64_h_
 #define liblldb_RegisterContextCorePOSIX_x86_64_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "Plugins/Process/Utility/RegisterContextPOSIX_x86.h"
+#include "Plugins/Process/elf-core/RegisterUtilities.h"
 
 class RegisterContextCorePOSIX_x86_64 : public RegisterContextPOSIX_x86 {
 public:
@@ -22,7 +18,7 @@ public:
       lldb_private::Thread &thread,
       lldb_private::RegisterInfoInterface *register_info,
       const lldb_private::DataExtractor &gpregset,
-      const lldb_private::DataExtractor &fpregset);
+      llvm::ArrayRef<lldb_private::CoreNote> notes);
 
   bool ReadRegister(const lldb_private::RegisterInfo *reg_info,
                     lldb_private::RegisterValue &value) override;

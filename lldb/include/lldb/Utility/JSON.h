@@ -1,9 +1,8 @@
 //===---------------------JSON.h --------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -79,9 +78,8 @@ public:
   // SFINAE to avoid having ambiguous overloads because of the implicit type
   // promotion. If we
   // would have constructors only with int64_t, uint64_t and double types then
-  // constructing a
-  // JSONNumber from an int32_t (or any other similar type) would fail to
-  // compile.
+  // constructing a JSONNumber from an int32_t (or any other similar type)
+  // would fail to compile.
 
   template <typename T, typename std::enable_if<
                             std::is_integral<T>::value &&

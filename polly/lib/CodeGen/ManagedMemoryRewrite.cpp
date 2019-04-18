@@ -1,9 +1,8 @@
 //===---- ManagedMemoryRewrite.cpp - Rewrite global & malloc'd memory -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,34 +15,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "polly/CodeGen/CodeGeneration.h"
-#include "polly/CodeGen/IslAst.h"
-#include "polly/CodeGen/IslNodeBuilder.h"
+#include "polly/CodeGen/IRBuilder.h"
 #include "polly/CodeGen/PPCGCodeGeneration.h"
-#include "polly/CodeGen/Utils.h"
 #include "polly/DependenceInfo.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopDetection.h"
-#include "polly/ScopInfo.h"
-#include "polly/Support/SCEVValidator.h"
-#include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/Analysis/CaptureTracking.h"
-#include "llvm/Analysis/GlobalsModRef.h"
-#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/Verifier.h"
-#include "llvm/IRReader/IRReader.h"
-#include "llvm/Linker/Linker.h"
-#include "llvm/Support/TargetRegistry.h"
-#include "llvm/Support/TargetSelect.h"
-#include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/IPO/PassManagerBuilder.h"
-#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
+
+using namespace polly;
 
 static cl::opt<bool> RewriteAllocas(
     "polly-acc-rewrite-allocas",
@@ -124,8 +106,8 @@ static void expandConstantExpr(ConstantExpr *Cur, PollyIRBuilder &Builder,
   Instruction *I = Cur->getAsInstruction();
   assert(I && "unable to convert ConstantExpr to Instruction");
 
-  DEBUG(dbgs() << "Expanding ConstantExpression: " << *Cur
-               << " | in Instruction: " << *I << "\n";);
+  LLVM_DEBUG(dbgs() << "Expanding ConstantExpression: (" << *Cur
+                    << ") in Instruction: (" << *I << ")\n";);
 
   // Invalidate `Cur` so that no one after this point uses `Cur`. Rather,
   // they should mutate `I`.
@@ -208,12 +190,23 @@ replaceGlobalArray(Module &M, const DataLayout &DL, GlobalVariable &Array,
   const bool OnlyVisibleInsideModule = Array.hasPrivateLinkage() ||
                                        Array.hasInternalLinkage() ||
                                        IgnoreLinkageForGlobals;
-  if (!OnlyVisibleInsideModule)
+  if (!OnlyVisibleInsideModule) {
+    LLVM_DEBUG(
+        dbgs() << "Not rewriting (" << Array
+               << ") to managed memory "
+                  "because it could be visible externally. To force rewrite, "
+                  "use -polly-acc-rewrite-ignore-linkage-for-globals.\n");
     return;
+  }
 
   if (!Array.hasInitializer() ||
-      !isa<ConstantAggregateZero>(Array.getInitializer()))
+      !isa<ConstantAggregateZero>(Array.getInitializer())) {
+    LLVM_DEBUG(dbgs() << "Not rewriting (" << Array
+                      << ") to managed memory "
+                         "because it has an initializer which is "
+                         "not a zeroinitializer.\n");
     return;
+  }
 
   // At this point, we have committed to replacing this array.
   ReplacedGlobals.insert(&Array);
@@ -234,7 +227,7 @@ replaceGlobalArray(Module &M, const DataLayout &DL, GlobalVariable &Array,
   BasicBlock *Start = BasicBlock::Create(M.getContext(), "entry", F);
   Builder.SetInsertPoint(Start);
 
-  int ArraySizeInt = DL.getTypeAllocSizeInBits(ArrayTy) / 8;
+  const uint64_t ArraySizeInt = DL.getTypeAllocSize(ArrayTy);
   Value *ArraySize = Builder.getInt64(ArraySizeInt);
   ArraySize->setName("array.size");
 
@@ -278,14 +271,14 @@ static void getAllocasToBeManaged(Function &F,
       auto *Alloca = dyn_cast<AllocaInst>(&I);
       if (!Alloca)
         continue;
-      dbgs() << "Checking if " << *Alloca << "may be captured: ";
+      LLVM_DEBUG(dbgs() << "Checking if (" << *Alloca << ") may be captured: ");
 
       if (PointerMayBeCaptured(Alloca, /* ReturnCaptures */ false,
                                /* StoreCaptures */ true)) {
         Allocas.insert(Alloca);
-        DEBUG(dbgs() << "YES (captured)\n");
+        LLVM_DEBUG(dbgs() << "YES (captured).\n");
       } else {
-        DEBUG(dbgs() << "NO (not captured)\n");
+        LLVM_DEBUG(dbgs() << "NO (not captured).\n");
       }
     }
   }
@@ -293,15 +286,17 @@ static void getAllocasToBeManaged(Function &F,
 
 static void rewriteAllocaAsManagedMemory(AllocaInst *Alloca,
                                          const DataLayout &DL) {
-  DEBUG(dbgs() << "rewriting: " << *Alloca << " to managed mem.\n");
+  LLVM_DEBUG(dbgs() << "rewriting: (" << *Alloca << ") to managed mem.\n");
   Module *M = Alloca->getModule();
   assert(M && "Alloca does not have a module");
 
   PollyIRBuilder Builder(M->getContext());
   Builder.SetInsertPoint(Alloca);
 
-  Value *MallocManagedFn = getOrCreatePollyMallocManaged(*Alloca->getModule());
-  const int Size = DL.getTypeAllocSize(Alloca->getType()->getElementType());
+  Function *MallocManagedFn =
+      getOrCreatePollyMallocManaged(*Alloca->getModule());
+  const uint64_t Size =
+      DL.getTypeAllocSize(Alloca->getType()->getElementType());
   Value *SizeVal = Builder.getInt64(Size);
   Value *RawManagedMem = Builder.CreateCall(MallocManagedFn, {SizeVal});
   Value *Bitcasted = Builder.CreateBitCast(RawManagedMem, Alloca->getType());
@@ -319,7 +314,7 @@ static void rewriteAllocaAsManagedMemory(AllocaInst *Alloca,
       continue;
     Builder.SetInsertPoint(Return);
 
-    Value *FreeManagedFn = getOrCreatePollyFreeManaged(*M);
+    Function *FreeManagedFn = getOrCreatePollyFreeManaged(*M);
     Builder.CreateCall(FreeManagedFn, {RawManagedMem});
   }
 }
@@ -402,7 +397,6 @@ public:
     return true;
   }
 };
-
 } // namespace
 char ManagedMemoryRewritePass::ID = 42;
 

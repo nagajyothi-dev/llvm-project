@@ -25,7 +25,7 @@ entry:
   tail call void @llvm.dbg.value(metadata i32* %x1, metadata !10, metadata !24), !dbg !16
 
 ; Supported dbg.value: rewritted based on the [[USP]] value.
-; CHECK: call void @llvm.dbg.value(metadata i8* %[[USP]], metadata ![[X1:.*]], metadata ![[X1_EXPR:.*]])
+; CHECK: call void @llvm.dbg.value(metadata i8* %[[USP]], metadata ![[X1:.*]], metadata !DIExpression(DW_OP_deref, DW_OP_constu, 4, DW_OP_minus))
   tail call void @llvm.dbg.value(metadata i32* %x1, metadata !10, metadata !15), !dbg !16
   call void @capture(i32* nonnull %x1), !dbg !17
 
@@ -33,7 +33,7 @@ entry:
 ; CHECK: call void @llvm.random.metadata.use(metadata ![[EMPTY]])
   call void @llvm.random.metadata.use(metadata i32* %x2)
 
-; CHECK: call void @llvm.dbg.value(metadata i8* %[[USP]], metadata ![[X2:.*]], metadata ![[X2_EXPR:.*]])
+; CHECK: call void @llvm.dbg.value(metadata i8* %[[USP]], metadata ![[X2:.*]], metadata !DIExpression(DW_OP_deref, DW_OP_constu, 8, DW_OP_minus))
   call void @llvm.dbg.value(metadata i32* %x2, metadata !12, metadata !15), !dbg !18
   call void @capture(i32* nonnull %x2), !dbg !19
   ret void, !dbg !20
@@ -70,7 +70,7 @@ attributes #4 = { nounwind }
 !3 = !{i32 2, !"Dwarf Version", i32 4}
 !4 = !{i32 2, !"Debug Info Version", i32 3}
 !5 = !{!"clang version 3.9.0 (trunk 271022) (llvm/trunk 271027)"}
-!6 = distinct !DISubprogram(name: "f", linkageName: "_Z1fv", scope: !1, file: !1, line: 4, type: !7, isLocal: false, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !9)
+!6 = distinct !DISubprogram(name: "f", linkageName: "_Z1fv", scope: !1, file: !1, line: 4, type: !7, isLocal: false, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !9)
 !7 = !DISubroutineType(types: !8)
 !8 = !{null}
 !9 = !{!10, !12}
@@ -84,8 +84,6 @@ attributes #4 = { nounwind }
 !13 = !DILocation(line: 5, column: 3, scope: !6)
 !14 = !DILocation(line: 6, column: 3, scope: !6)
 
-; CHECK-DAG: ![[X1_EXPR]] = !DIExpression(DW_OP_deref, DW_OP_constu, 4, DW_OP_minus)
-; CHECK-DAG: ![[X2_EXPR]] = !DIExpression(DW_OP_deref, DW_OP_constu, 8, DW_OP_minus)
 !15 = !DIExpression(DW_OP_deref)
 !16 = !DILocation(line: 5, column: 7, scope: !6)
 !17 = !DILocation(line: 8, column: 3, scope: !6)

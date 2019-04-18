@@ -1,56 +1,53 @@
 //===-- CommandObjectWatchpointCommand.cpp ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
 #include <vector>
 
-// Other libraries and framework includes
-// Project includes
 #include "CommandObjectWatchpoint.h"
 #include "CommandObjectWatchpointCommand.h"
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
 #include "lldb/Breakpoint/Watchpoint.h"
 #include "lldb/Core/IOHandler.h"
-#include "lldb/Core/State.h"
 #include "lldb/Host/OptionParser.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
+#include "lldb/Interpreter/OptionArgParser.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
+#include "lldb/Utility/State.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointCommandAdd
-//-------------------------------------------------------------------------
 
 // FIXME: "script-type" needs to have its contents determined dynamically, so
 // somebody can add a new scripting
 // language to lldb and have it pickable here without having to change this
 // enumeration by hand and rebuild lldb proper.
 
-static OptionEnumValueElement g_script_option_enumeration[4] = {
+static constexpr OptionEnumValueElement g_script_option_enumeration[] = {
     {eScriptLanguageNone, "command",
      "Commands are in the lldb command interpreter language"},
     {eScriptLanguagePython, "python", "Commands are in the Python language."},
     {eSortOrderByName, "default-script",
-     "Commands are in the default scripting language."},
-    {0, nullptr, nullptr}};
+     "Commands are in the default scripting language."} };
 
-static OptionDefinition g_watchpoint_command_add_options[] = {
+static constexpr OptionEnumValues ScriptOptionEnum() {
+  return OptionEnumValues(g_script_option_enumeration);
+}
+
+static constexpr OptionDefinition g_watchpoint_command_add_options[] = {
     // clang-format off
-  { LLDB_OPT_SET_1,   false, "one-liner",       'o', OptionParser::eRequiredArgument, nullptr, nullptr,                     0, eArgTypeOneLiner,       "Specify a one-line watchpoint command inline. Be sure to surround it with quotes." },
-  { LLDB_OPT_SET_ALL, false, "stop-on-error",   'e', OptionParser::eRequiredArgument, nullptr, nullptr,                     0, eArgTypeBoolean,        "Specify whether watchpoint command execution should terminate on error." },
-  { LLDB_OPT_SET_ALL, false, "script-type",     's', OptionParser::eRequiredArgument, nullptr, g_script_option_enumeration, 0, eArgTypeNone,           "Specify the language for the commands - if none is specified, the lldb command interpreter will be used." },
-  { LLDB_OPT_SET_2,   false, "python-function", 'F', OptionParser::eRequiredArgument, nullptr, nullptr,                     0, eArgTypePythonFunction, "Give the name of a Python function to run as command for this watchpoint. Be sure to give a module name if appropriate." }
+  { LLDB_OPT_SET_1,   false, "one-liner",       'o', OptionParser::eRequiredArgument, nullptr, {},                 0, eArgTypeOneLiner,       "Specify a one-line watchpoint command inline. Be sure to surround it with quotes." },
+  { LLDB_OPT_SET_ALL, false, "stop-on-error",   'e', OptionParser::eRequiredArgument, nullptr, {},                 0, eArgTypeBoolean,        "Specify whether watchpoint command execution should terminate on error." },
+  { LLDB_OPT_SET_ALL, false, "script-type",     's', OptionParser::eRequiredArgument, nullptr, ScriptOptionEnum(), 0, eArgTypeNone,           "Specify the language for the commands - if none is specified, the lldb command interpreter will be used." },
+  { LLDB_OPT_SET_2,   false, "python-function", 'F', OptionParser::eRequiredArgument, nullptr, {},                 0, eArgTypePythonFunction, "Give the name of a Python function to run as command for this watchpoint. Be sure to give a module name if appropriate." }
     // clang-format on
 };
 
@@ -208,9 +205,9 @@ are no syntax errors may indicate that a function was declared but never called.
 
   Options *GetOptions() override { return &m_options; }
 
-  void IOHandlerActivated(IOHandler &io_handler) override {
+  void IOHandlerActivated(IOHandler &io_handler, bool interactive) override {
     StreamFileSP output_sp(io_handler.GetOutputStreamFile());
-    if (output_sp) {
+    if (output_sp && interactive) {
       output_sp->PutCString(
           "Enter your debugger command(s).  Type 'DONE' to end.\n");
       output_sp->Flush();
@@ -226,12 +223,12 @@ are no syntax errors may indicate that a function was declared but never called.
     WatchpointOptions *wp_options =
         (WatchpointOptions *)io_handler.GetUserData();
     if (wp_options) {
-      std::unique_ptr<WatchpointOptions::CommandData> data_ap(
+      std::unique_ptr<WatchpointOptions::CommandData> data_up(
           new WatchpointOptions::CommandData());
-      if (data_ap) {
-        data_ap->user_source.SplitIntoLines(line);
+      if (data_up) {
+        data_up->user_source.SplitIntoLines(line);
         auto baton_sp = std::make_shared<WatchpointOptions::CommandBaton>(
-            std::move(data_ap));
+            std::move(data_up));
         wp_options->SetCallback(WatchpointOptionsCallbackFunction, baton_sp);
       }
     }
@@ -250,20 +247,19 @@ are no syntax errors may indicate that a function was declared but never called.
   /// Set a one-liner as the callback for the watchpoint.
   void SetWatchpointCommandCallback(WatchpointOptions *wp_options,
                                     const char *oneliner) {
-    std::unique_ptr<WatchpointOptions::CommandData> data_ap(
+    std::unique_ptr<WatchpointOptions::CommandData> data_up(
         new WatchpointOptions::CommandData());
 
-    // It's necessary to set both user_source and script_source to the oneliner.
-    // The former is used to generate callback description (as in watchpoint
-    // command list)
-    // while the latter is used for Python to interpret during the actual
-    // callback.
-    data_ap->user_source.AppendString(oneliner);
-    data_ap->script_source.assign(oneliner);
-    data_ap->stop_on_error = m_options.m_stop_on_error;
+    // It's necessary to set both user_source and script_source to the
+    // oneliner. The former is used to generate callback description (as in
+    // watchpoint command list) while the latter is used for Python to
+    // interpret during the actual callback.
+    data_up->user_source.AppendString(oneliner);
+    data_up->script_source.assign(oneliner);
+    data_up->stop_on_error = m_options.m_stop_on_error;
 
     auto baton_sp =
-        std::make_shared<WatchpointOptions::CommandBaton>(std::move(data_ap));
+        std::make_shared<WatchpointOptions::CommandBaton>(std::move(data_up));
     wp_options->SetCallback(WatchpointOptionsCallbackFunction, baton_sp);
   }
 
@@ -286,8 +282,8 @@ are no syntax errors may indicate that a function was declared but never called.
         CommandReturnObject result;
         Debugger &debugger = target->GetDebugger();
         // Rig up the results secondary output stream to the debugger's, so the
-        // output will come out synchronously
-        // if the debugger is set up that way.
+        // output will come out synchronously if the debugger is set up that
+        // way.
 
         StreamSP output_stream(debugger.GetAsyncOutputStream());
         StreamSP error_stream(debugger.GetAsyncErrorStream());
@@ -331,7 +327,7 @@ are no syntax errors may indicate that a function was declared but never called.
         break;
 
       case 's':
-        m_script_language = (lldb::ScriptLanguage)Args::StringToOptionEnum(
+        m_script_language = (lldb::ScriptLanguage)OptionArgParser::ToOptionEnum(
             option_arg, GetDefinitions()[option_idx].enum_values,
             eScriptLanguageNone, error);
 
@@ -341,7 +337,8 @@ are no syntax errors may indicate that a function was declared but never called.
 
       case 'e': {
         bool success = false;
-        m_stop_on_error = Args::StringToBoolean(option_arg, false, &success);
+        m_stop_on_error =
+            OptionArgParser::ToBoolean(option_arg, false, &success);
         if (!success)
           error.SetErrorStringWithFormat(
               "invalid value for stop-on-error: \"%s\"",
@@ -439,20 +436,19 @@ protected:
         if (wp_options == nullptr)
           continue;
 
-        // If we are using script language, get the script interpreter
-        // in order to set or collect command callback.  Otherwise, call
-        // the methods associated with this object.
+        // If we are using script language, get the script interpreter in order
+        // to set or collect command callback.  Otherwise, call the methods
+        // associated with this object.
         if (m_options.m_use_script_language) {
           // Special handling for one-liner specified inline.
           if (m_options.m_use_one_liner) {
             m_interpreter.GetScriptInterpreter()->SetWatchpointCommandCallback(
                 wp_options, m_options.m_one_liner.c_str());
           }
-          // Special handling for using a Python function by name
-          // instead of extending the watchpoint callback data structures, we
-          // just automatize
-          // what the user would do manually: make their watchpoint command be a
-          // function call
+          // Special handling for using a Python function by name instead of
+          // extending the watchpoint callback data structures, we just
+          // automatize what the user would do manually: make their watchpoint
+          // command be a function call
           else if (!m_options.m_function_name.empty()) {
             std::string oneliner(m_options.m_function_name);
             oneliner += "(frame, wp, internal_dict)";
@@ -480,9 +476,7 @@ private:
   CommandOptions m_options;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointCommandDelete
-//-------------------------------------------------------------------------
 
 class CommandObjectWatchpointCommandDelete : public CommandObjectParsed {
 public:
@@ -560,9 +554,7 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointCommandList
-//-------------------------------------------------------------------------
 
 class CommandObjectWatchpointCommandList : public CommandObjectParsed {
 public:
@@ -660,16 +652,14 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointCommand
-//-------------------------------------------------------------------------
 
 CommandObjectWatchpointCommand::CommandObjectWatchpointCommand(
     CommandInterpreter &interpreter)
     : CommandObjectMultiword(
           interpreter, "command",
           "Commands for adding, removing and examining LLDB commands "
-          "executed when the watchpoint is hit (watchpoint 'commmands').",
+          "executed when the watchpoint is hit (watchpoint 'commands').",
           "command <sub-command> [<sub-command-options>] <watchpoint-id>") {
   CommandObjectSP add_command_object(
       new CommandObjectWatchpointCommandAdd(interpreter));

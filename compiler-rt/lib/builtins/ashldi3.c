@@ -1,9 +1,8 @@
 /* ====-- ashldi3.c - Implement __ashldi3 -----------------------------------===
  *
- *                     The LLVM Compiler Infrastructure
- *
- * This file is dual licensed under the MIT and the University of Illinois Open
- * Source Licenses. See LICENSE.TXT for details.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  * ===----------------------------------------------------------------------===
  *
@@ -41,8 +40,5 @@ __ashldi3(di_int a, si_int b)
 }
 
 #if defined(__ARM_EABI__)
-AEABI_RTABI di_int __aeabi_llsl(di_int a, si_int b) {
-  return __ashldi3(a, b);
-}
+AEABI_RTABI di_int __aeabi_llsl(di_int a, si_int b) COMPILER_RT_ALIAS(__ashldi3);
 #endif
-

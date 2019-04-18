@@ -1,9 +1,8 @@
 //===-- sanitizer_coverage_libcdep_new.cc ---------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // Sanitizer Coverage Controller for Trace PC Guard.
@@ -16,7 +15,6 @@
 #include "sanitizer_atomic.h"
 #include "sanitizer_common.h"
 #include "sanitizer_file.h"
-#include "sanitizer_symbolizer.h"
 
 using namespace __sanitizer;
 
@@ -64,7 +62,7 @@ static void SanitizerDumpCoverage(const uptr* unsorted_pcs, uptr len) {
   uptr* pcs = static_cast<uptr*>(InternalAlloc(len * sizeof(uptr)));
 
   internal_memcpy(pcs, unsorted_pcs, len * sizeof(uptr));
-  SortArray(pcs, len);
+  Sort(pcs, len);
 
   bool module_found = false;
   uptr last_base = 0;
@@ -211,5 +209,10 @@ SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_trace_pc_indir, void) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_8bit_counters_init, void) {}
 SANITIZER_INTERFACE_WEAK_DEF(void, __sanitizer_cov_pcs_init, void) {}
 }  // extern "C"
+// Weak definition for code instrumented with -fsanitize-coverage=stack-depth
+// and later linked with code containing a strong definition.
+// E.g., -fsanitize=fuzzer-no-link
+SANITIZER_INTERFACE_ATTRIBUTE SANITIZER_WEAK_ATTRIBUTE
+SANITIZER_TLS_INITIAL_EXEC_ATTRIBUTE uptr __sancov_lowest_stack;
 
 #endif  // !SANITIZER_FUCHSIA

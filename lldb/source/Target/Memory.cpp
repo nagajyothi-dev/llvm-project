@@ -1,38 +1,31 @@
 //===-- Memory.cpp ----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Target/Memory.h"
-// C Includes
-#include <inttypes.h>
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
-#include "lldb/Core/RangeMap.h"
-#include "lldb/Core/State.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RangeMap.h"
+#include "lldb/Utility/State.h"
+
+#include <cinttypes>
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // MemoryCache constructor
-//----------------------------------------------------------------------
 MemoryCache::MemoryCache(Process &process)
     : m_mutex(), m_L1_cache(), m_L2_cache(), m_invalid_ranges(),
       m_process(process),
       m_L2_cache_line_byte_size(process.GetMemoryCacheLineSize()) {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 MemoryCache::~MemoryCache() {}
 
 void MemoryCache::Clear(bool clear_invalid_ranges) {
@@ -133,12 +126,12 @@ size_t MemoryCache::Read(addr_t addr, void *dst, size_t dst_len,
                          Status &error) {
   size_t bytes_left = dst_len;
 
-  // Check the L1 cache for a range that contain the entire memory read.
-  // If we find a range in the L1 cache that does, we use it. Else we fall
-  // back to reading memory in m_L2_cache_line_byte_size byte sized chunks.
-  // The L1 cache contains chunks of memory that are not required to be
-  // m_L2_cache_line_byte_size bytes in size, so we don't try anything
-  // tricky when reading from them (no partial reads from the L1 cache).
+  // Check the L1 cache for a range that contain the entire memory read. If we
+  // find a range in the L1 cache that does, we use it. Else we fall back to
+  // reading memory in m_L2_cache_line_byte_size byte sized chunks. The L1
+  // cache contains chunks of memory that are not required to be
+  // m_L2_cache_line_byte_size bytes in size, so we don't try anything tricky
+  // when reading from them (no partial reads from the L1 cache).
 
   std::lock_guard<std::recursive_mutex> guard(m_mutex);
   if (!m_L1_cache.empty()) {
@@ -149,17 +142,17 @@ size_t MemoryCache::Read(addr_t addr, void *dst, size_t dst_len,
     }
     AddrRange chunk_range(pos->first, pos->second->GetByteSize());
     if (chunk_range.Contains(read_range)) {
-      memcpy(dst, pos->second->GetBytes() + addr - chunk_range.GetRangeBase(),
+      memcpy(dst, pos->second->GetBytes() + (addr - chunk_range.GetRangeBase()),
              dst_len);
       return dst_len;
     }
   }
 
-  // If this memory read request is larger than the cache line size, then
-  // we (1) try to read as much of it at once as possible, and (2) don't
-  // add the data to the memory cache.  We don't want to split a big read
-  // up into more separate reads than necessary, and with a large memory read
-  // request, it is unlikely that the caller function will ask for the next
+  // If this memory read request is larger than the cache line size, then we
+  // (1) try to read as much of it at once as possible, and (2) don't add the
+  // data to the memory cache.  We don't want to split a big read up into more
+  // separate reads than necessary, and with a large memory read request, it is
+  // unlikely that the caller function will ask for the next
   // 4 bytes after the large memory read - so there's little benefit to saving
   // it in the cache.
   if (dst && dst_len > m_L2_cache_line_byte_size) {
@@ -218,9 +211,9 @@ size_t MemoryCache::Read(addr_t addr, void *dst, size_t dst_len,
             bytes_left -= curr_read_size;
             curr_addr += curr_read_size;
 
-            // We have a cache page that succeeded to read some bytes
-            // but not an entire page. If this happens, we must cap
-            // off how much data we are able to read...
+            // We have a cache page that succeeded to read some bytes but not
+            // an entire page. If this happens, we must cap off how much data
+            // we are able to read...
             if (pos->second->GetByteSize() != cache_line_byte_size)
               return dst_len - bytes_left;
           }
@@ -231,17 +224,17 @@ size_t MemoryCache::Read(addr_t addr, void *dst, size_t dst_len,
 
       if (bytes_left > 0) {
         assert((curr_addr % cache_line_byte_size) == 0);
-        std::unique_ptr<DataBufferHeap> data_buffer_heap_ap(
+        std::unique_ptr<DataBufferHeap> data_buffer_heap_up(
             new DataBufferHeap(cache_line_byte_size, 0));
         size_t process_bytes_read = m_process.ReadMemoryFromInferior(
-            curr_addr, data_buffer_heap_ap->GetBytes(),
-            data_buffer_heap_ap->GetByteSize(), error);
+            curr_addr, data_buffer_heap_up->GetBytes(),
+            data_buffer_heap_up->GetByteSize(), error);
         if (process_bytes_read == 0)
           return dst_len - bytes_left;
 
         if (process_bytes_read != cache_line_byte_size)
-          data_buffer_heap_ap->SetByteSize(process_bytes_read);
-        m_L2_cache[curr_addr] = DataBufferSP(data_buffer_heap_ap.release());
+          data_buffer_heap_up->SetByteSize(process_bytes_read);
+        m_L2_cache[curr_addr] = DataBufferSP(data_buffer_heap_up.release());
         // We have read data and put it into the cache, continue through the
         // loop again to get the data out of the cache...
       }
@@ -277,8 +270,8 @@ lldb::addr_t AllocatedBlock::ReserveBlock(uint32_t size) {
     if (range_size >= size)
     {
       // We found a free block that is big enough for our data. Figure out how
-      // many chunks we will need and calculate the resulting block size we will
-      // reserve.
+      // many chunks we will need and calculate the resulting block size we
+      // will reserve.
       addr_t addr = free_block.GetRangeBase();
       size_t num_chunks = CalculateChunksNeededForSize(size);
       lldb::addr_t block_size = num_chunks * m_chunk_size;
@@ -296,8 +289,8 @@ lldb::addr_t AllocatedBlock::ReserveBlock(uint32_t size) {
         // Make the new allocated range and add it to the allocated ranges.
         Range<lldb::addr_t, uint32_t> reserved_block(free_block);
         reserved_block.SetByteSize(block_size);
-        // Insert the reserved range and don't combine it with other blocks
-        // in the reserved blocks list.
+        // Insert the reserved range and don't combine it with other blocks in
+        // the reserved blocks list.
         m_reserved_blocks.Insert(reserved_block, false);
         // Adjust the free range in place since we won't change the sorted
         // ordering of the m_free_blocks list.
@@ -362,8 +355,8 @@ AllocatedMemoryCache::AllocatePage(uint32_t byte_size, uint32_t permissions,
   }
 
   if (addr != LLDB_INVALID_ADDRESS) {
-    block_sp.reset(
-        new AllocatedBlock(addr, page_byte_size, permissions, chunk_size));
+    block_sp = std::make_shared<AllocatedBlock>(addr, page_byte_size,
+                                                permissions, chunk_size);
     m_memory_map.insert(std::make_pair(permissions, block_sp));
   }
   return block_sp;

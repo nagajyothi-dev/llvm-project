@@ -1,8 +1,9 @@
-; RUN: opt < %s -instcombine -o /dev/null  -pass-remarks-output=%t -S -pass-remarks=instcombine \
-; RUN:     2>&1 | FileCheck %s
+; RUN: opt < %s -instcombine -o /dev/null  -pass-remarks-output=%t -S \
+; RUN:     -pass-remarks=instcombine 2>&1 | FileCheck %s
 ; RUN: cat %t | FileCheck -check-prefix=YAML %s
-; RUN: opt < %s -passes='require<opt-remark-emit>,instcombine' -o /dev/null -S -pass-remarks=instcombine \
-; RUN:     2>&1 | FileCheck %s
+; RUN: opt < %s -passes='require<opt-remark-emit>,instcombine' -o /dev/null \
+; RUN:     -pass-remarks-output=%t -S -pass-remarks=instcombine 2>&1 | FileCheck %s
+; RUN: cat %t | FileCheck -check-prefix=YAML %s
 
 ; CHECK:      remark: libcalls-opt-remarks.c:10:10: folded strlen(select) to select of constants{{$}}
 ; CHECK-NOT:  remark:
@@ -44,7 +45,7 @@ define i32 @f1(i1) !dbg !7 {
 !4 = !{i32 2, !"Debug Info Version", i32 3}
 !5 = !{i32 1, !"PIC Level", i32 2}
 !6 = !{!"Apple LLVM version 8.1.0 (clang-802.0.42)"}
-!7 = distinct !DISubprogram(name: "f1", scope: !1, file: !1, line: 9, type: !8, isLocal: false, isDefinition: true, scopeLine: 9, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !2)
+!7 = distinct !DISubprogram(name: "f1", scope: !1, file: !1, line: 9, type: !8, isLocal: false, isDefinition: true, scopeLine: 9, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !2)
 !8 = !DISubroutineType(types: !2)
 !9 = !DILocation(line: 10, column: 17, scope: !7)
 !10 = !DILocation(line: 10, column: 24, scope: !11)

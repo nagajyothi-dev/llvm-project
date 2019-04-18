@@ -1,16 +1,11 @@
 //===-- ThreadPlanStepInstruction.cpp ---------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Target/ThreadPlanStepInstruction.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -23,9 +18,7 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // ThreadPlanStepInstruction: Step over the current instruction
-//----------------------------------------------------------------------
 
 ThreadPlanStepInstruction::ThreadPlanStepInstruction(Thread &thread,
                                                      bool step_over,
@@ -57,11 +50,19 @@ void ThreadPlanStepInstruction::SetUpState() {
 
 void ThreadPlanStepInstruction::GetDescription(Stream *s,
                                                lldb::DescriptionLevel level) {
+  auto PrintFailureIfAny = [&]() {
+    if (m_status.Success())
+      return;
+    s->Printf(" failed (%s)", m_status.AsCString());
+  };
+
   if (level == lldb::eDescriptionLevelBrief) {
     if (m_step_over)
       s->Printf("instruction step over");
     else
       s->Printf("instruction step into");
+
+    PrintFailureIfAny();
   } else {
     s->Printf("Stepping one instruction past ");
     s->Address(m_instruction_addr, sizeof(addr_t));
@@ -72,12 +73,14 @@ void ThreadPlanStepInstruction::GetDescription(Stream *s,
       s->Printf(" stepping over calls");
     else
       s->Printf(" stepping into calls");
+
+    PrintFailureIfAny();
   }
 }
 
 bool ThreadPlanStepInstruction::ValidatePlan(Stream *error) {
-  // Since we read the instruction we're stepping over from the thread,
-  // this plan will always work.
+  // Since we read the instruction we're stepping over from the thread, this
+  // plan will always work.
   return true;
 }
 
@@ -106,8 +109,8 @@ bool ThreadPlanStepInstruction::IsPlanStale() {
     return (m_thread.GetRegisterContext()->GetPC(0) != m_instruction_addr);
   } else if (cur_frame_id < m_stack_id) {
     // If the current frame is younger than the start frame and we are stepping
-    // over, then we need to continue,
-    // but if we are doing just one step, we're done.
+    // over, then we need to continue, but if we are doing just one step, we're
+    // done.
     return !m_step_over;
   } else {
     if (log) {
@@ -140,8 +143,7 @@ bool ThreadPlanStepInstruction::ShouldStop(Event *event_ptr) {
           return true;
         } else {
           // We are still stepping, reset the start pc, and in case we've
-          // stepped out,
-          // reset the current stack id.
+          // stepped out, reset the current stack id.
           SetUpState();
           return false;
         }
@@ -154,9 +156,8 @@ bool ThreadPlanStepInstruction::ShouldStop(Event *event_ptr) {
         if (return_frame->GetStackID() != m_parent_frame_id ||
             m_start_has_symbol) {
           // next-instruction shouldn't step out of inlined functions.  But we
-          // may have stepped into a
-          // real function that starts with an inlined function, and we do want
-          // to step out of that...
+          // may have stepped into a real function that starts with an inlined
+          // function, and we do want to step out of that...
 
           if (cur_frame_sp->IsInlined()) {
             StackFrameSP parent_frame_sp =
@@ -190,12 +191,12 @@ bool ThreadPlanStepInstruction::ShouldStop(Event *event_ptr) {
             log->Printf("%s.", s.GetData());
           }
 
-          // StepInstruction should probably have the tri-state RunMode, but for
-          // now it is safer to
-          // run others.
+          // StepInstruction should probably have the tri-state RunMode, but
+          // for now it is safer to run others.
           const bool stop_others = false;
           m_thread.QueueThreadPlanForStepOutNoShouldStop(
-              false, nullptr, true, stop_others, eVoteNo, eVoteNoOpinion, 0);
+              false, nullptr, true, stop_others, eVoteNo, eVoteNoOpinion, 0,
+              m_status);
           return false;
         } else {
           if (log) {
@@ -222,8 +223,7 @@ bool ThreadPlanStepInstruction::ShouldStop(Event *event_ptr) {
         return true;
       } else {
         // We are still stepping, reset the start pc, and in case we've stepped
-        // in or out,
-        // reset the current stack id.
+        // in or out, reset the current stack id.
         SetUpState();
         return false;
       }

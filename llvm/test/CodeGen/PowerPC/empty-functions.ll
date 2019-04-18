@@ -1,19 +1,10 @@
-; RUN: llc -verify-machineinstrs < %s -mtriple=powerpc-apple-darwin | FileCheck -check-prefix=CHECK-MACHO %s
-; RUN: llc -verify-machineinstrs < %s -mtriple=powerpc-apple-darwin -disable-fp-elim | FileCheck -check-prefix=CHECK-MACHO %s
 ; RUN: llc -verify-machineinstrs < %s -mtriple=powerpc-linux-gnu | FileCheck -check-prefix=LINUX-NO-FP %s
-; RUN: llc -verify-machineinstrs < %s -mtriple=powerpc-linux-gnu -disable-fp-elim | FileCheck -check-prefix=LINUX-FP %s
+; RUN: llc -verify-machineinstrs < %s -mtriple=powerpc-linux-gnu -frame-pointer=all | FileCheck -check-prefix=LINUX-FP %s
 
 define void @func() {
 entry:
   unreachable
 }
-
-; MachO cannot handle an empty function.
-; CHECK-MACHO:     _func:
-; CHECK-MACHO-NEXT: .cfi_startproc
-; CHECK-MACHO-NEXT: {{^}};
-; CHECK-MACHO-NEXT:     nop
-; CHECK-MACHO-NEXT: .cfi_endproc
 
 ; An empty function is perfectly fine on ELF.
 ; LINUX-NO-FP: func:
@@ -31,9 +22,7 @@ entry:
 ; LINUX-FP-NEXT: {{^}}#
 ; LINUX-FP-NEXT: stwu 1, -16(1)
 ; LINUX-FP-NEXT: stw 31, 12(1)
-; LINUX-FP-NEXT: {{^}}.L{{.*}}:{{$}}
 ; LINUX-FP-NEXT:  .cfi_def_cfa_offset 16
-; LINUX-FP-NEXT: {{^}}.L{{.*}}:{{$}}
 ; LINUX-FP-NEXT: .cfi_offset r31, -4
 ; LINUX-FP-NEXT: mr 31, 1
 ; LINUX-FP-NEXT: {{^}}.L[[END:.*]]:{{$}}

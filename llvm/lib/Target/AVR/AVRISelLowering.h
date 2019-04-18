@@ -1,9 +1,8 @@
 //===-- AVRISelLowering.h - AVR DAG Lowering Interface ----------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,7 +15,7 @@
 #define LLVM_AVR_ISEL_LOWERING_H
 
 #include "llvm/CodeGen/CallingConvLower.h"
-#include "llvm/Target/TargetLowering.h"
+#include "llvm/CodeGen/TargetLowering.h"
 
 namespace llvm {
 
@@ -64,17 +63,24 @@ enum NodeType {
 
 } // end of namespace AVRISD
 
+class AVRSubtarget;
 class AVRTargetMachine;
 
 /// Performs target lowering for the AVR.
 class AVRTargetLowering : public TargetLowering {
 public:
-  explicit AVRTargetLowering(AVRTargetMachine &TM);
+  explicit AVRTargetLowering(const AVRTargetMachine &TM,
+                             const AVRSubtarget &STI);
 
 public:
   MVT getScalarShiftAmountTy(const DataLayout &, EVT LHSTy) const override {
     return MVT::i8;
   }
+
+  MVT::SimpleValueType getCmpLibcallReturnType() const override {
+    return MVT::i8;
+  }
+
   const char *getTargetNodeName(unsigned Opcode) const override;
 
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
@@ -158,6 +164,10 @@ private:
                           const SmallVectorImpl<ISD::InputArg> &Ins,
                           const SDLoc &dl, SelectionDAG &DAG,
                           SmallVectorImpl<SDValue> &InVals) const;
+
+protected:
+
+  const AVRSubtarget &Subtarget;
 
 private:
   MachineBasicBlock *insertShift(MachineInstr &MI, MachineBasicBlock *BB) const;

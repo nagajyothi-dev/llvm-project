@@ -1,19 +1,18 @@
 //===-- Baton.h -------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef lldb_Baton_h_
 #define lldb_Baton_h_
 
-#include "lldb/lldb-enumerations.h" // for DescriptionLevel
+#include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-public.h"
 
-#include <memory> // for unique_ptr
+#include <memory>
 
 namespace lldb_private {
 class Stream;
@@ -21,18 +20,16 @@ class Stream;
 
 namespace lldb_private {
 
-//----------------------------------------------------------------------
-/// @class Baton Baton.h "lldb/Core/Baton.h"
-/// @brief A class designed to wrap callback batons so they can cleanup
+/// \class Baton Baton.h "lldb/Core/Baton.h"
+/// A class designed to wrap callback batons so they can cleanup
 ///        any acquired resources
 ///
-/// This class is designed to be used by any objects that have a
-/// callback function that takes a baton where the baton might need to
+/// This class is designed to be used by any objects that have a callback
+/// function that takes a baton where the baton might need to
 /// free/delete/close itself.
 ///
-/// The default behavior is to not free anything. Subclasses can
-/// free any needed resources in their destructors.
-//----------------------------------------------------------------------
+/// The default behavior is to not free anything. Subclasses can free any
+/// needed resources in their destructors.
 class Baton {
 public:
   Baton() {}

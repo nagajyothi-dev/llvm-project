@@ -1,9 +1,8 @@
 /*===-- atomic.c - Implement support functions for atomic operations.------===
  *
- *                     The LLVM Compiler Infrastructure
- *
- * This file is dual licensed under the MIT and the University of Illinois Open
- * Source Licenses. See LICENSE.TXT for details.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===----------------------------------------------------------------------===
  *
@@ -136,23 +135,32 @@ static __inline Lock *lock_for_pointer(void *ptr) {
 #define LOCK_FREE_CASES() \
   do {\
   switch (size) {\
+    case 1:\
+      if (IS_LOCK_FREE_1) {\
+        LOCK_FREE_ACTION(uint8_t);\
+      }\
+      break; \
     case 2:\
       if (IS_LOCK_FREE_2) {\
         LOCK_FREE_ACTION(uint16_t);\
       }\
+      break; \
     case 4:\
       if (IS_LOCK_FREE_4) {\
         LOCK_FREE_ACTION(uint32_t);\
       }\
+      break; \
     case 8:\
       if (IS_LOCK_FREE_8) {\
         LOCK_FREE_ACTION(uint64_t);\
       }\
+      break; \
     case 16:\
       if (IS_LOCK_FREE_16) {\
         /* FIXME: __uint128_t isn't available on 32 bit platforms.
         LOCK_FREE_ACTION(__uint128_t);*/\
       }\
+      break; \
   }\
   } while (0)
 
@@ -175,7 +183,7 @@ void __atomic_load_c(int size, void *src, void *dest, int model) {
 /// pointer only.
 void __atomic_store_c(int size, void *dest, void *src, int model) {
 #define LOCK_FREE_ACTION(type) \
-    __c11_atomic_store((_Atomic(type)*)dest, *(type*)dest, model);\
+    __c11_atomic_store((_Atomic(type)*)dest, *(type*)src, model);\
     return;
   LOCK_FREE_CASES();
 #undef LOCK_FREE_ACTION

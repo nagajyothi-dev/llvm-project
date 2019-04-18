@@ -1,9 +1,8 @@
 //===-- Symbol.h ------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,11 +19,9 @@ namespace lldb_private {
 
 class Symbol : public SymbolContextScope {
 public:
-  // ObjectFile readers can classify their symbol table entries and searches can
-  // be made
-  // on specific types where the symbol values will have drastically different
-  // meanings
-  // and sorting requirements.
+  // ObjectFile readers can classify their symbol table entries and searches
+  // can be made on specific types where the symbol values will have
+  // drastically different meanings and sorting requirements.
   Symbol();
 
   Symbol(uint32_t symID, const char *name, bool name_is_mangled,
@@ -45,63 +42,52 @@ public:
 
   void Clear();
 
-  bool Compare(const ConstString &name, lldb::SymbolType type) const;
+  bool Compare(ConstString name, lldb::SymbolType type) const;
 
   void Dump(Stream *s, Target *target, uint32_t index) const;
 
   bool ValueIsAddress() const;
 
-  //------------------------------------------------------------------
-  // The GetAddressRef() accessor functions should only be called if
-  // you previously call ValueIsAddress() otherwise you might get an
-  // reference to an Address object that contains an constant integer
-  // value in m_addr_range.m_base_addr.m_offset which could be
-  // incorrectly used to represent an absolute address since it has
-  // no section.
-  //------------------------------------------------------------------
+  // The GetAddressRef() accessor functions should only be called if you
+  // previously call ValueIsAddress() otherwise you might get an reference to
+  // an Address object that contains an constant integer value in
+  // m_addr_range.m_base_addr.m_offset which could be incorrectly used to
+  // represent an absolute address since it has no section.
   Address &GetAddressRef() { return m_addr_range.GetBaseAddress(); }
 
   const Address &GetAddressRef() const { return m_addr_range.GetBaseAddress(); }
 
-  //------------------------------------------------------------------
-  // Makes sure the symbol's value is an address and returns the file
-  // address. Returns LLDB_INVALID_ADDRESS if the symbol's value isn't
-  // an address.
-  //------------------------------------------------------------------
+  // Makes sure the symbol's value is an address and returns the file address.
+  // Returns LLDB_INVALID_ADDRESS if the symbol's value isn't an address.
   lldb::addr_t GetFileAddress() const;
 
-  //------------------------------------------------------------------
-  // Makes sure the symbol's value is an address and gets the load
-  // address using \a target if it is. Returns LLDB_INVALID_ADDRESS
-  // if the symbol's value isn't an address or if the section isn't
-  // loaded in \a target.
-  //------------------------------------------------------------------
+  // Makes sure the symbol's value is an address and gets the load address
+  // using \a target if it is. Returns LLDB_INVALID_ADDRESS if the symbol's
+  // value isn't an address or if the section isn't loaded in \a target.
   lldb::addr_t GetLoadAddress(Target *target) const;
 
-  //------------------------------------------------------------------
-  // Access the address value. Do NOT hand out the AddressRange as an
-  // object as the byte size of the address range may not be filled in
-  // and it should be accessed via GetByteSize().
-  //------------------------------------------------------------------
+  // Access the address value. Do NOT hand out the AddressRange as an object as
+  // the byte size of the address range may not be filled in and it should be
+  // accessed via GetByteSize().
   Address GetAddress() const {
-    // Make sure the our value is an address before we hand a copy out.
-    // We use the Address inside m_addr_range to contain the value for
-    // symbols that are not address based symbols so we are using it
-    // for more than just addresses. For example undefined symbols on
-    // MacOSX have a nlist.n_value of 0 (zero) and this will get placed
-    // into m_addr_range.m_base_addr.m_offset and it will have no section.
-    // So in the GetAddress() accessor, we need to hand out an invalid
-    // address if the symbol's value isn't an address.
+    // Make sure the our value is an address before we hand a copy out. We use
+    // the Address inside m_addr_range to contain the value for symbols that
+    // are not address based symbols so we are using it for more than just
+    // addresses. For example undefined symbols on MacOSX have a nlist.n_value
+    // of 0 (zero) and this will get placed into
+    // m_addr_range.m_base_addr.m_offset and it will have no section. So in the
+    // GetAddress() accessor, we need to hand out an invalid address if the
+    // symbol's value isn't an address.
     if (ValueIsAddress())
       return m_addr_range.GetBaseAddress();
     else
       return Address();
   }
 
-  // When a symbol's value isn't an address, we need to access the raw
-  // value. This function will ensure this symbol's value isn't an address
-  // and return the integer value if this checks out, otherwise it will
-  // return "fail_value" if the symbol is an address value.
+  // When a symbol's value isn't an address, we need to access the raw value.
+  // This function will ensure this symbol's value isn't an address and return
+  // the integer value if this checks out, otherwise it will return
+  // "fail_value" if the symbol is an address value.
   uint64_t GetIntegerValue(uint64_t fail_value = 0) const {
     if (ValueIsAddress()) {
       // This symbol's value is an address. Use Symbol::GetAddress() to get the
@@ -139,7 +125,7 @@ public:
 
   FileSpec GetReExportedSymbolSharedLibrary() const;
 
-  void SetReExportedSymbolName(const ConstString &name);
+  void SetReExportedSymbolName(ConstString name);
 
   bool SetReExportedSymbolSharedLibrary(const FileSpec &fspec);
 
@@ -209,22 +195,18 @@ public:
   void SetContainsLinkerAnnotations(bool b) {
     m_contains_linker_annotations = b;
   }
-  //------------------------------------------------------------------
-  /// @copydoc SymbolContextScope::CalculateSymbolContext(SymbolContext*)
+  /// \copydoc SymbolContextScope::CalculateSymbolContext(SymbolContext*)
   ///
-  /// @see SymbolContextScope
-  //------------------------------------------------------------------
+  /// \see SymbolContextScope
   void CalculateSymbolContext(SymbolContext *sc) override;
 
   lldb::ModuleSP CalculateSymbolContextModule() override;
 
   Symbol *CalculateSymbolContextSymbol() override;
 
-  //------------------------------------------------------------------
-  /// @copydoc SymbolContextScope::DumpSymbolContext(Stream*)
+  /// \copydoc SymbolContextScope::DumpSymbolContext(Stream*)
   ///
-  /// @see SymbolContextScope
-  //------------------------------------------------------------------
+  /// \see SymbolContextScope
   void DumpSymbolContext(Stream *s) override;
 
   lldb::DisassemblerSP GetInstructions(const ExecutionContext &exe_ctx,
@@ -238,9 +220,8 @@ public:
 
 protected:
   // This is the internal guts of ResolveReExportedSymbol, it assumes
-  // reexport_name is not null, and that module_spec
-  // is valid.  We track the modules we've already seen to make sure we don't
-  // get caught in a cycle.
+  // reexport_name is not null, and that module_spec is valid.  We track the
+  // modules we've already seen to make sure we don't get caught in a cycle.
 
   Symbol *ResolveReExportedSymbolInModuleSpec(
       Target &target, ConstString &reexport_name,
@@ -260,8 +241,8 @@ protected:
       m_size_is_sibling : 1,     // m_size contains the index of this symbol's
                                  // sibling
       m_size_is_synthesized : 1, // non-zero if this symbol's size was
-                                 // calculated using a delta between this symbol
-                                 // and the next
+                                 // calculated using a delta between this
+                                 // symbol and the next
       m_size_is_valid : 1,
       m_demangled_is_synthesized : 1, // The demangled name was created should
                                       // not be used for expressions or other

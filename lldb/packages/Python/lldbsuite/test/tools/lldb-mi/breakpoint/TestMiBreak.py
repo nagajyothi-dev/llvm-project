@@ -19,6 +19,7 @@ class MiBreakTestCase(lldbmi_testcase.MiTestCaseBase):
     @skipIfWindows  # llvm.org/pr24452: Get lldb-mi tests working on Windows
     @skipIfFreeBSD  # llvm.org/pr22411: Failure presumably due to known thread races
     @expectedFlakeyLinux("llvm.org/pr24717")
+    @expectedFailureNetBSD
     @skipIfRemote   # We do not currently support remote debugging via the MI.
     def test_lldbmi_break_insert_function_pending(self):
         """Test that 'lldb-mi --interpreter' works for pending function breakpoints."""
@@ -46,6 +47,7 @@ class MiBreakTestCase(lldbmi_testcase.MiTestCaseBase):
 
     @skipIfWindows  # llvm.org/pr24452: Get lldb-mi tests working on Windows
     @skipIfFreeBSD  # llvm.org/pr22411: Failure presumably due to known thread races
+    @expectedFailureNetBSD
     @skipIfRemote   # We do not currently support remote debugging via the MI.
     def test_lldbmi_break_insert_function(self):
         """Test that 'lldb-mi --interpreter' works for function breakpoints."""
@@ -200,7 +202,7 @@ class MiBreakTestCase(lldbmi_testcase.MiTestCaseBase):
         self.expect("\*stopped,reason=\"breakpoint-hit\"")
 
         import os
-        path = os.path.join(os.getcwd(), "main.cpp")
+        path = os.path.join(self.getSourceDir(), "main.cpp")
         line = line_number('main.cpp', '// BP_return')
         self.runCmd("-break-insert %s:%d" % (path, line))
         self.expect("\^done,bkpt={number=\"2\"")

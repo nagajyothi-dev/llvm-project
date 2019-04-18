@@ -1,9 +1,8 @@
 //===-- CFString.cpp --------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,19 +14,13 @@
 #include <glob.h>
 #include <string>
 
-//----------------------------------------------------------------------
 // CFString constructor
-//----------------------------------------------------------------------
 CFString::CFString(CFStringRef s) : CFReleaser<CFStringRef>(s) {}
 
-//----------------------------------------------------------------------
 // CFString copy constructor
-//----------------------------------------------------------------------
 CFString::CFString(const CFString &rhs) : CFReleaser<CFStringRef>(rhs) {}
 
-//----------------------------------------------------------------------
 // CFString copy constructor
-//----------------------------------------------------------------------
 CFString &CFString::operator=(const CFString &rhs) {
   if (this != &rhs)
     *this = rhs;
@@ -42,9 +35,7 @@ CFString::CFString(const char *cstr, CFStringEncoding cstr_encoding)
   }
 }
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 CFString::~CFString() {}
 
 const char *CFString::GetFileSystemRepresentation(std::string &s) {
@@ -91,9 +82,8 @@ const char *CFString::UTF8(std::string &str) {
   return CFString::UTF8(get(), str);
 }
 
-// Static function that puts a copy of the UTF8 contents of CF_STR into STR
-// and returns the C string pointer that is contained in STR when successful,
-// else
+// Static function that puts a copy of the UTF8 contents of CF_STR into STR and
+// returns the C string pointer that is contained in STR when successful, else
 // NULL is returned. This allows the std::string parameter to own the extracted
 // string,
 // and also allows that string to be returned as a C string pointer that can be
@@ -120,9 +110,9 @@ const char *CFString::UTF8(CFStringRef cf_str, std::string &str) {
 
 // Static function that puts a copy of the file system representation of CF_STR
 // into STR and returns the C string pointer that is contained in STR when
-// successful, else NULL is returned. This allows the std::string parameter
-// to own the extracted string, and also allows that string to be returned as
-// a C string pointer that can be used.
+// successful, else NULL is returned. This allows the std::string parameter to
+// own the extracted string, and also allows that string to be returned as a C
+// string pointer that can be used.
 
 const char *CFString::FileSystemRepresentation(CFStringRef cf_str,
                                                std::string &str) {

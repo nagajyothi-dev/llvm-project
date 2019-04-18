@@ -1282,3 +1282,34 @@ struct HasMoreFields {
 };
 
 }
+
+/*!
+ * Function pointer typedef with variadic params.
+ *
+ * @param a
+ * works
+ *
+ * @param ...
+ * now should work too.
+ */
+typedef void (*VariadicFnType)(int a, ...);
+
+/*!
+ * Function pointer type alias with variadic params.
+ *
+ * @param a
+ * works
+ *
+ * @param ...
+ * now should work too.
+ */
+using VariadicFnType2 = void (*)(int a, ...);
+
+// expected-warning@+2 {{empty paragraph passed to '@note' command}}
+/**
+@note
+\f$\texttt{mu}_{00}=\texttt{m}_{00}\f$, \f$\texttt{nu}_{00}=1\f$
+\f$\texttt{nu}_{10}=\texttt{mu}_{10}=\texttt{mu}_{01}=\texttt{mu}_{10}=0\f$
+ */
+class EmptyNoteNoCrash {
+};

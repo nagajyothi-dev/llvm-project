@@ -1,9 +1,8 @@
 //===-- Socket.h ------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,9 +14,9 @@
 
 #include "lldb/lldb-private.h"
 
-#include "lldb/Host/Predicate.h"
 #include "lldb/Host/SocketAddress.h"
 #include "lldb/Utility/IOObject.h"
+#include "lldb/Utility/Predicate.h"
 #include "lldb/Utility/Status.h"
 
 #ifdef _WIN32
@@ -51,6 +50,9 @@ public:
 
   ~Socket() override;
 
+  static llvm::Error Initialize();
+  static void Terminate();
+
   static std::unique_ptr<Socket> Create(const SocketProtocol protocol,
                                         bool child_processes_inherit,
                                         Status &error);
@@ -60,10 +62,8 @@ public:
   virtual Status Accept(Socket *&socket) = 0;
 
   // Initialize a Tcp Socket object in listening mode.  listen and accept are
-  // implemented
-  // separately because the caller may wish to manipulate or query the socket
-  // after it is
-  // initialized, but before entering a blocking accept.
+  // implemented separately because the caller may wish to manipulate or query
+  // the socket after it is initialized, but before entering a blocking accept.
   static Status TcpListen(llvm::StringRef host_and_port,
                           bool child_processes_inherit, Socket *&socket,
                           Predicate<uint16_t> *predicate, int backlog = 5);

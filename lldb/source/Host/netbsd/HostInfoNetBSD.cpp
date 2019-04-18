@@ -1,9 +1,8 @@
 //===-- HostInfoNetBSD.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,30 +20,26 @@
 
 using namespace lldb_private;
 
-bool HostInfoNetBSD::GetOSVersion(uint32_t &major, uint32_t &minor,
-                                  uint32_t &update) {
+llvm::VersionTuple HostInfoNetBSD::GetOSVersion() {
   struct utsname un;
 
   ::memset(&un, 0, sizeof(un));
   if (::uname(&un) < 0)
-    return false;
+    return llvm::VersionTuple();
 
   /* Accept versions like 7.99.21 and 6.1_STABLE */
+  uint32_t major, minor, update;
   int status = ::sscanf(un.release, "%" PRIu32 ".%" PRIu32 ".%" PRIu32, &major,
                         &minor, &update);
   switch (status) {
-  case 0:
-    return false;
   case 1:
-    minor = 0;
-  /* FALLTHROUGH */
+    return llvm::VersionTuple(major);
   case 2:
-    update = 0;
-  /* FALLTHROUGH */
+    return llvm::VersionTuple(major, minor);
   case 3:
-  default:
-    return true;
+    return llvm::VersionTuple(major, minor, update);
   }
+  return llvm::VersionTuple();
 }
 
 bool HostInfoNetBSD::GetOSBuildString(std::string &s) {
@@ -89,7 +84,7 @@ FileSpec HostInfoNetBSD::GetProgramFileSpec() {
 
     len = sizeof(path);
     if (sysctl(name, __arraycount(name), path, &len, NULL, 0) != -1) {
-        g_program_filespec.SetFile(path, false);
+      g_program_filespec.SetFile(path, FileSpec::Style::native);
     }
   }
   return g_program_filespec;

@@ -1,9 +1,8 @@
 //===-- Sparc.td - Describe the Sparc Target Machine -------*- tablegen -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -49,6 +48,9 @@ def FeatureVIS3
 def FeatureLeon
   : SubtargetFeature<"leon", "IsLeon", "true",
                      "Enable LEON extensions">;
+def FeaturePWRPSR
+  : SubtargetFeature<"leonpwrpsr", "HasPWRPSR", "true",
+                     "Enable the PWRPSR instruction">;
 
 def FeatureHardQuad
   : SubtargetFeature<"hard-quad-float", "HasHardQuad", "true",
@@ -98,9 +100,18 @@ def : Proc<"tsc701",          []>;
 def : Proc<"myriad2",         [FeatureLeon, LeonCASA]>;
 def : Proc<"myriad2.1",       [FeatureLeon, LeonCASA]>;
 def : Proc<"myriad2.2",       [FeatureLeon, LeonCASA]>;
+def : Proc<"myriad2.3",       [FeatureLeon, LeonCASA]>;
 def : Proc<"ma2100",          [FeatureLeon, LeonCASA]>;
 def : Proc<"ma2150",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2155",          [FeatureLeon, LeonCASA]>;
 def : Proc<"ma2450",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2455",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2x5x",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2080",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2085",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2480",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2485",          [FeatureLeon, LeonCASA]>;
+def : Proc<"ma2x8x",          [FeatureLeon, LeonCASA]>;
 def : Proc<"v9",              [FeatureV9]>;
 def : Proc<"ultrasparc",      [FeatureV9, FeatureV8Deprecated, FeatureVIS]>;
 def : Proc<"ultrasparc3",     [FeatureV9, FeatureV8Deprecated, FeatureVIS,
@@ -121,7 +132,7 @@ def : Processor<"leon2", LEON2Itineraries,
 // LEON 2 FT (AT697E)
 // TO DO: Place-holder: Processor specific features will be added *very* soon here.
 def : Processor<"at697e", LEON2Itineraries,
-                [FeatureLeon, ReplaceSDIV, InsertNOPLoad]>;
+                [FeatureLeon, InsertNOPLoad]>;
 
 // LEON 2 FT (AT697F)
 // TO DO: Place-holder: Processor specific features will be added *very* soon here.
@@ -150,7 +161,8 @@ def : Processor<"leon4", LEON4Itineraries,
 // LEON 4 FT (GR740) 
 // TO DO: Place-holder: Processor specific features will be added *very* soon here.
 def : Processor<"gr740", LEON4Itineraries, 
-                [FeatureLeon, UMACSMACSupport, LeonCASA]>;
+                [FeatureLeon, UMACSMACSupport, LeonCASA, LeonCycleCounter,
+                 FeaturePWRPSR]>;
 
 //===----------------------------------------------------------------------===//
 // Declare the target which we are implementing
@@ -167,4 +179,5 @@ def Sparc : Target {
   let InstructionSet = SparcInstrInfo;
   let AssemblyParsers  = [SparcAsmParser];
   let AssemblyWriters = [SparcAsmWriter];
+  let AllowRegisterRenaming = 1;
 }

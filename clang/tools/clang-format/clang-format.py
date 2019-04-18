@@ -25,7 +25,7 @@
 #
 # It operates on the current, potentially unsaved buffer and does not create
 # or save any files. To revert a formatting, just undo.
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import difflib
 import json
@@ -62,7 +62,7 @@ def main():
 
   # Determine range to format.
   if vim.eval('exists("l:lines")') == '1':
-    lines = vim.eval('l:lines')
+    lines = ['-lines', vim.eval('l:lines')]
   elif vim.eval('exists("l:formatdiff")') == '1':
     with open(vim.current.buffer.name, 'r') as f:
       ondisk = f.read().splitlines();
@@ -92,7 +92,7 @@ def main():
 
   # Call formatter.
   command = [binary, '-style', style, '-cursor', str(cursor)]
-  if lines != 'all':
+  if lines != ['-lines', 'all']:
     command += lines
   if fallback_style:
     command.extend(['-fallback-style', fallback_style])

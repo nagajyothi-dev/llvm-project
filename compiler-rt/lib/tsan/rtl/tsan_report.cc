@@ -1,9 +1,8 @@
 //===-- tsan_report.cc ----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -39,34 +38,27 @@ ReportLocation *ReportLocation::New(ReportLocationType type) {
 class Decorator: public __sanitizer::SanitizerCommonDecorator {
  public:
   Decorator() : SanitizerCommonDecorator() { }
-  const char *Warning()    { return Red(); }
-  const char *EndWarning() { return Default(); }
   const char *Access()     { return Blue(); }
-  const char *EndAccess()  { return Default(); }
   const char *ThreadDescription()    { return Cyan(); }
-  const char *EndThreadDescription() { return Default(); }
   const char *Location()   { return Green(); }
-  const char *EndLocation() { return Default(); }
   const char *Sleep()   { return Yellow(); }
-  const char *EndSleep() { return Default(); }
   const char *Mutex()   { return Magenta(); }
-  const char *EndMutex() { return Default(); }
 };
 
 ReportDesc::ReportDesc()
     : tag(kExternalTagNone)
-    , stacks(MBlockReportStack)
-    , mops(MBlockReportMop)
-    , locs(MBlockReportLoc)
-    , mutexes(MBlockReportMutex)
-    , threads(MBlockReportThread)
-    , unique_tids(MBlockReportThread)
+    , stacks()
+    , mops()
+    , locs()
+    , mutexes()
+    , threads()
+    , unique_tids()
     , sleep()
     , count() {
 }
 
 ReportMop::ReportMop()
-    : mset(MBlockReportMutex) {
+    : mset() {
 }
 
 ReportDesc::~ReportDesc() {
@@ -84,39 +76,42 @@ const char *thread_name(char *buf, int tid) {
 }
 
 static const char *ReportTypeString(ReportType typ, uptr tag) {
-  if (typ == ReportTypeRace)
-    return "data race";
-  if (typ == ReportTypeVptrRace)
-    return "data race on vptr (ctor/dtor vs virtual call)";
-  if (typ == ReportTypeUseAfterFree)
-    return "heap-use-after-free";
-  if (typ == ReportTypeVptrUseAfterFree)
-    return "heap-use-after-free (virtual call vs free)";
-  if (typ == ReportTypeExternalRace) {
-    const char *str = GetReportHeaderFromTag(tag);
-    return str ? str : "race on external object";
+  switch (typ) {
+    case ReportTypeRace:
+      return "data race";
+    case ReportTypeVptrRace:
+      return "data race on vptr (ctor/dtor vs virtual call)";
+    case ReportTypeUseAfterFree:
+      return "heap-use-after-free";
+    case ReportTypeVptrUseAfterFree:
+      return "heap-use-after-free (virtual call vs free)";
+    case ReportTypeExternalRace: {
+      const char *str = GetReportHeaderFromTag(tag);
+      return str ? str : "race on external object";
+    }
+    case ReportTypeThreadLeak:
+      return "thread leak";
+    case ReportTypeMutexDestroyLocked:
+      return "destroy of a locked mutex";
+    case ReportTypeMutexDoubleLock:
+      return "double lock of a mutex";
+    case ReportTypeMutexInvalidAccess:
+      return "use of an invalid mutex (e.g. uninitialized or destroyed)";
+    case ReportTypeMutexBadUnlock:
+      return "unlock of an unlocked mutex (or by a wrong thread)";
+    case ReportTypeMutexBadReadLock:
+      return "read lock of a write locked mutex";
+    case ReportTypeMutexBadReadUnlock:
+      return "read unlock of a write locked mutex";
+    case ReportTypeSignalUnsafe:
+      return "signal-unsafe call inside of a signal";
+    case ReportTypeErrnoInSignal:
+      return "signal handler spoils errno";
+    case ReportTypeDeadlock:
+      return "lock-order-inversion (potential deadlock)";
+    // No default case so compiler warns us if we miss one
   }
-  if (typ == ReportTypeThreadLeak)
-    return "thread leak";
-  if (typ == ReportTypeMutexDestroyLocked)
-    return "destroy of a locked mutex";
-  if (typ == ReportTypeMutexDoubleLock)
-    return "double lock of a mutex";
-  if (typ == ReportTypeMutexInvalidAccess)
-    return "use of an invalid mutex (e.g. uninitialized or destroyed)";
-  if (typ == ReportTypeMutexBadUnlock)
-    return "unlock of an unlocked mutex (or by a wrong thread)";
-  if (typ == ReportTypeMutexBadReadLock)
-    return "read lock of a write locked mutex";
-  if (typ == ReportTypeMutexBadReadUnlock)
-    return "read unlock of a write locked mutex";
-  if (typ == ReportTypeSignalUnsafe)
-    return "signal-unsafe call inside of a signal";
-  if (typ == ReportTypeErrnoInSignal)
-    return "signal handler spoils errno";
-  if (typ == ReportTypeDeadlock)
-    return "lock-order-inversion (potential deadlock)";
-  return "";
+  UNREACHABLE("missing case");
 }
 
 #if SANITIZER_MAC
@@ -181,7 +176,7 @@ static void PrintMop(const ReportMop *mop, bool first) {
   }
   PrintMutexSet(mop->mset);
   Printf(":\n");
-  Printf("%s", d.EndAccess());
+  Printf("%s", d.Default());
   PrintStack(mop->stack);
 }
 
@@ -222,20 +217,20 @@ static void PrintLocation(const ReportLocation *loc) {
         loc->fd, thread_name(thrbuf, loc->tid));
     print_stack = true;
   }
-  Printf("%s", d.EndLocation());
+  Printf("%s", d.Default());
   if (print_stack)
     PrintStack(loc->stack);
 }
 
 static void PrintMutexShort(const ReportMutex *rm, const char *after) {
   Decorator d;
-  Printf("%sM%zd%s%s", d.Mutex(), rm->id, d.EndMutex(), after);
+  Printf("%sM%zd%s%s", d.Mutex(), rm->id, d.Default(), after);
 }
 
 static void PrintMutexShortWithAddress(const ReportMutex *rm,
                                        const char *after) {
   Decorator d;
-  Printf("%sM%zd (%p)%s%s", d.Mutex(), rm->id, rm->addr, d.EndMutex(), after);
+  Printf("%sM%zd (%p)%s%s", d.Mutex(), rm->id, rm->addr, d.Default(), after);
 }
 
 static void PrintMutex(const ReportMutex *rm) {
@@ -243,11 +238,11 @@ static void PrintMutex(const ReportMutex *rm) {
   if (rm->destroyed) {
     Printf("%s", d.Mutex());
     Printf("  Mutex M%llu is already destroyed.\n\n", rm->id);
-    Printf("%s", d.EndMutex());
+    Printf("%s", d.Default());
   } else {
     Printf("%s", d.Mutex());
     Printf("  Mutex M%llu (%p) created at:\n", rm->id, rm->addr);
-    Printf("%s", d.EndMutex());
+    Printf("%s", d.Default());
     PrintStack(rm->stack);
   }
 }
@@ -262,10 +257,10 @@ static void PrintThread(const ReportThread *rt) {
     Printf(" '%s'", rt->name);
   char thrbuf[kThreadBufSize];
   const char *thread_status = rt->running ? "running" : "finished";
-  if (rt->workerthread) {
+  if (rt->thread_type == ThreadType::Worker) {
     Printf(" (tid=%zu, %s) is a GCD worker thread\n", rt->os_id, thread_status);
     Printf("\n");
-    Printf("%s", d.EndThreadDescription());
+    Printf("%s", d.Default());
     return;
   }
   Printf(" (tid=%zu, %s) created by %s", rt->os_id, thread_status,
@@ -273,7 +268,7 @@ static void PrintThread(const ReportThread *rt) {
   if (rt->stack)
     Printf(" at:");
   Printf("\n");
-  Printf("%s", d.EndThreadDescription());
+  Printf("%s", d.Default());
   PrintStack(rt->stack);
 }
 
@@ -281,7 +276,7 @@ static void PrintSleep(const ReportStack *s) {
   Decorator d;
   Printf("%s", d.Sleep());
   Printf("  As if synchronized via sleep:\n");
-  Printf("%s", d.EndSleep());
+  Printf("%s", d.Default());
   PrintStack(s);
 }
 
@@ -325,7 +320,7 @@ void PrintReport(const ReportDesc *rep) {
   Printf("%s", d.Warning());
   Printf("WARNING: ThreadSanitizer: %s (pid=%d)\n", rep_typ_str,
          (int)internal_getpid());
-  Printf("%s", d.EndWarning());
+  Printf("%s", d.Default());
 
   if (rep->typ == ReportTypeDeadlock) {
     char thrbuf[kThreadBufSize];
@@ -343,7 +338,7 @@ void PrintReport(const ReportDesc *rep) {
       PrintMutexShort(rep->mutexes[i], " in ");
       Printf("%s", d.ThreadDescription());
       Printf("%s:\n", thread_name(thrbuf, rep->unique_tids[i]));
-      Printf("%s", d.EndThreadDescription());
+      Printf("%s", d.Default());
       if (flags()->second_deadlock_stack) {
         PrintStack(rep->stacks[2*i]);
         Printf("  Mutex ");

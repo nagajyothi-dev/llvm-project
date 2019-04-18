@@ -1,9 +1,8 @@
 //===-- UDPSocket.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -69,8 +68,8 @@ Status UDPSocket::Connect(llvm::StringRef name, bool child_processes_inherit,
   if (!DecodeHostAndPort(name, host_str, port_str, port, &error))
     return error;
 
-  // At this point we have setup the receive port, now we need to
-  // setup the UDP send socket
+  // At this point we have setup the receive port, now we need to setup the UDP
+  // send socket
 
   struct addrinfo hints;
   struct addrinfo *service_info_list = nullptr;

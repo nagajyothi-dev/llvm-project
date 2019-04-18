@@ -1,9 +1,8 @@
 //===-- DNBDefs.h -----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,33 +19,25 @@
 #include <sys/syslimits.h>
 #include <unistd.h>
 
-//----------------------------------------------------------------------
 // Define nub_addr_t and the invalid address value from the architecture
-//----------------------------------------------------------------------
 #if defined(__x86_64__) || defined(__ppc64__) || defined(__arm64__) ||         \
     defined(__aarch64__)
 
-//----------------------------------------------------------------------
 // 64 bit address architectures
-//----------------------------------------------------------------------
 typedef uint64_t nub_addr_t;
 #define INVALID_NUB_ADDRESS ((nub_addr_t)~0ull)
 
 #elif defined(__i386__) || defined(__powerpc__) || defined(__ppc__) ||         \
     defined(__arm__)
 
-//----------------------------------------------------------------------
 // 32 bit address architectures
-//----------------------------------------------------------------------
 
 typedef uint32_t nub_addr_t;
 #define INVALID_NUB_ADDRESS ((nub_addr_t)~0ul)
 
 #else
 
-//----------------------------------------------------------------------
 // Default to 64 bit address for unrecognized architectures.
-//----------------------------------------------------------------------
 
 #warning undefined architecture, defaulting to 8 byte addresses
 typedef uint64_t nub_addr_t;
@@ -254,11 +245,9 @@ enum DNBMemoryPermissions {
 #define DNB_THREAD_STOP_INFO_MAX_DESC_LENGTH 256
 #define DNB_THREAD_STOP_INFO_MAX_EXC_DATA 8
 
-//----------------------------------------------------------------------
 // DNBThreadStopInfo
 //
 // Describes the reason a thread stopped.
-//----------------------------------------------------------------------
 struct DNBThreadStopInfo {
   DNBThreadStopType reason;
   char description[DNB_THREAD_STOP_INFO_MAX_DESC_LENGTH];
@@ -290,16 +279,16 @@ struct DNBRegisterValue {
     uint64_t uint64;
     float float32;
     double float64;
-    int8_t v_sint8[32];
-    int16_t v_sint16[16];
-    int32_t v_sint32[8];
-    int64_t v_sint64[4];
-    uint8_t v_uint8[32];
-    uint16_t v_uint16[16];
-    uint32_t v_uint32[8];
-    uint64_t v_uint64[4];
-    float v_float32[8];
-    double v_float64[4];
+    int8_t v_sint8[64];
+    int16_t v_sint16[32];
+    int32_t v_sint32[16];
+    int64_t v_sint64[8];
+    uint8_t v_uint8[64];
+    uint16_t v_uint16[32];
+    uint32_t v_uint32[16];
+    uint64_t v_uint64[8];
+    float v_float32[16];
+    double v_float64[8];
     void *pointer;
     char *c_str;
   } value;
@@ -347,13 +336,13 @@ enum DNBProfileDataScanType {
 
   eProfileHostMemory = (1 << 5),
 
-  eProfileMemory = (1 << 6), // By default, excludes eProfileMemoryDirtyPage.
-  eProfileMemoryDirtyPage =
-      (1 << 7), // Assume eProfileMemory, get Dirty Page size as well.
+  eProfileMemory = (1 << 6),
   eProfileMemoryAnonymous =
       (1 << 8), // Assume eProfileMemory, get Anonymous memory as well.
 
   eProfileEnergy = (1 << 9),
+
+  eProfileMemoryCap = (1 << 15),
 
   eProfileAll = 0xffffffff
 };

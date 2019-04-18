@@ -1,9 +1,8 @@
 //===-- llvm-lto2: test harness for the resolution-based LTO interface ----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,12 +16,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Bitcode/BitcodeReader.h"
-#include "llvm/CodeGen/CommandFlags.h"
+#include "llvm/CodeGen/CommandFlags.inc"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/LTO/Caching.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Threading.h"
 
@@ -101,8 +101,23 @@ static cl::opt<bool> OptRemarksWithHotness(
              "Has effect only if -pass-remarks-output is specified."));
 
 static cl::opt<std::string>
+    OptRemarksPasses("pass-remarks-filter",
+                     cl::desc("Only record optimization remarks from passes "
+                              "whose names match the given regular expression"),
+                     cl::value_desc("regex"));
+
+static cl::opt<std::string>
     SamplePGOFile("lto-sample-profile-file",
                   cl::desc("Specify a SamplePGO profile file"));
+
+static cl::opt<std::string>
+    CSPGOFile("lto-cspgo-profile-file",
+              cl::desc("Specify a context sensitive PGO profile file"));
+
+static cl::opt<bool>
+    RunCSIRInstr("lto-cspgo-gen",
+                 cl::desc("Run PGO context sensitive IR instrumentation"),
+                 cl::init(false), cl::Hidden);
 
 static cl::opt<bool>
     UseNewPM("use-new-pm",
@@ -112,6 +127,9 @@ static cl::opt<bool>
 static cl::opt<bool>
     DebugPassManager("debug-pass-manager", cl::init(false), cl::Hidden,
                      cl::desc("Print pass management debugging information"));
+
+static cl::opt<std::string>
+    StatsFile("stats-file", cl::desc("Filename to write statistics to"));
 
 static void check(Error E, std::string Msg) {
   if (!E)
@@ -189,7 +207,8 @@ static int run(int argc, char **argv) {
     DiagnosticPrinterRawOStream DP(errs());
     DI.print(DP);
     errs() << '\n';
-    exit(1);
+    if (DI.getSeverity() == DS_Error)
+      exit(1);
   };
 
   Conf.CPU = MCPU;
@@ -207,9 +226,12 @@ static int run(int argc, char **argv) {
 
   // Optimization remarks.
   Conf.RemarksFilename = OptRemarksOutput;
+  Conf.RemarksPasses = OptRemarksPasses;
   Conf.RemarksWithHotness = OptRemarksWithHotness;
 
   Conf.SampleProfile = SamplePGOFile;
+  Conf.CSIRProfile = CSPGOFile;
+  Conf.RunCSIRInstr = RunCSIRInstr;
 
   // Run a custom pipeline, if asked for.
   Conf.OptPipeline = OptPipeline;
@@ -240,10 +262,15 @@ static int run(int argc, char **argv) {
 
   Conf.OverrideTriple = OverrideTriple;
   Conf.DefaultTriple = DefaultTriple;
+  Conf.StatsFile = StatsFile;
 
   ThinBackend Backend;
   if (ThinLTODistributedIndexes)
-    Backend = createWriteIndexesThinBackend("", "", true, "");
+    Backend = createWriteIndexesThinBackend(/* OldPrefix */ "",
+                                            /* NewPrefix */ "",
+                                            /* ShouldEmitImportsFiles */ true,
+                                            /* LinkedObjectsFile */ nullptr,
+                                            /* OnWrite */ {});
   else
     Backend = createInProcessThinBackend(Threads);
   LTO Lto(std::move(Conf), std::move(Backend));
@@ -379,6 +406,7 @@ static int dumpSymtab(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+  InitLLVM X(argc, argv);
   InitializeAllTargets();
   InitializeAllTargetMCs();
   InitializeAllAsmPrinters();

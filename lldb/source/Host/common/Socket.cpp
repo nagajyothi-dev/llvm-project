@@ -1,9 +1,8 @@
 //===-- Socket.cpp ----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +18,9 @@
 #include "lldb/Utility/RegularExpression.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Errno.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/WindowsError.h"
 
 #ifndef LLDB_DISABLE_POSIX
 #include "lldb/Host/posix/DomainSocket.h"
@@ -78,6 +80,31 @@ Socket::Socket(SocketProtocol protocol, bool should_close,
 
 Socket::~Socket() { Close(); }
 
+llvm::Error Socket::Initialize() {
+#if defined(_WIN32)
+  auto wVersion = WINSOCK_VERSION;
+  WSADATA wsaData;
+  int err = ::WSAStartup(wVersion, &wsaData);
+  if (err == 0) {
+    if (wsaData.wVersion < wVersion) {
+      WSACleanup();
+      return llvm::make_error<llvm::StringError>(
+          "WSASock version is not expected.", llvm::inconvertibleErrorCode());
+    }
+  } else {
+    return llvm::errorCodeToError(llvm::mapWindowsError(::WSAGetLastError()));
+  }
+#endif
+
+  return llvm::Error::success();
+}
+
+void Socket::Terminate() {
+#if defined(_WIN32)
+  ::WSACleanup();
+#endif
+}
+
 std::unique_ptr<Socket> Socket::Create(const SocketProtocol protocol,
                                        bool child_processes_inherit,
                                        Status &error) {
@@ -124,7 +151,7 @@ Status Socket::TcpConnect(llvm::StringRef host_and_port,
   Log *log(lldb_private::GetLogIfAnyCategoriesSet(LIBLLDB_LOG_COMMUNICATION));
   if (log)
     log->Printf("Socket::%s (host/port = %s)", __FUNCTION__,
-                host_and_port.data());
+                host_and_port.str().c_str());
 
   Status error;
   std::unique_ptr<Socket> connect_socket(
@@ -144,7 +171,7 @@ Status Socket::TcpListen(llvm::StringRef host_and_port,
                          Predicate<uint16_t> *predicate, int backlog) {
   Log *log(lldb_private::GetLogIfAnyCategoriesSet(LIBLLDB_LOG_CONNECTION));
   if (log)
-    log->Printf("Socket::%s (%s)", __FUNCTION__, host_and_port.data());
+    log->Printf("Socket::%s (%s)", __FUNCTION__, host_and_port.str().c_str());
 
   Status error;
   std::string host_str;
@@ -160,18 +187,17 @@ Status Socket::TcpListen(llvm::StringRef host_and_port,
 
   error = listen_socket->Listen(host_and_port, backlog);
   if (error.Success()) {
-    // We were asked to listen on port zero which means we
-    // must now read the actual port that was given to us
-    // as port zero is a special code for "find an open port
-    // for me".
+    // We were asked to listen on port zero which means we must now read the
+    // actual port that was given to us as port zero is a special code for
+    // "find an open port for me".
     if (port == 0)
       port = listen_socket->GetLocalPortNumber();
 
-    // Set the port predicate since when doing a listen://<host>:<port>
-    // it often needs to accept the incoming connection which is a blocking
-    // system call. Allowing access to the bound port using a predicate allows
-    // us to wait for the port predicate to be set to a non-zero value from
-    // another thread in an efficient manor.
+    // Set the port predicate since when doing a listen://<host>:<port> it
+    // often needs to accept the incoming connection which is a blocking system
+    // call. Allowing access to the bound port using a predicate allows us to
+    // wait for the port predicate to be set to a non-zero value from another
+    // thread in an efficient manor.
     if (predicate)
       predicate->SetValue(port, eBroadcastAlways);
     socket = listen_socket.release();
@@ -185,7 +211,7 @@ Status Socket::UdpConnect(llvm::StringRef host_and_port,
   Log *log(lldb_private::GetLogIfAnyCategoriesSet(LIBLLDB_LOG_CONNECTION));
   if (log)
     log->Printf("Socket::%s (host/port = %s)", __FUNCTION__,
-                host_and_port.data());
+                host_and_port.str().c_str());
 
   return UDPSocket::Connect(host_and_port, child_processes_inherit, socket);
 }
@@ -261,8 +287,8 @@ bool Socket::DecodeHostAndPort(llvm::StringRef host_and_port,
       llvm::StringRef("([^:]+|\\[[0-9a-fA-F:]+.*\\]):([0-9]+)"));
   RegularExpression::Match regex_match(2);
   if (g_regex.Execute(host_and_port, &regex_match)) {
-    if (regex_match.GetMatchAtIndex(host_and_port.data(), 1, host_str) &&
-        regex_match.GetMatchAtIndex(host_and_port.data(), 2, port_str)) {
+    if (regex_match.GetMatchAtIndex(host_and_port, 1, host_str) &&
+        regex_match.GetMatchAtIndex(host_and_port, 2, port_str)) {
       // IPv6 addresses are wrapped in [] when specified with ports
       if (host_str.front() == '[' && host_str.back() == ']')
         host_str = host_str.substr(1, host_str.size() - 2);
@@ -276,19 +302,17 @@ bool Socket::DecodeHostAndPort(llvm::StringRef host_and_port,
       // port is too large
       if (error_ptr)
         error_ptr->SetErrorStringWithFormat(
-            "invalid host:port specification: '%s'", host_and_port.data());
+            "invalid host:port specification: '%s'",
+            host_and_port.str().c_str());
       return false;
     }
   }
 
   // If this was unsuccessful, then check if it's simply a signed 32-bit
-  // integer, representing
-  // a port with an empty host.
+  // integer, representing a port with an empty host.
   host_str.clear();
   port_str.clear();
-  bool ok = false;
-  port = StringConvert::ToUInt32(host_and_port.data(), UINT32_MAX, 10, &ok);
-  if (ok && port < UINT16_MAX) {
+  if (to_integer(host_and_port, port, 10) && port < UINT16_MAX) {
     port_str = host_and_port;
     if (error_ptr)
       error_ptr->Clear();
@@ -297,7 +321,7 @@ bool Socket::DecodeHostAndPort(llvm::StringRef host_and_port,
 
   if (error_ptr)
     error_ptr->SetErrorStringWithFormat("invalid host:port specification: '%s'",
-                                        host_and_port.data());
+                                        host_and_port.str().c_str());
   return false;
 }
 
@@ -436,8 +460,8 @@ NativeSocket Socket::AcceptSocket(NativeSocket sockfd, struct sockaddr *addr,
   error.Clear();
 #if defined(ANDROID_USE_ACCEPT_WORKAROUND)
   // Hack:
-  // This enables static linking lldb-server to an API 21 libc, but still having
-  // it run on older devices. It is necessary because API 21 libc's
+  // This enables static linking lldb-server to an API 21 libc, but still
+  // having it run on older devices. It is necessary because API 21 libc's
   // implementation of accept() uses the accept4 syscall(), which is not
   // available in older kernels. Using an older libc would fix this issue, but
   // introduce other ones, as the old libraries were quite buggy.
@@ -450,14 +474,16 @@ NativeSocket Socket::AcceptSocket(NativeSocket sockfd, struct sockaddr *addr,
     close(fd);
   }
   return fd;
-#elif defined(SOCK_CLOEXEC)
+#elif defined(SOCK_CLOEXEC) && defined(HAVE_ACCEPT4)
   int flags = 0;
   if (!child_processes_inherit) {
     flags |= SOCK_CLOEXEC;
   }
-  NativeSocket fd = ::accept4(sockfd, addr, addrlen, flags);
+  NativeSocket fd = llvm::sys::RetryAfterSignal(-1, ::accept4,
+      sockfd, addr, addrlen, flags);
 #else
-  NativeSocket fd = ::accept(sockfd, addr, addrlen);
+  NativeSocket fd = llvm::sys::RetryAfterSignal(-1, ::accept,
+      sockfd, addr, addrlen);
 #endif
   if (fd == kInvalidSocketValue)
     SetLastError(error);

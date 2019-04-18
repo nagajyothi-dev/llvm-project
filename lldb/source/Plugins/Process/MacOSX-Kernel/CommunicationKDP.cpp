@@ -1,41 +1,34 @@
 //===-- CommunicationKDP.cpp ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "CommunicationKDP.h"
 
-// C Includes
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
 
-// C++ Includes
 
-// Other libraries and framework includes
 #include "lldb/Core/DumpDataExtractor.h"
-#include "lldb/Core/State.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/State.h"
 #include "lldb/Utility/UUID.h"
 
-// Project includes
 #include "ProcessKDPLog.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // CommunicationKDP constructor
-//----------------------------------------------------------------------
 CommunicationKDP::CommunicationKDP(const char *comm_name)
     : Communication(comm_name), m_addr_byte_size(4),
       m_byte_order(eByteOrderLittle), m_packet_timeout(5), m_sequence_mutex(),
@@ -44,9 +37,7 @@ CommunicationKDP::CommunicationKDP(const char *comm_name)
       m_kdp_version_feature(0u), m_kdp_hostinfo_cpu_mask(0u),
       m_kdp_hostinfo_cpu_type(0u), m_kdp_hostinfo_cpu_subtype(0u) {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 CommunicationKDP::~CommunicationKDP() {
   if (IsConnected()) {
     Disconnect();
@@ -58,15 +49,6 @@ bool CommunicationKDP::SendRequestPacket(
   std::lock_guard<std::recursive_mutex> guard(m_sequence_mutex);
   return SendRequestPacketNoLock(request_packet);
 }
-
-#if 0
-typedef struct {
-	uint8_t     request;	// Either: CommandType | ePacketTypeRequest, or CommandType | ePacketTypeReply
-	uint8_t     sequence;
-	uint16_t    length;		// Length of entire packet including this header
-	uint32_t	key;		// Session key
-} kdp_hdr_t;
-#endif
 
 void CommunicationKDP::MakeRequestPacketHeader(CommandType request_type,
                                                PacketStreamType &request_packet,
@@ -98,7 +80,7 @@ bool CommunicationKDP::SendRequestAndGetReply(
 #ifdef LLDB_CONFIGURATION_DEBUG
   // NOTE: this only works for packets that are in native endian byte order
   assert(request_packet.GetSize() ==
-         *((uint16_t *)(request_packet.GetData() + 2)));
+         *((const uint16_t *)(request_packet.GetData() + 2)));
 #endif
   lldb::offset_t offset = 1;
   const uint32_t num_retries = 3;
@@ -127,16 +109,14 @@ bool CommunicationKDP::SendRequestAndGetReply(
             }
           } else if (reply_sequence_id > request_sequence_id) {
             // Sequence ID was greater than the sequence ID of the packet we
-            // sent, something
-            // is really wrong...
+            // sent, something is really wrong...
             reply_packet.Clear();
             return false;
           } else {
-            // The reply sequence ID was less than our current packet's sequence
-            // ID
-            // so we should keep trying to get a response because this was a
-            // response
-            // for a previous packet that we must have retried.
+            // The reply sequence ID was less than our current packet's
+            // sequence ID so we should keep trying to get a response because
+            // this was a response for a previous packet that we must have
+            // retried.
           }
         } else {
           // Break and retry sending the packet as we didn't get a response due
@@ -186,7 +166,7 @@ bool CommunicationKDP::GetSequenceMutex(
 
 bool CommunicationKDP::WaitForNotRunningPrivate(
     const std::chrono::microseconds &timeout) {
-  return m_is_running.WaitForValueEqualTo(false, timeout, NULL);
+  return m_is_running.WaitForValueEqualTo(false, timeout);
 }
 
 size_t
@@ -324,9 +304,9 @@ bool CommunicationKDP::CheckForPacket(const uint8_t *src, size_t src_len,
       offset = 2;
       const uint16_t length = packet.GetU16(&offset);
       if (length <= bytes_available) {
-        // We have an entire packet ready, we need to copy the data
-        // bytes into a buffer that will be owned by the packet and
-        // erase the bytes from our communcation buffer "m_bytes"
+        // We have an entire packet ready, we need to copy the data bytes into
+        // a buffer that will be owned by the packet and erase the bytes from
+        // our communcation buffer "m_bytes"
         packet.SetData(DataBufferSP(new DataBufferHeap(&m_bytes[0], length)));
         m_bytes.erase(0, length);
 
@@ -341,8 +321,8 @@ bool CommunicationKDP::CheckForPacket(const uint8_t *src, size_t src_len,
     } break;
 
     default:
-      // Unrecognized reply command byte, erase this byte and try to get back on
-      // track
+      // Unrecognized reply command byte, erase this byte and try to get back
+      // on track
       if (log)
         log->Printf("CommunicationKDP::%s: tossing junk byte: 0x%2.2x",
                     __FUNCTION__, (uint8_t)m_bytes[0]);
@@ -436,34 +416,6 @@ bool CommunicationKDP::SendRequestVersion() {
   return false;
 }
 
-#if 0 // Disable KDP_IMAGEPATH for now, it seems to hang the KDP connection...
-const char *
-CommunicationKDP::GetImagePath ()
-{
-    if (m_image_path.empty())
-        SendRequestImagePath();
-    return m_image_path.c_str();
-}
-
-bool
-CommunicationKDP::SendRequestImagePath ()
-{
-    PacketStreamType request_packet (Stream::eBinary, m_addr_byte_size, m_byte_order);
-    const CommandType command = KDP_IMAGEPATH;
-    const uint32_t command_length = 8;
-    MakeRequestPacketHeader (command, request_packet, command_length);
-    DataExtractor reply_packet;
-    if (SendRequestAndGetReply (command, request_packet, reply_packet))
-    {
-        const char *path = reply_packet.PeekCStr(8);
-        if (path && path[0])
-            m_kernel_version.assign (path);
-        return true;
-    }
-    return false;
-}
-#endif
-
 uint32_t CommunicationKDP::GetCPUMask() {
   if (!HostInfoIsValid())
     SendRequestHostInfo();
@@ -495,7 +447,7 @@ lldb_private::UUID CommunicationKDP::GetUUID() {
   if (uuid_str.size() < 32)
     return uuid;
 
-  if (uuid.SetFromCString(uuid_str.c_str()) == 0) {
+  if (uuid.SetFromStringRef(uuid_str) == 0) {
     UUID invalid_uuid;
     return invalid_uuid;
   }
@@ -506,19 +458,13 @@ lldb_private::UUID CommunicationKDP::GetUUID() {
 bool CommunicationKDP::RemoteIsEFI() {
   if (GetKernelVersion() == NULL)
     return false;
-  if (strncmp(m_kernel_version.c_str(), "EFI", 3) == 0)
-    return true;
-  else
-    return false;
+  return strncmp(m_kernel_version.c_str(), "EFI", 3) == 0;
 }
 
 bool CommunicationKDP::RemoteIsDarwinKernel() {
   if (GetKernelVersion() == NULL)
     return false;
-  if (m_kernel_version.find("Darwin Kernel") != std::string::npos)
-    return true;
-  else
-    return false;
+  return m_kernel_version.find("Darwin Kernel") != std::string::npos;
 }
 
 lldb::addr_t CommunicationKDP::GetLoadAddress() {
@@ -1245,8 +1191,8 @@ uint32_t CommunicationKDP::SendRequestReadRegisters(uint32_t cpu,
       if (src) {
         ::memcpy(dst, src, bytes_to_copy);
         error.Clear();
-        // Return the number of bytes we could have returned regardless if
-        // we copied them or not, just so we know when things don't match up
+        // Return the number of bytes we could have returned regardless if we
+        // copied them or not, just so we know when things don't match up
         return src_len;
       }
     }
@@ -1301,9 +1247,7 @@ bool CommunicationKDP::SendRequestResume() {
   request_packet.PutHex32(GetCPUMask());
 
   DataExtractor reply_packet;
-  if (SendRequestAndGetReply(command, request_packet, reply_packet))
-    return true;
-  return false;
+  return SendRequestAndGetReply(command, request_packet, reply_packet);
 }
 
 bool CommunicationKDP::SendRequestBreakpoint(bool set, addr_t addr) {
@@ -1336,7 +1280,5 @@ bool CommunicationKDP::SendRequestSuspend() {
   const uint32_t command_length = 8;
   MakeRequestPacketHeader(command, request_packet, command_length);
   DataExtractor reply_packet;
-  if (SendRequestAndGetReply(command, request_packet, reply_packet))
-    return true;
-  return false;
+  return SendRequestAndGetReply(command, request_packet, reply_packet);
 }

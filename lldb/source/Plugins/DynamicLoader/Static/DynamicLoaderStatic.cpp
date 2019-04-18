@@ -1,9 +1,8 @@
 //===-- DynamicLoaderStatic.cpp ---------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,11 +17,9 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
-// Create an instance of this class. This function is filled into
-// the plugin info class that gets handed out by the plugin factory and
-// allows the lldb to instantiate an instance of this class.
-//----------------------------------------------------------------------
+// Create an instance of this class. This function is filled into the plugin
+// info class that gets handed out by the plugin factory and allows the lldb to
+// instantiate an instance of this class.
 DynamicLoader *DynamicLoaderStatic::CreateInstance(Process *process,
                                                    bool force) {
   bool create = force;
@@ -49,31 +46,23 @@ DynamicLoader *DynamicLoaderStatic::CreateInstance(Process *process,
   return NULL;
 }
 
-//----------------------------------------------------------------------
 // Constructor
-//----------------------------------------------------------------------
 DynamicLoaderStatic::DynamicLoaderStatic(Process *process)
     : DynamicLoader(process) {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 DynamicLoaderStatic::~DynamicLoaderStatic() {}
 
-//------------------------------------------------------------------
 /// Called after attaching a process.
 ///
 /// Allow DynamicLoader plug-ins to execute some code after
 /// attaching to a process.
-//------------------------------------------------------------------
 void DynamicLoaderStatic::DidAttach() { LoadAllImagesAtFileAddresses(); }
 
-//------------------------------------------------------------------
 /// Called after attaching a process.
 ///
 /// Allow DynamicLoader plug-ins to execute some code after
 /// attaching to a process.
-//------------------------------------------------------------------
 void DynamicLoaderStatic::DidLaunch() { LoadAllImagesAtFileAddresses(); }
 
 void DynamicLoaderStatic::LoadAllImagesAtFileAddresses() {
@@ -97,17 +86,17 @@ void DynamicLoaderStatic::LoadAllImagesAtFileAddresses() {
         if (section_list) {
           // All sections listed in the dyld image info structure will all
           // either be fixed up already, or they will all be off by a single
-          // slide amount that is determined by finding the first segment
-          // that is at file offset zero which also has bytes (a file size
-          // that is greater than zero) in the object file.
+          // slide amount that is determined by finding the first segment that
+          // is at file offset zero which also has bytes (a file size that is
+          // greater than zero) in the object file.
 
           // Determine the slide amount (if any)
           const size_t num_sections = section_list->GetSize();
           size_t sect_idx = 0;
           for (sect_idx = 0; sect_idx < num_sections; ++sect_idx) {
-            // Iterate through the object file sections to find the
-            // first section that starts of file offset zero and that
-            // has bytes in the file...
+            // Iterate through the object file sections to find the first
+            // section that starts of file offset zero and that has bytes in
+            // the file...
             SectionSP section_sp(section_list->GetSectionAtIndex(sect_idx));
             if (section_sp) {
               if (m_process->GetTarget().SetSectionLoadAddress(
@@ -157,9 +146,7 @@ const char *DynamicLoaderStatic::GetPluginDescriptionStatic() {
          "addresses contained in each image.";
 }
 
-//------------------------------------------------------------------
 // PluginInterface protocol
-//------------------------------------------------------------------
 lldb_private::ConstString DynamicLoaderStatic::GetPluginName() {
   return GetPluginNameStatic();
 }

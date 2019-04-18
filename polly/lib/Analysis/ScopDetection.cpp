@@ -1,8 +1,8 @@
+//===- ScopDetection.cpp - Detect Scops -----------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -44,28 +44,40 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/ScopDetection.h"
-#include "polly/CodeGen/CodeGeneration.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopDetectionDiagnostic.h"
 #include "polly/Support/SCEVValidator.h"
+#include "polly/Support/ScopHelper.h"
 #include "polly/Support/ScopLocation.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/RegionIterator.h"
+#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
-#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Pass.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/Regex.h"
-#include <set>
-#include <stack>
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
 
 using namespace llvm;
 using namespace polly;
@@ -83,6 +95,7 @@ static cl::opt<int> ProfitabilityMinPerLoopInstructions(
     cl::Hidden, cl::ValueRequired, cl::init(100000000), cl::cat(PollyCategory));
 
 bool polly::PollyProcessUnprofitable;
+
 static cl::opt<bool, true> XPollyProcessUnprofitable(
     "polly-process-unprofitable",
     cl::desc(
@@ -107,6 +120,7 @@ static cl::list<std::string> IgnoredFunctions(
     cl::ZeroOrMore, cl::CommaSeparated, cl::cat(PollyCategory));
 
 bool polly::PollyAllowFullFunction;
+
 static cl::opt<bool, true>
     XAllowFullFunction("polly-detect-full-functions",
                        cl::desc("Allow the detection of full functions"),
@@ -127,6 +141,7 @@ static cl::opt<bool>
                    cl::cat(PollyCategory));
 
 bool polly::PollyAllowUnsignedOperations;
+
 static cl::opt<bool, true> XPollyAllowUnsignedOperations(
     "polly-allow-unsigned-operations",
     cl::desc("Allow unsigned operations such as comparisons or zero-extends."),
@@ -134,6 +149,7 @@ static cl::opt<bool, true> XPollyAllowUnsignedOperations(
     cl::init(true), cl::cat(PollyCategory));
 
 bool polly::PollyUseRuntimeAliasChecks;
+
 static cl::opt<bool, true> XPollyUseRuntimeAliasChecks(
     "polly-use-runtime-alias-checks",
     cl::desc("Use runtime alias checks to resolve possible aliasing."),
@@ -197,6 +213,7 @@ static cl::opt<bool>
                 cl::cat(PollyCategory));
 
 bool polly::PollyInvariantLoadHoisting;
+
 static cl::opt<bool, true> XPollyInvariantLoadHoisting(
     "polly-invariant-load-hoisting", cl::desc("Hoist invariant loads."),
     cl::location(PollyInvariantLoadHoisting), cl::Hidden, cl::ZeroOrMore,
@@ -214,6 +231,7 @@ StringRef polly::PollySkipFnAttr = "polly.skip.fn";
 
 STATISTIC(NumScopRegions, "Number of scops");
 STATISTIC(NumLoopsInScop, "Number of loops in scops");
+STATISTIC(NumScopsDepthZero, "Number of scops with maximal loop depth 0");
 STATISTIC(NumScopsDepthOne, "Number of scops with maximal loop depth 1");
 STATISTIC(NumScopsDepthTwo, "Number of scops with maximal loop depth 2");
 STATISTIC(NumScopsDepthThree, "Number of scops with maximal loop depth 3");
@@ -225,6 +243,8 @@ STATISTIC(NumProfScopRegions, "Number of scops (profitable scops only)");
 STATISTIC(NumLoopsInProfScop,
           "Number of loops in scops (profitable scops only)");
 STATISTIC(NumLoopsOverall, "Number of total loops");
+STATISTIC(NumProfScopsDepthZero,
+          "Number of scops with maximal loop depth 0 (profitable scops only)");
 STATISTIC(NumProfScopsDepthOne,
           "Number of scops with maximal loop depth 1 (profitable scops only)");
 STATISTIC(NumProfScopsDepthTwo,
@@ -245,6 +265,8 @@ STATISTIC(MaxNumLoopsInProfScop,
 static void updateLoopCountStatistic(ScopDetection::LoopStats Stats,
                                      bool OnlyProfitable);
 
+namespace {
+
 class DiagnosticScopFound : public DiagnosticInfo {
 private:
   static int PluginDiagnosticKind;
@@ -259,12 +281,13 @@ public:
       : DiagnosticInfo(PluginDiagnosticKind, DS_Note), F(F), FileName(FileName),
         EntryLine(EntryLine), ExitLine(ExitLine) {}
 
-  virtual void print(DiagnosticPrinter &DP) const;
+  void print(DiagnosticPrinter &DP) const override;
 
   static bool classof(const DiagnosticInfo *DI) {
     return DI->getKind() == PluginDiagnosticKind;
   }
 };
+} // namespace
 
 int DiagnosticScopFound::PluginDiagnosticKind =
     getNextAvailablePluginDiagnosticKind();
@@ -307,13 +330,12 @@ ScopDetection::ScopDetection(Function &F, const DominatorTree &DT,
                              ScalarEvolution &SE, LoopInfo &LI, RegionInfo &RI,
                              AliasAnalysis &AA, OptimizationRemarkEmitter &ORE)
     : DT(DT), SE(SE), LI(LI), RI(RI), AA(AA), ORE(ORE) {
-
   if (!PollyProcessUnprofitable && LI.empty())
     return;
 
   Region *TopRegion = RI.getTopLevelRegion();
 
-  if (OnlyFunctions.size() > 0 &&
+  if (!OnlyFunctions.empty() &&
       !doesStringMatchAnyRegex(F.getName(), OnlyFunctions))
     return;
 
@@ -361,7 +383,6 @@ ScopDetection::ScopDetection(Function &F, const DominatorTree &DT,
 template <class RR, typename... Args>
 inline bool ScopDetection::invalid(DetectionContext &Context, bool Assert,
                                    Args &&... Arguments) const {
-
   if (!Context.Verifying) {
     RejectLog &Log = Context.Log;
     std::shared_ptr<RR> RejectReason = std::make_shared<RR>(Arguments...);
@@ -369,8 +390,8 @@ inline bool ScopDetection::invalid(DetectionContext &Context, bool Assert,
     if (PollyTrackFailures)
       Log.report(RejectReason);
 
-    DEBUG(dbgs() << RejectReason->getMessage());
-    DEBUG(dbgs() << "\n");
+    LLVM_DEBUG(dbgs() << RejectReason->getMessage());
+    LLVM_DEBUG(dbgs() << "\n");
   } else {
     assert(!Assert && "Verification of detected scop failed");
   }
@@ -410,7 +431,6 @@ std::string ScopDetection::regionIsInvalidBecause(const Region *R) const {
 
 bool ScopDetection::addOverApproximatedRegion(Region *AR,
                                               DetectionContext &Context) const {
-
   // If we already know about Ar we can exit.
   if (!Context.NonAffineSubRegionSet.insert(AR))
     return true;
@@ -443,12 +463,10 @@ bool ScopDetection::onlyValidRequiredInvariantLoads(
     // very function (and its children).
     if (Context.RequiredILS.count(Load))
       continue;
-
-    if (!isHoistableLoad(Load, CurRegion, LI, SE, DT))
+    if (!isHoistableLoad(Load, CurRegion, LI, SE, DT, Context.RequiredILS))
       return false;
 
     for (auto NonAffineRegion : Context.NonAffineSubRegionSet) {
-
       if (isSafeToLoadUnconditionally(Load->getPointerOperand(),
                                       Load->getAlignment(), DL))
         continue;
@@ -500,7 +518,6 @@ bool ScopDetection::involvesMultiplePtrs(const SCEV *S0, const SCEV *S1,
 
 bool ScopDetection::isAffine(const SCEV *S, Loop *Scope,
                              DetectionContext &Context) const {
-
   InvariantLoadsSetTy AccessILS;
   if (!isAffineExpr(&Context.CurRegion, Scope, S, SE, &AccessILS))
     return false;
@@ -538,7 +555,6 @@ bool ScopDetection::isValidSwitch(BasicBlock &BB, SwitchInst *SI,
 bool ScopDetection::isValidBranch(BasicBlock &BB, BranchInst *BI,
                                   Value *Condition, bool IsLoopBranch,
                                   DetectionContext &Context) const {
-
   // Constant integer conditions are always affine.
   if (isa<ConstantInt>(Condition))
     return true;
@@ -552,6 +568,19 @@ bool ScopDetection::isValidBranch(BasicBlock &BB, BranchInst *BI,
              isValidBranch(BB, BI, Op1, IsLoopBranch, Context);
     }
   }
+
+  if (auto PHI = dyn_cast<PHINode>(Condition)) {
+    auto *Unique = dyn_cast_or_null<ConstantInt>(
+        getUniqueNonErrorValue(PHI, &Context.CurRegion, LI, DT));
+    if (Unique && (Unique->isZero() || Unique->isOne()))
+      return true;
+  }
+
+  if (auto Load = dyn_cast<LoadInst>(Condition))
+    if (!IsLoopBranch && Context.CurRegion.contains(Load)) {
+      Context.RequiredILS.insert(Load);
+      return true;
+    }
 
   // Non constant conditions of branches need to be ICmpInst.
   if (!isa<ICmpInst>(Condition)) {
@@ -571,6 +600,9 @@ bool ScopDetection::isValidBranch(BasicBlock &BB, BranchInst *BI,
   Loop *L = LI.getLoopFor(&BB);
   const SCEV *LHS = SE.getSCEVAtScope(ICmp->getOperand(0), L);
   const SCEV *RHS = SE.getSCEVAtScope(ICmp->getOperand(1), L);
+
+  LHS = tryForwardThroughPHI(LHS, Context.CurRegion, SE, LI, DT);
+  RHS = tryForwardThroughPHI(RHS, Context.CurRegion, SE, LI, DT);
 
   // If unsigned operations are not allowed try to approximate the region.
   if (ICmp->isUnsigned() && !PollyAllowUnsignedOperations)
@@ -605,7 +637,7 @@ bool ScopDetection::isValidCFG(BasicBlock &BB, bool IsLoopBranch,
                                DetectionContext &Context) const {
   Region &CurRegion = Context.CurRegion;
 
-  TerminatorInst *TI = BB.getTerminator();
+  Instruction *TI = BB.getTerminator();
 
   if (AllowUnreachable && isa<UnreachableInst>(TI))
     return true;
@@ -650,6 +682,12 @@ bool ScopDetection::isValidCallInst(CallInst &CI,
   if (CalledFunction == nullptr)
     return false;
 
+  if (isDebugCall(&CI)) {
+    LLVM_DEBUG(dbgs() << "Allow call to debug function: "
+                      << CalledFunction->getName() << '\n');
+    return true;
+  }
+
   if (AllowModrefCall) {
     switch (AA.getModRefBehavior(CalledFunction)) {
     case FMRB_UnknownModRefBehavior:
@@ -659,7 +697,9 @@ bool ScopDetection::isValidCallInst(CallInst &CI,
       // Implicitly disable delinearization since we have an unknown
       // accesses with an unknown access function.
       Context.HasUnknownAccess = true;
-      Context.AST.add(&CI);
+      // Explicitly use addUnknown so we don't put a loop-variant
+      // pointer into the alias set.
+      Context.AST.addUnknown(&CI);
       return true;
     case FMRB_OnlyReadsArgumentPointees:
     case FMRB_OnlyAccessesArgumentPointees:
@@ -682,7 +722,9 @@ bool ScopDetection::isValidCallInst(CallInst &CI,
         Context.HasUnknownAccess = true;
       }
 
-      Context.AST.add(&CI);
+      // Explicitly use addUnknown so we don't put a loop-variant
+      // pointer into the alias set.
+      Context.AST.addUnknown(&CI);
       return true;
     case FMRB_DoesNotReadMemory:
     case FMRB_OnlyAccessesInaccessibleMem:
@@ -708,8 +750,8 @@ bool ScopDetection::isValidIntrinsicInst(IntrinsicInst &II,
 
   switch (II.getIntrinsicID()) {
   // Memory intrinsics that can be represented are supported.
-  case llvm::Intrinsic::memmove:
-  case llvm::Intrinsic::memcpy:
+  case Intrinsic::memmove:
+  case Intrinsic::memcpy:
     AF = SE.getSCEVAtScope(cast<MemTransferInst>(II).getSource(), L);
     if (!AF->isZero()) {
       BP = dyn_cast<SCEVUnknown>(SE.getPointerBase(AF));
@@ -717,8 +759,8 @@ bool ScopDetection::isValidIntrinsicInst(IntrinsicInst &II,
       if (!isValidAccess(&II, AF, BP, Context))
         return false;
     }
-  // Fall through
-  case llvm::Intrinsic::memset:
+    LLVM_FALLTHROUGH;
+  case Intrinsic::memset:
     AF = SE.getSCEVAtScope(cast<MemIntrinsic>(II).getDest(), L);
     if (!AF->isZero()) {
       BP = dyn_cast<SCEVUnknown>(SE.getPointerBase(AF));
@@ -764,6 +806,8 @@ bool ScopDetection::isInvariant(Value &Val, const Region &Reg,
   return false;
 }
 
+namespace {
+
 /// Remove smax of smax(0, size) expressions from a SCEV expression and
 /// register the '...' components.
 ///
@@ -778,14 +822,14 @@ bool ScopDetection::isInvariant(Value &Val, const Region &Reg,
 /// that 0 <= size, which means smax(0, size) == size.
 class SCEVRemoveMax : public SCEVRewriteVisitor<SCEVRemoveMax> {
 public:
+  SCEVRemoveMax(ScalarEvolution &SE, std::vector<const SCEV *> *Terms)
+      : SCEVRewriteVisitor(SE), Terms(Terms) {}
+
   static const SCEV *rewrite(const SCEV *Scev, ScalarEvolution &SE,
                              std::vector<const SCEV *> *Terms = nullptr) {
     SCEVRemoveMax Rewriter(SE, Terms);
     return Rewriter.visit(Scev);
   }
-
-  SCEVRemoveMax(ScalarEvolution &SE, std::vector<const SCEV *> *Terms)
-      : SCEVRewriteVisitor(SE), Terms(Terms) {}
 
   const SCEV *visitSMaxExpr(const SCEVSMaxExpr *Expr) {
     if ((Expr->getNumOperands() == 2) && Expr->getOperand(0)->isZero()) {
@@ -801,6 +845,7 @@ public:
 private:
   std::vector<const SCEV *> *Terms;
 };
+} // namespace
 
 SmallVector<const SCEV *, 4>
 ScopDetection::getDelinearizationTerms(DetectionContext &Context,
@@ -809,7 +854,7 @@ ScopDetection::getDelinearizationTerms(DetectionContext &Context,
   for (const auto &Pair : Context.Accesses[BasePointer]) {
     std::vector<const SCEV *> MaxTerms;
     SCEVRemoveMax::rewrite(Pair.second, SE, &MaxTerms);
-    if (MaxTerms.size() > 0) {
+    if (!MaxTerms.empty()) {
       Terms.insert(Terms.begin(), MaxTerms.begin(), MaxTerms.end());
       continue;
     }
@@ -876,7 +921,7 @@ bool ScopDetection::hasValidArraySizes(DetectionContext &Context,
       auto *V = dyn_cast<Value>(Unknown->getValue());
       if (auto *Load = dyn_cast<LoadInst>(V)) {
         if (Context.CurRegion.contains(Load) &&
-            isHoistableLoad(Load, CurRegion, LI, SE, DT))
+            isHoistableLoad(Load, CurRegion, LI, SE, DT, Context.RequiredILS))
           Context.RequiredILS.insert(Load);
         continue;
       }
@@ -1075,8 +1120,8 @@ bool ScopDetection::isValidAccess(Instruction *Inst, const SCEV *AF,
   // any other pointer. This cannot be handled at the moment.
   AAMDNodes AATags;
   Inst->getAAMetadata(AATags);
-  AliasSet &AS = Context.AST.getAliasSetForPointer(
-      BP->getValue(), MemoryLocation::UnknownSize, AATags);
+  AliasSet &AS = Context.AST.getAliasSetFor(
+      MemoryLocation(BP->getValue(), MemoryLocation::UnknownSize, AATags));
 
   if (!AS.isMustAlias()) {
     if (PollyUseRuntimeAliasChecks) {
@@ -1086,18 +1131,38 @@ bool ScopDetection::isValidAccess(Instruction *Inst, const SCEV *AF,
       // inside the scop. Hence, we can only create a run-time check if we are
       // sure the base pointer is not an instruction defined inside the scop.
       // However, we can ignore loads that will be hoisted.
-      for (const auto &Ptr : AS) {
-        Instruction *Inst = dyn_cast<Instruction>(Ptr.getValue());
-        if (Inst && Context.CurRegion.contains(Inst)) {
-          auto *Load = dyn_cast<LoadInst>(Inst);
-          if (Load && isHoistableLoad(Load, Context.CurRegion, LI, SE, DT)) {
-            Context.RequiredILS.insert(Load);
-            continue;
-          }
 
-          CanBuildRunTimeCheck = false;
-          break;
+      InvariantLoadsSetTy VariantLS, InvariantLS;
+      // In order to detect loads which are dependent on other invariant loads
+      // as invariant, we use fixed-point iteration method here i.e we iterate
+      // over the alias set for arbitrary number of times until it is safe to
+      // assume that all the invariant loads have been detected
+      while (1) {
+        const unsigned int VariantSize = VariantLS.size(),
+                           InvariantSize = InvariantLS.size();
+
+        for (const auto &Ptr : AS) {
+          Instruction *Inst = dyn_cast<Instruction>(Ptr.getValue());
+          if (Inst && Context.CurRegion.contains(Inst)) {
+            auto *Load = dyn_cast<LoadInst>(Inst);
+            if (Load && InvariantLS.count(Load))
+              continue;
+            if (Load && isHoistableLoad(Load, Context.CurRegion, LI, SE, DT,
+                                        InvariantLS)) {
+              if (VariantLS.count(Load))
+                VariantLS.remove(Load);
+              Context.RequiredILS.insert(Load);
+              InvariantLS.insert(Load);
+            } else {
+              CanBuildRunTimeCheck = false;
+              VariantLS.insert(Load);
+            }
+          }
         }
+
+        if (InvariantSize == InvariantLS.size() &&
+            VariantSize == VariantLS.size())
+          break;
       }
 
       if (CanBuildRunTimeCheck)
@@ -1129,8 +1194,18 @@ bool ScopDetection::isValidInstruction(Instruction &Inst,
     if (!OpInst)
       continue;
 
-    if (isErrorBlock(*OpInst->getParent(), Context.CurRegion, LI, DT))
-      return false;
+    if (isErrorBlock(*OpInst->getParent(), Context.CurRegion, LI, DT)) {
+      auto *PHI = dyn_cast<PHINode>(OpInst);
+      if (PHI) {
+        for (User *U : PHI->users()) {
+          auto *UI = dyn_cast<Instruction>(U);
+          if (!UI || !UI->isTerminator())
+            return false;
+        }
+      } else {
+        return false;
+      }
+    }
   }
 
   if (isa<LandingPadInst>(&Inst) || isa<ResumeInst>(&Inst))
@@ -1226,6 +1301,18 @@ bool ScopDetection::isValidLoop(Loop *L, DetectionContext &Context) const {
   if (!hasExitingBlocks(L))
     return invalid<ReportLoopHasNoExit>(Context, /*Assert=*/true, L);
 
+  // The algorithm for domain construction assumes that loops has only a single
+  // exit block (and hence corresponds to a subregion). Note that we cannot use
+  // L->getExitBlock() because it does not check whether all exiting edges point
+  // to the same BB.
+  SmallVector<BasicBlock *, 4> ExitBlocks;
+  L->getExitBlocks(ExitBlocks);
+  BasicBlock *TheExitBlock = ExitBlocks[0];
+  for (BasicBlock *ExitBB : ExitBlocks) {
+    if (TheExitBlock != ExitBB)
+      return invalid<ReportLoopHasMultipleExits>(Context, /*Assert=*/true, L);
+  }
+
   if (canUseISLTripCount(L, Context))
     return true;
 
@@ -1251,10 +1338,11 @@ ScopDetection::countBeneficialSubLoops(Loop *L, ScalarEvolution &SE,
 
   int NumLoops = 1;
   int MaxLoopDepth = 1;
-  if (auto *TripCountC = dyn_cast<SCEVConstant>(TripCount))
-    if (TripCountC->getType()->getScalarSizeInBits() <= 64)
-      if (TripCountC->getValue()->getZExtValue() <= MinProfitableTrips)
-        NumLoops -= 1;
+  if (MinProfitableTrips > 0)
+    if (auto *TripCountC = dyn_cast<SCEVConstant>(TripCount))
+      if (TripCountC->getType()->getScalarSizeInBits() <= 64)
+        if (TripCountC->getValue()->getZExtValue() <= MinProfitableTrips)
+          NumLoops -= 1;
 
   for (auto &SubLoop : *L) {
     LoopStats Stats = countBeneficialSubLoops(SubLoop, SE, MinProfitableTrips);
@@ -1272,8 +1360,13 @@ ScopDetection::countBeneficialLoops(Region *R, ScalarEvolution &SE,
   int MaxLoopDepth = 0;
 
   auto L = LI.getLoopFor(R->getEntry());
-  L = L ? R->outermostLoopInRegion(L) : nullptr;
-  L = L ? L->getParentLoop() : nullptr;
+
+  // If L is fully contained in R, move to first loop surrounding R. Otherwise,
+  // L is either nullptr or already surrounding R.
+  if (L && R->contains(L)) {
+    L = R->outermostLoopInRegion(L);
+    L = L->getParentLoop();
+  }
 
   auto SubLoops =
       L ? L->getSubLoopsVector() : std::vector<Loop *>(LI.begin(), LI.end());
@@ -1294,14 +1387,14 @@ Region *ScopDetection::expandRegion(Region &R) {
   std::unique_ptr<Region> LastValidRegion;
   auto ExpandedRegion = std::unique_ptr<Region>(R.getExpandedRegion());
 
-  DEBUG(dbgs() << "\tExpanding " << R.getNameStr() << "\n");
+  LLVM_DEBUG(dbgs() << "\tExpanding " << R.getNameStr() << "\n");
 
   while (ExpandedRegion) {
     const auto &It = DetectionContextMap.insert(std::make_pair(
         getBBPairForRegion(ExpandedRegion.get()),
         DetectionContext(*ExpandedRegion, AA, false /*verifying*/)));
     DetectionContext &Context = It.first->second;
-    DEBUG(dbgs() << "\t\tTrying " << ExpandedRegion->getNameStr() << "\n");
+    LLVM_DEBUG(dbgs() << "\t\tTrying " << ExpandedRegion->getNameStr() << "\n");
     // Only expand when we did not collect errors.
 
     if (!Context.Log.hasErrors()) {
@@ -1335,7 +1428,7 @@ Region *ScopDetection::expandRegion(Region &R) {
     }
   }
 
-  DEBUG({
+  LLVM_DEBUG({
     if (LastValidRegion)
       dbgs() << "\tto " << LastValidRegion->getNameStr() << "\n";
     else
@@ -1344,6 +1437,7 @@ Region *ScopDetection::expandRegion(Region &R) {
 
   return LastValidRegion.release();
 }
+
 static bool regionWithoutLoops(Region &R, LoopInfo &LI) {
   for (const BasicBlock *BB : R.blocks())
     if (R.contains(LI.getLoopFor(BB)))
@@ -1540,23 +1634,23 @@ bool ScopDetection::isProfitableRegion(DetectionContext &Context) const {
 bool ScopDetection::isValidRegion(DetectionContext &Context) const {
   Region &CurRegion = Context.CurRegion;
 
-  DEBUG(dbgs() << "Checking region: " << CurRegion.getNameStr() << "\n\t");
+  LLVM_DEBUG(dbgs() << "Checking region: " << CurRegion.getNameStr() << "\n\t");
 
   if (!PollyAllowFullFunction && CurRegion.isTopLevelRegion()) {
-    DEBUG(dbgs() << "Top level region is invalid\n");
+    LLVM_DEBUG(dbgs() << "Top level region is invalid\n");
     return false;
   }
 
   DebugLoc DbgLoc;
   if (CurRegion.getExit() &&
       isa<UnreachableInst>(CurRegion.getExit()->getTerminator())) {
-    DEBUG(dbgs() << "Unreachable in exit\n");
+    LLVM_DEBUG(dbgs() << "Unreachable in exit\n");
     return invalid<ReportUnreachableInExit>(Context, /*Assert=*/true,
                                             CurRegion.getExit(), DbgLoc);
   }
 
   if (!CurRegion.getEntry()->getName().count(OnlyRegion)) {
-    DEBUG({
+    LLVM_DEBUG({
       dbgs() << "Region entry does not match -polly-region-only";
       dbgs() << "\n";
     });
@@ -1577,7 +1671,7 @@ bool ScopDetection::isValidRegion(DetectionContext &Context) const {
     return invalid<ReportIrreducibleRegion>(Context, /*Assert=*/true,
                                             &CurRegion, DbgLoc);
 
-  DEBUG(dbgs() << "OK\n");
+  LLVM_DEBUG(dbgs() << "OK\n");
   return true;
 }
 
@@ -1585,11 +1679,11 @@ void ScopDetection::markFunctionAsInvalid(Function *F) {
   F->addFnAttr(PollySkipFnAttr);
 }
 
-bool ScopDetection::isValidFunction(llvm::Function &F) {
+bool ScopDetection::isValidFunction(Function &F) {
   return !F.hasFnAttribute(PollySkipFnAttr);
 }
 
-void ScopDetection::printLocations(llvm::Function &F) {
+void ScopDetection::printLocations(Function &F) {
   for (const Region *R : *this) {
     unsigned LineEntry, LineExit;
     std::string FileName;
@@ -1642,7 +1736,7 @@ bool ScopDetection::isReducibleRegion(Region &R, DebugLoc &DbgLoc) const {
     DFSStack.pop();
 
     // Loop to iterate over the successors of current BB.
-    const TerminatorInst *TInst = CurrBB->getTerminator();
+    const Instruction *TInst = CurrBB->getTerminator();
     unsigned NSucc = TInst->getNumSuccessors();
     for (unsigned I = AdjacentBlockIndex; I < NSucc;
          ++I, ++AdjacentBlockIndex) {
@@ -1688,7 +1782,9 @@ static void updateLoopCountStatistic(ScopDetection::LoopStats Stats,
     NumLoopsInScop += Stats.NumLoops;
     MaxNumLoopsInScop =
         std::max(MaxNumLoopsInScop.getValue(), (unsigned)Stats.NumLoops);
-    if (Stats.MaxDepth == 1)
+    if (Stats.MaxDepth == 0)
+      NumScopsDepthZero++;
+    else if (Stats.MaxDepth == 1)
       NumScopsDepthOne++;
     else if (Stats.MaxDepth == 2)
       NumScopsDepthTwo++;
@@ -1704,7 +1800,9 @@ static void updateLoopCountStatistic(ScopDetection::LoopStats Stats,
     NumLoopsInProfScop += Stats.NumLoops;
     MaxNumLoopsInProfScop =
         std::max(MaxNumLoopsInProfScop.getValue(), (unsigned)Stats.NumLoops);
-    if (Stats.MaxDepth == 1)
+    if (Stats.MaxDepth == 0)
+      NumProfScopsDepthZero++;
+    else if (Stats.MaxDepth == 1)
       NumProfScopsDepthOne++;
     else if (Stats.MaxDepth == 2)
       NumProfScopsDepthTwo++;
@@ -1732,14 +1830,14 @@ const RejectLog *ScopDetection::lookupRejectionLog(const Region *R) const {
   return DC ? &DC->Log : nullptr;
 }
 
-void polly::ScopDetection::verifyRegion(const Region &R) const {
+void ScopDetection::verifyRegion(const Region &R) const {
   assert(isMaxRegionInScop(R) && "Expect R is a valid region.");
 
   DetectionContext Context(const_cast<Region &>(R), AA, true /*verifying*/);
   isValidRegion(Context);
 }
 
-void polly::ScopDetection::verifyAnalysis() const {
+void ScopDetection::verifyAnalysis() const {
   if (!VerifyScops)
     return;
 
@@ -1747,7 +1845,7 @@ void polly::ScopDetection::verifyAnalysis() const {
     verifyRegion(*R);
 }
 
-bool ScopDetectionWrapperPass::runOnFunction(llvm::Function &F) {
+bool ScopDetectionWrapperPass::runOnFunction(Function &F) {
   auto &LI = getAnalysis<LoopInfoWrapperPass>().getLoopInfo();
   auto &RI = getAnalysis<RegionInfoPass>().getRegionInfo();
   auto &AA = getAnalysis<AAResultsWrapperPass>().getAAResults();
@@ -1781,6 +1879,7 @@ ScopDetectionWrapperPass::ScopDetectionWrapperPass() : FunctionPass(ID) {
   if (IgnoreAliasing)
     PollyUseRuntimeAliasChecks = false;
 }
+
 ScopAnalysis::ScopAnalysis() {
   // Disable runtime alias checks if we ignore aliasing all together.
   if (IgnoreAliasing)
@@ -1805,12 +1904,12 @@ ScopDetection ScopAnalysis::run(Function &F, FunctionAnalysisManager &FAM) {
 
 PreservedAnalyses ScopAnalysisPrinterPass::run(Function &F,
                                                FunctionAnalysisManager &FAM) {
-  Stream << "Detected Scops in Function " << F.getName() << "\n";
+  OS << "Detected Scops in Function " << F.getName() << "\n";
   auto &SD = FAM.getResult<ScopAnalysis>(F);
   for (const Region *R : SD.ValidRegions)
-    Stream << "Valid Region for Scop: " << R->getNameStr() << '\n';
+    OS << "Valid Region for Scop: " << R->getNameStr() << '\n';
 
-  Stream << "\n";
+  OS << "\n";
   return PreservedAnalyses::all();
 }
 

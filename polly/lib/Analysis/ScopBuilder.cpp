@@ -1,9 +1,8 @@
-//===- ScopBuilder.cpp ---------------------------------------------------===//
+//===- ScopBuilder.cpp ----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,11 +15,40 @@
 
 #include "polly/ScopBuilder.h"
 #include "polly/Options.h"
+#include "polly/ScopDetection.h"
+#include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
 #include "polly/Support/SCEVValidator.h"
+#include "polly/Support/ScopHelper.h"
 #include "polly/Support/VirtualInstruction.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/EquivalenceClasses.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
-#include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Use.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+#include <cassert>
 
 using namespace llvm;
 using namespace polly;
@@ -33,6 +61,7 @@ STATISTIC(InfeasibleScops,
           "Number of SCoPs with statically infeasible context.");
 
 bool polly::ModelReadOnlyScalars;
+
 static cl::opt<bool, true> XModelReadOnlyScalars(
     "polly-analyze-read-only-scalars",
     cl::desc("Model read-only scalar values in the scop description"),
@@ -49,10 +78,36 @@ static cl::opt<bool> DetectFortranArrays(
     cl::desc("Detect Fortran arrays and use this for code generation"),
     cl::Hidden, cl::init(false), cl::cat(PollyCategory));
 
+static cl::opt<bool> DetectReductions("polly-detect-reductions",
+                                      cl::desc("Detect and exploit reductions"),
+                                      cl::Hidden, cl::ZeroOrMore,
+                                      cl::init(true), cl::cat(PollyCategory));
+
+// Multiplicative reductions can be disabled separately as these kind of
+// operations can overflow easily. Additive reductions and bit operations
+// are in contrast pretty stable.
+static cl::opt<bool> DisableMultiplicativeReductions(
+    "polly-disable-multiplicative-reductions",
+    cl::desc("Disable multiplicative reductions"), cl::Hidden, cl::ZeroOrMore,
+    cl::init(false), cl::cat(PollyCategory));
+
+enum class GranularityChoice { BasicBlocks, ScalarIndependence, Stores };
+
+static cl::opt<GranularityChoice> StmtGranularity(
+    "polly-stmt-granularity",
+    cl::desc(
+        "Algorithm to use for splitting basic blocks into multiple statements"),
+    cl::values(clEnumValN(GranularityChoice::BasicBlocks, "bb",
+                          "One statement per basic block"),
+               clEnumValN(GranularityChoice::ScalarIndependence, "scalar-indep",
+                          "Scalar independence heuristic"),
+               clEnumValN(GranularityChoice::Stores, "store",
+                          "Store-level granularity")),
+    cl::init(GranularityChoice::ScalarIndependence), cl::cat(PollyCategory));
+
 void ScopBuilder::buildPHIAccesses(ScopStmt *PHIStmt, PHINode *PHI,
                                    Region *NonAffineSubRegion,
                                    bool IsExitBlock) {
-
   // PHI nodes that are in the exit block of the region, hence if IsExitBlock is
   // true, are not modeled as ordinary PHI nodes as they are not part of the
   // region. However, we model the operands in the predecessor blocks that are
@@ -72,7 +127,7 @@ void ScopBuilder::buildPHIAccesses(ScopStmt *PHIStmt, PHINode *PHI,
   for (unsigned u = 0; u < PHI->getNumIncomingValues(); u++) {
     Value *Op = PHI->getIncomingValue(u);
     BasicBlock *OpBB = PHI->getIncomingBlock(u);
-    ScopStmt *OpStmt = scop->getLastStmtFor(OpBB);
+    ScopStmt *OpStmt = scop->getIncomingStmtFor(PHI->getOperandUse(u));
 
     // Do not build PHI dependences inside a non-affine subregion, but make
     // sure that the necessary scalar values are still made available.
@@ -227,7 +282,6 @@ Value *ScopBuilder::findFADAllocationVisible(MemAccInst Inst) {
   // We are looking for a "store" into a struct with the type being the Fortran
   // descriptor type
   for (auto user : MallocMem->users()) {
-
     /// match: 5
     auto *MallocStore = dyn_cast<StoreInst>(user);
     if (!MallocStore)
@@ -492,7 +546,7 @@ bool ScopBuilder::buildAccessCallInst(MemAccInst Inst, ScopStmt *Stmt) {
   if (CI == nullptr)
     return false;
 
-  if (CI->doesNotAccessMemory() || isIgnoredIntrinsic(CI))
+  if (CI->doesNotAccessMemory() || isIgnoredIntrinsic(CI) || isDebugCall(CI))
     return true;
 
   bool ReadOnly = false;
@@ -512,8 +566,8 @@ bool ScopBuilder::buildAccessCallInst(MemAccInst Inst, ScopStmt *Stmt) {
     return true;
   case FMRB_OnlyReadsArgumentPointees:
     ReadOnly = true;
-  // Fall through
-  case FMRB_OnlyAccessesArgumentPointees:
+    LLVM_FALLTHROUGH;
+  case FMRB_OnlyAccessesArgumentPointees: {
     auto AccType = ReadOnly ? MemoryAccess::READ : MemoryAccess::MAY_WRITE;
     Loop *L = LI.getLoopFor(Inst->getParent());
     for (const auto &Arg : CI->arg_operands()) {
@@ -529,6 +583,7 @@ bool ScopBuilder::buildAccessCallInst(MemAccInst Inst, ScopStmt *Stmt) {
                      ArgBasePtr->getType(), false, {AF}, {nullptr}, CI);
     }
     return true;
+  }
   }
 
   return true;
@@ -579,7 +634,6 @@ void ScopBuilder::buildAccessSingleDim(MemAccInst Inst, ScopStmt *Stmt) {
 }
 
 void ScopBuilder::buildMemoryAccess(MemAccInst Inst, ScopStmt *Stmt) {
-
   if (buildAccessMemIntrinsic(Inst, Stmt))
     return;
 
@@ -606,13 +660,267 @@ void ScopBuilder::buildAccessFunctions() {
     for (BasicBlock *BB : R->blocks())
       buildAccessFunctions(&Stmt, *BB, R);
   }
+
+  // Build write accesses for values that are used after the SCoP.
+  // The instructions defining them might be synthesizable and therefore not
+  // contained in any statement, hence we iterate over the original instructions
+  // to identify all escaping values.
+  for (BasicBlock *BB : scop->getRegion().blocks()) {
+    for (Instruction &Inst : *BB)
+      buildEscapingDependences(&Inst);
+  }
+}
+
+bool ScopBuilder::shouldModelInst(Instruction *Inst, Loop *L) {
+  return !Inst->isTerminator() && !isIgnoredIntrinsic(Inst) &&
+         !canSynthesize(Inst, *scop, &SE, L);
+}
+
+/// Generate a name for a statement.
+///
+/// @param BB     The basic block the statement will represent.
+/// @param BBIdx  The index of the @p BB relative to other BBs/regions.
+/// @param Count  The index of the created statement in @p BB.
+/// @param IsMain Whether this is the main of all statement for @p BB. If true,
+///               no suffix will be added.
+/// @param IsLast Uses a special indicator for the last statement of a BB.
+static std::string makeStmtName(BasicBlock *BB, long BBIdx, int Count,
+                                bool IsMain, bool IsLast = false) {
+  std::string Suffix;
+  if (!IsMain) {
+    if (UseInstructionNames)
+      Suffix = '_';
+    if (IsLast)
+      Suffix += "last";
+    else if (Count < 26)
+      Suffix += 'a' + Count;
+    else
+      Suffix += std::to_string(Count);
+  }
+  return getIslCompatibleName("Stmt", BB, BBIdx, Suffix, UseInstructionNames);
+}
+
+/// Generate a name for a statement that represents a non-affine subregion.
+///
+/// @param R    The region the statement will represent.
+/// @param RIdx The index of the @p R relative to other BBs/regions.
+static std::string makeStmtName(Region *R, long RIdx) {
+  return getIslCompatibleName("Stmt", R->getNameStr(), RIdx, "",
+                              UseInstructionNames);
+}
+
+void ScopBuilder::buildSequentialBlockStmts(BasicBlock *BB, bool SplitOnStore) {
+  Loop *SurroundingLoop = LI.getLoopFor(BB);
+
+  int Count = 0;
+  long BBIdx = scop->getNextStmtIdx();
+  std::vector<Instruction *> Instructions;
+  for (Instruction &Inst : *BB) {
+    if (shouldModelInst(&Inst, SurroundingLoop))
+      Instructions.push_back(&Inst);
+    if (Inst.getMetadata("polly_split_after") ||
+        (SplitOnStore && isa<StoreInst>(Inst))) {
+      std::string Name = makeStmtName(BB, BBIdx, Count, Count == 0);
+      scop->addScopStmt(BB, Name, SurroundingLoop, Instructions);
+      Count++;
+      Instructions.clear();
+    }
+  }
+
+  std::string Name = makeStmtName(BB, BBIdx, Count, Count == 0);
+  scop->addScopStmt(BB, Name, SurroundingLoop, Instructions);
+}
+
+/// Is @p Inst an ordered instruction?
+///
+/// An unordered instruction is an instruction, such that a sequence of
+/// unordered instructions can be permuted without changing semantics. Any
+/// instruction for which this is not always the case is ordered.
+static bool isOrderedInstruction(Instruction *Inst) {
+  return Inst->mayHaveSideEffects() || Inst->mayReadOrWriteMemory();
+}
+
+/// Join instructions to the same statement if one uses the scalar result of the
+/// other.
+static void joinOperandTree(EquivalenceClasses<Instruction *> &UnionFind,
+                            ArrayRef<Instruction *> ModeledInsts) {
+  for (Instruction *Inst : ModeledInsts) {
+    if (isa<PHINode>(Inst))
+      continue;
+
+    for (Use &Op : Inst->operands()) {
+      Instruction *OpInst = dyn_cast<Instruction>(Op.get());
+      if (!OpInst)
+        continue;
+
+      // Check if OpInst is in the BB and is a modeled instruction.
+      auto OpVal = UnionFind.findValue(OpInst);
+      if (OpVal == UnionFind.end())
+        continue;
+
+      UnionFind.unionSets(Inst, OpInst);
+    }
+  }
+}
+
+/// Ensure that the order of ordered instructions does not change.
+///
+/// If we encounter an ordered instruction enclosed in instructions belonging to
+/// a different statement (which might as well contain ordered instructions, but
+/// this is not tested here), join them.
+static void
+joinOrderedInstructions(EquivalenceClasses<Instruction *> &UnionFind,
+                        ArrayRef<Instruction *> ModeledInsts) {
+  SetVector<Instruction *> SeenLeaders;
+  for (Instruction *Inst : ModeledInsts) {
+    if (!isOrderedInstruction(Inst))
+      continue;
+
+    Instruction *Leader = UnionFind.getLeaderValue(Inst);
+    bool Inserted = SeenLeaders.insert(Leader);
+    if (Inserted)
+      continue;
+
+    // Merge statements to close holes. Say, we have already seen statements A
+    // and B, in this order. Then we see an instruction of A again and we would
+    // see the pattern "A B A". This function joins all statements until the
+    // only seen occurrence of A.
+    for (Instruction *Prev : reverse(SeenLeaders)) {
+      // Items added to 'SeenLeaders' are leaders, but may have lost their
+      // leadership status when merged into another statement.
+      Instruction *PrevLeader = UnionFind.getLeaderValue(SeenLeaders.back());
+      if (PrevLeader == Leader)
+        break;
+      UnionFind.unionSets(Prev, Leader);
+    }
+  }
+}
+
+/// If the BasicBlock has an edge from itself, ensure that the PHI WRITEs for
+/// the incoming values from this block are executed after the PHI READ.
+///
+/// Otherwise it could overwrite the incoming value from before the BB with the
+/// value for the next execution. This can happen if the PHI WRITE is added to
+/// the statement with the instruction that defines the incoming value (instead
+/// of the last statement of the same BB). To ensure that the PHI READ and WRITE
+/// are in order, we put both into the statement. PHI WRITEs are always executed
+/// after PHI READs when they are in the same statement.
+///
+/// TODO: This is an overpessimization. We only have to ensure that the PHI
+/// WRITE is not put into a statement containing the PHI itself. That could also
+/// be done by
+/// - having all (strongly connected) PHIs in a single statement,
+/// - unite only the PHIs in the operand tree of the PHI WRITE (because it only
+///   has a chance of being lifted before a PHI by being in a statement with a
+///   PHI that comes before in the basic block), or
+/// - when uniting statements, ensure that no (relevant) PHIs are overtaken.
+static void joinOrderedPHIs(EquivalenceClasses<Instruction *> &UnionFind,
+                            ArrayRef<Instruction *> ModeledInsts) {
+  for (Instruction *Inst : ModeledInsts) {
+    PHINode *PHI = dyn_cast<PHINode>(Inst);
+    if (!PHI)
+      continue;
+
+    int Idx = PHI->getBasicBlockIndex(PHI->getParent());
+    if (Idx < 0)
+      continue;
+
+    Instruction *IncomingVal =
+        dyn_cast<Instruction>(PHI->getIncomingValue(Idx));
+    if (!IncomingVal)
+      continue;
+
+    UnionFind.unionSets(PHI, IncomingVal);
+  }
+}
+
+void ScopBuilder::buildEqivClassBlockStmts(BasicBlock *BB) {
+  Loop *L = LI.getLoopFor(BB);
+
+  // Extracting out modeled instructions saves us from checking
+  // shouldModelInst() repeatedly.
+  SmallVector<Instruction *, 32> ModeledInsts;
+  EquivalenceClasses<Instruction *> UnionFind;
+  Instruction *MainInst = nullptr;
+  for (Instruction &Inst : *BB) {
+    if (!shouldModelInst(&Inst, L))
+      continue;
+    ModeledInsts.push_back(&Inst);
+    UnionFind.insert(&Inst);
+
+    // When a BB is split into multiple statements, the main statement is the
+    // one containing the 'main' instruction. We select the first instruction
+    // that is unlikely to be removed (because it has side-effects) as the main
+    // one. It is used to ensure that at least one statement from the bb has the
+    // same name as with -polly-stmt-granularity=bb.
+    if (!MainInst && (isa<StoreInst>(Inst) ||
+                      (isa<CallInst>(Inst) && !isa<IntrinsicInst>(Inst))))
+      MainInst = &Inst;
+  }
+
+  joinOperandTree(UnionFind, ModeledInsts);
+  joinOrderedInstructions(UnionFind, ModeledInsts);
+  joinOrderedPHIs(UnionFind, ModeledInsts);
+
+  // The list of instructions for statement (statement represented by the leader
+  // instruction). The order of statements instructions is reversed such that
+  // the epilogue is first. This makes it easier to ensure that the epilogue is
+  // the last statement.
+  MapVector<Instruction *, std::vector<Instruction *>> LeaderToInstList;
+
+  // Collect the instructions of all leaders. UnionFind's member iterator
+  // unfortunately are not in any specific order.
+  for (Instruction &Inst : reverse(*BB)) {
+    auto LeaderIt = UnionFind.findLeader(&Inst);
+    if (LeaderIt == UnionFind.member_end())
+      continue;
+
+    std::vector<Instruction *> &InstList = LeaderToInstList[*LeaderIt];
+    InstList.push_back(&Inst);
+  }
+
+  // Finally build the statements.
+  int Count = 0;
+  long BBIdx = scop->getNextStmtIdx();
+  bool MainFound = false;
+  for (auto &Instructions : reverse(LeaderToInstList)) {
+    std::vector<Instruction *> &InstList = Instructions.second;
+
+    // If there is no main instruction, make the first statement the main.
+    bool IsMain;
+    if (MainInst)
+      IsMain = std::find(InstList.begin(), InstList.end(), MainInst) !=
+               InstList.end();
+    else
+      IsMain = (Count == 0);
+    if (IsMain)
+      MainFound = true;
+
+    std::reverse(InstList.begin(), InstList.end());
+    std::string Name = makeStmtName(BB, BBIdx, Count, IsMain);
+    scop->addScopStmt(BB, Name, L, std::move(InstList));
+    Count += 1;
+  }
+
+  // Unconditionally add an epilogue (last statement). It contains no
+  // instructions, but holds the PHI write accesses for successor basic blocks,
+  // if the incoming value is not defined in another statement if the same BB.
+  // The epilogue will be removed if no PHIWrite is added to it.
+  std::string EpilogueName = makeStmtName(BB, BBIdx, Count, !MainFound, true);
+  scop->addScopStmt(BB, EpilogueName, L, {});
 }
 
 void ScopBuilder::buildStmts(Region &SR) {
   if (scop->isNonAffineSubRegion(&SR)) {
+    std::vector<Instruction *> Instructions;
     Loop *SurroundingLoop =
         getFirstNonBoxedLoopFor(SR.getEntry(), LI, scop->getBoxedLoops());
-    scop->addScopStmt(&SR, SurroundingLoop);
+    for (Instruction &Inst : *SR.getEntry())
+      if (shouldModelInst(&Inst, SurroundingLoop))
+        Instructions.push_back(&Inst);
+    long RIdx = scop->getNextStmtIdx();
+    std::string Name = makeStmtName(&SR, RIdx);
+    scop->addScopStmt(&SR, Name, SurroundingLoop, Instructions);
     return;
   }
 
@@ -620,58 +928,70 @@ void ScopBuilder::buildStmts(Region &SR) {
     if (I->isSubRegion())
       buildStmts(*I->getNodeAs<Region>());
     else {
-      std::vector<Instruction *> Instructions;
-      for (Instruction &Inst : *I->getNodeAs<BasicBlock>()) {
-        Loop *L = LI.getLoopFor(Inst.getParent());
-        if (!isa<TerminatorInst>(&Inst) && !isIgnoredIntrinsic(&Inst) &&
-            !canSynthesize(&Inst, *scop, &SE, L))
-          Instructions.push_back(&Inst);
+      BasicBlock *BB = I->getNodeAs<BasicBlock>();
+      switch (StmtGranularity) {
+      case GranularityChoice::BasicBlocks:
+        buildSequentialBlockStmts(BB);
+        break;
+      case GranularityChoice::ScalarIndependence:
+        buildEqivClassBlockStmts(BB);
+        break;
+      case GranularityChoice::Stores:
+        buildSequentialBlockStmts(BB, true);
+        break;
       }
-      Loop *SurroundingLoop = LI.getLoopFor(I->getNodeAs<BasicBlock>());
-      scop->addScopStmt(I->getNodeAs<BasicBlock>(), SurroundingLoop,
-                        Instructions);
     }
 }
 
 void ScopBuilder::buildAccessFunctions(ScopStmt *Stmt, BasicBlock &BB,
-                                       Region *NonAffineSubRegion,
-                                       bool IsExitBlock) {
+                                       Region *NonAffineSubRegion) {
   assert(
-      !Stmt == IsExitBlock &&
+      Stmt &&
       "The exit BB is the only one that cannot be represented by a statement");
-  assert(IsExitBlock || Stmt->represents(&BB));
+  assert(Stmt->represents(&BB));
 
   // We do not build access functions for error blocks, as they may contain
   // instructions we can not model.
-  if (isErrorBlock(BB, scop->getRegion(), LI, DT) && !IsExitBlock)
+  if (isErrorBlock(BB, scop->getRegion(), LI, DT))
     return;
 
-  for (Instruction &Inst : BB) {
-    PHINode *PHI = dyn_cast<PHINode>(&Inst);
+  auto BuildAccessesForInst = [this, Stmt,
+                               NonAffineSubRegion](Instruction *Inst) {
+    PHINode *PHI = dyn_cast<PHINode>(Inst);
     if (PHI)
-      buildPHIAccesses(Stmt, PHI, NonAffineSubRegion, IsExitBlock);
+      buildPHIAccesses(Stmt, PHI, NonAffineSubRegion, false);
 
-    // For the exit block we stop modeling after the last PHI node.
-    if (!PHI && IsExitBlock)
-      break;
-
-    if (auto MemInst = MemAccInst::dyn_cast(Inst)) {
+    if (auto MemInst = MemAccInst::dyn_cast(*Inst)) {
       assert(Stmt && "Cannot build access function in non-existing statement");
       buildMemoryAccess(MemInst, Stmt);
     }
 
-    if (isIgnoredIntrinsic(&Inst))
-      continue;
-
-    // PHI nodes have already been modeled above and TerminatorInsts that are
+    // PHI nodes have already been modeled above and terminators that are
     // not part of a non-affine subregion are fully modeled and regenerated
     // from the polyhedral domains. Hence, they do not need to be modeled as
     // explicit data dependences.
-    if (!PHI && (!isa<TerminatorInst>(&Inst) || NonAffineSubRegion))
-      buildScalarDependences(Stmt, &Inst);
+    if (!PHI)
+      buildScalarDependences(Stmt, Inst);
+  };
 
-    if (!IsExitBlock)
-      buildEscapingDependences(&Inst);
+  const InvariantLoadsSetTy &RIL = scop->getRequiredInvariantLoads();
+  bool IsEntryBlock = (Stmt->getEntryBlock() == &BB);
+  if (IsEntryBlock) {
+    for (Instruction *Inst : Stmt->getInstructions())
+      BuildAccessesForInst(Inst);
+    if (Stmt->isRegionStmt())
+      BuildAccessesForInst(BB.getTerminator());
+  } else {
+    for (Instruction &Inst : BB) {
+      if (isIgnoredIntrinsic(&Inst))
+        continue;
+
+      // Invariant loads already have been processed.
+      if (isa<LoadInst>(Inst) && RIL.count(cast<LoadInst>(&Inst)))
+        continue;
+
+      BuildAccessesForInst(&Inst);
+    }
   }
 }
 
@@ -848,6 +1168,191 @@ void ScopBuilder::addPHIReadAccess(ScopStmt *PHIStmt, PHINode *PHI) {
                   MemoryKind::PHI);
 }
 
+void ScopBuilder::buildDomain(ScopStmt &Stmt) {
+  isl::id Id = isl::id::alloc(scop->getIslCtx(), Stmt.getBaseName(), &Stmt);
+
+  Stmt.Domain = scop->getDomainConditions(&Stmt);
+  Stmt.Domain = Stmt.Domain.set_tuple_id(Id);
+}
+
+void ScopBuilder::collectSurroundingLoops(ScopStmt &Stmt) {
+  isl::set Domain = Stmt.getDomain();
+  BasicBlock *BB = Stmt.getEntryBlock();
+
+  Loop *L = LI.getLoopFor(BB);
+
+  while (L && Stmt.isRegionStmt() && Stmt.getRegion()->contains(L))
+    L = L->getParentLoop();
+
+  SmallVector<llvm::Loop *, 8> Loops;
+
+  while (L && Stmt.getParent()->getRegion().contains(L)) {
+    Loops.push_back(L);
+    L = L->getParentLoop();
+  }
+
+  Stmt.NestLoops.insert(Stmt.NestLoops.begin(), Loops.rbegin(), Loops.rend());
+}
+
+/// Return the reduction type for a given binary operator.
+static MemoryAccess::ReductionType getReductionType(const BinaryOperator *BinOp,
+                                                    const Instruction *Load) {
+  if (!BinOp)
+    return MemoryAccess::RT_NONE;
+  switch (BinOp->getOpcode()) {
+  case Instruction::FAdd:
+    if (!BinOp->isFast())
+      return MemoryAccess::RT_NONE;
+    LLVM_FALLTHROUGH;
+  case Instruction::Add:
+    return MemoryAccess::RT_ADD;
+  case Instruction::Or:
+    return MemoryAccess::RT_BOR;
+  case Instruction::Xor:
+    return MemoryAccess::RT_BXOR;
+  case Instruction::And:
+    return MemoryAccess::RT_BAND;
+  case Instruction::FMul:
+    if (!BinOp->isFast())
+      return MemoryAccess::RT_NONE;
+    LLVM_FALLTHROUGH;
+  case Instruction::Mul:
+    if (DisableMultiplicativeReductions)
+      return MemoryAccess::RT_NONE;
+    return MemoryAccess::RT_MUL;
+  default:
+    return MemoryAccess::RT_NONE;
+  }
+}
+
+void ScopBuilder::checkForReductions(ScopStmt &Stmt) {
+  SmallVector<MemoryAccess *, 2> Loads;
+  SmallVector<std::pair<MemoryAccess *, MemoryAccess *>, 4> Candidates;
+
+  // First collect candidate load-store reduction chains by iterating over all
+  // stores and collecting possible reduction loads.
+  for (MemoryAccess *StoreMA : Stmt) {
+    if (StoreMA->isRead())
+      continue;
+
+    Loads.clear();
+    collectCandidateReductionLoads(StoreMA, Loads);
+    for (MemoryAccess *LoadMA : Loads)
+      Candidates.push_back(std::make_pair(LoadMA, StoreMA));
+  }
+
+  // Then check each possible candidate pair.
+  for (const auto &CandidatePair : Candidates) {
+    bool Valid = true;
+    isl::map LoadAccs = CandidatePair.first->getAccessRelation();
+    isl::map StoreAccs = CandidatePair.second->getAccessRelation();
+
+    // Skip those with obviously unequal base addresses.
+    if (!LoadAccs.has_equal_space(StoreAccs)) {
+      continue;
+    }
+
+    // And check if the remaining for overlap with other memory accesses.
+    isl::map AllAccsRel = LoadAccs.unite(StoreAccs);
+    AllAccsRel = AllAccsRel.intersect_domain(Stmt.getDomain());
+    isl::set AllAccs = AllAccsRel.range();
+
+    for (MemoryAccess *MA : Stmt) {
+      if (MA == CandidatePair.first || MA == CandidatePair.second)
+        continue;
+
+      isl::map AccRel =
+          MA->getAccessRelation().intersect_domain(Stmt.getDomain());
+      isl::set Accs = AccRel.range();
+
+      if (AllAccs.has_equal_space(Accs)) {
+        isl::set OverlapAccs = Accs.intersect(AllAccs);
+        Valid = Valid && OverlapAccs.is_empty();
+      }
+    }
+
+    if (!Valid)
+      continue;
+
+    const LoadInst *Load =
+        dyn_cast<const LoadInst>(CandidatePair.first->getAccessInstruction());
+    MemoryAccess::ReductionType RT =
+        getReductionType(dyn_cast<BinaryOperator>(Load->user_back()), Load);
+
+    // If no overlapping access was found we mark the load and store as
+    // reduction like.
+    CandidatePair.first->markAsReductionLike(RT);
+    CandidatePair.second->markAsReductionLike(RT);
+  }
+}
+
+void ScopBuilder::collectCandidateReductionLoads(
+    MemoryAccess *StoreMA, SmallVectorImpl<MemoryAccess *> &Loads) {
+  ScopStmt *Stmt = StoreMA->getStatement();
+
+  auto *Store = dyn_cast<StoreInst>(StoreMA->getAccessInstruction());
+  if (!Store)
+    return;
+
+  // Skip if there is not one binary operator between the load and the store
+  auto *BinOp = dyn_cast<BinaryOperator>(Store->getValueOperand());
+  if (!BinOp)
+    return;
+
+  // Skip if the binary operators has multiple uses
+  if (BinOp->getNumUses() != 1)
+    return;
+
+  // Skip if the opcode of the binary operator is not commutative/associative
+  if (!BinOp->isCommutative() || !BinOp->isAssociative())
+    return;
+
+  // Skip if the binary operator is outside the current SCoP
+  if (BinOp->getParent() != Store->getParent())
+    return;
+
+  // Skip if it is a multiplicative reduction and we disabled them
+  if (DisableMultiplicativeReductions &&
+      (BinOp->getOpcode() == Instruction::Mul ||
+       BinOp->getOpcode() == Instruction::FMul))
+    return;
+
+  // Check the binary operator operands for a candidate load
+  auto *PossibleLoad0 = dyn_cast<LoadInst>(BinOp->getOperand(0));
+  auto *PossibleLoad1 = dyn_cast<LoadInst>(BinOp->getOperand(1));
+  if (!PossibleLoad0 && !PossibleLoad1)
+    return;
+
+  // A load is only a candidate if it cannot escape (thus has only this use)
+  if (PossibleLoad0 && PossibleLoad0->getNumUses() == 1)
+    if (PossibleLoad0->getParent() == Store->getParent())
+      Loads.push_back(&Stmt->getArrayAccessFor(PossibleLoad0));
+  if (PossibleLoad1 && PossibleLoad1->getNumUses() == 1)
+    if (PossibleLoad1->getParent() == Store->getParent())
+      Loads.push_back(&Stmt->getArrayAccessFor(PossibleLoad1));
+}
+
+void ScopBuilder::buildAccessRelations(ScopStmt &Stmt) {
+  for (MemoryAccess *Access : Stmt.MemAccs) {
+    Type *ElementType = Access->getElementType();
+
+    MemoryKind Ty;
+    if (Access->isPHIKind())
+      Ty = MemoryKind::PHI;
+    else if (Access->isExitPHIKind())
+      Ty = MemoryKind::ExitPHI;
+    else if (Access->isValueKind())
+      Ty = MemoryKind::Value;
+    else
+      Ty = MemoryKind::Array;
+
+    auto *SAI = scop->getOrCreateScopArrayInfo(Access->getOriginalBaseAddr(),
+                                               ElementType, Access->Sizes, Ty);
+    Access->buildAccessRelation(SAI);
+    scop->addAccessData(Access);
+  }
+}
+
 #ifndef NDEBUG
 static void verifyUse(Scop *S, Use &Op, LoopInfo &LI) {
   auto PhysUse = VirtualUse::create(S, Op, &LI, false);
@@ -881,7 +1386,7 @@ static void verifyUses(Scop *S, LoopInfo &LI, DominatorTree &DT) {
         continue;
 
       // Branch conditions are encoded in the statement domains.
-      if (isa<TerminatorInst>(&Inst) && Stmt->isBlockStmt())
+      if (Inst.isTerminator() && Stmt->isBlockStmt())
         continue;
 
       // Verify all uses.
@@ -926,10 +1431,38 @@ static inline BasicBlock *getRegionNodeBasicBlock(RegionNode *RN) {
                            : RN->getNodeAs<BasicBlock>();
 }
 
-void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
-  scop.reset(new Scop(R, SE, LI, *SD.getDetectionContext(&R), SD.ORE));
+void ScopBuilder::buildScop(Region &R, AssumptionCache &AC,
+                            OptimizationRemarkEmitter &ORE) {
+  scop.reset(new Scop(R, SE, LI, DT, *SD.getDetectionContext(&R), ORE));
 
   buildStmts(R);
+
+  // Create all invariant load instructions first. These are categorized as
+  // 'synthesizable', therefore are not part of any ScopStmt but need to be
+  // created somewhere.
+  const InvariantLoadsSetTy &RIL = scop->getRequiredInvariantLoads();
+  for (BasicBlock *BB : scop->getRegion().blocks()) {
+    if (isErrorBlock(*BB, scop->getRegion(), LI, DT))
+      continue;
+
+    for (Instruction &Inst : *BB) {
+      LoadInst *Load = dyn_cast<LoadInst>(&Inst);
+      if (!Load)
+        continue;
+
+      if (!RIL.count(Load))
+        continue;
+
+      // Invariant loads require a MemoryAccess to be created in some statement.
+      // It is not important to which statement the MemoryAccess is added
+      // because it will later be removed from the ScopStmt again. We chose the
+      // first statement of the basic block the LoadInst is in.
+      ArrayRef<ScopStmt *> List = scop->getStmtListFor(BB);
+      assert(!List.empty());
+      ScopStmt *RILStmt = List.front();
+      buildMemoryAccess(Load, RILStmt);
+    }
+  }
   buildAccessFunctions();
 
   // In case the region does not have an exiting block we will later (during
@@ -939,9 +1472,15 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
   // To handle these PHI nodes later we will now model their operands as scalar
   // accesses. Note that we do not model anything in the exit block if we have
   // an exiting block in the region, as there will not be any splitting later.
-  if (!R.isTopLevelRegion() && !scop->hasSingleExitEdge())
-    buildAccessFunctions(nullptr, *R.getExit(), nullptr,
-                         /* IsExitBlock */ true);
+  if (!R.isTopLevelRegion() && !scop->hasSingleExitEdge()) {
+    for (Instruction &Inst : *R.getExit()) {
+      PHINode *PHI = dyn_cast<PHINode>(&Inst);
+      if (!PHI)
+        break;
+
+      buildPHIAccesses(nullptr, PHI, nullptr, true);
+    }
+  }
 
   // Create memory accesses for global reads since all arrays are now known.
   auto *AF = SE.getConstant(IntegerType::getInt64Ty(SE.getContext()), 0);
@@ -958,8 +1497,11 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
   /// A map from basic blocks to their invalid domains.
   DenseMap<BasicBlock *, isl::set> InvalidDomainMap;
 
-  if (!scop->buildDomains(&R, DT, LI, InvalidDomainMap))
+  if (!scop->buildDomains(&R, DT, LI, InvalidDomainMap)) {
+    LLVM_DEBUG(
+        dbgs() << "Bailing-out because buildDomains encountered problems\n");
     return;
+  }
 
   scop->addUserAssumptions(AC, DT, LI, InvalidDomainMap);
 
@@ -975,21 +1517,34 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
   // Exit early in case there are no executable statements left in this scop.
   scop->removeStmtNotInDomainMap();
   scop->simplifySCoP(false);
-  if (scop->isEmpty())
+  if (scop->isEmpty()) {
+    LLVM_DEBUG(dbgs() << "Bailing-out because SCoP is empty\n");
     return;
+  }
 
   // The ScopStmts now have enough information to initialize themselves.
-  for (ScopStmt &Stmt : *scop)
-    Stmt.init(LI);
+  for (ScopStmt &Stmt : *scop) {
+    collectSurroundingLoops(Stmt);
+
+    buildDomain(Stmt);
+    buildAccessRelations(Stmt);
+
+    if (DetectReductions)
+      checkForReductions(Stmt);
+  }
 
   // Check early for a feasible runtime context.
-  if (!scop->hasFeasibleRuntimeContext())
+  if (!scop->hasFeasibleRuntimeContext()) {
+    LLVM_DEBUG(dbgs() << "Bailing-out because of unfeasible context (early)\n");
     return;
+  }
 
   // Check early for profitability. Afterwards it cannot change anymore,
   // only the runtime context could become infeasible.
   if (!scop->isProfitable(UnprofitableScalarAccs)) {
     scop->invalidate(PROFITABLE, DebugLoc());
+    LLVM_DEBUG(
+        dbgs() << "Bailing-out because SCoP is not considered profitable\n");
     return;
   }
 
@@ -1006,8 +1561,10 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
   scop->addRecordedAssumptions();
 
   scop->simplifyContexts();
-  if (!scop->buildAliasChecks(AA))
+  if (!scop->buildAliasChecks(AA)) {
+    LLVM_DEBUG(dbgs() << "Bailing-out because could not build alias checks\n");
     return;
+  }
 
   scop->hoistInvariantLoads();
   scop->canonicalizeDynamicBasePtrs();
@@ -1016,8 +1573,10 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
 
   // Check late for a feasible runtime context because profitability did not
   // change.
-  if (!scop->hasFeasibleRuntimeContext())
+  if (!scop->hasFeasibleRuntimeContext()) {
+    LLVM_DEBUG(dbgs() << "Bailing-out because of unfeasible context (late)\n");
     return;
+  }
 
 #ifndef NDEBUG
   verifyUses(scop.get(), LI, DT);
@@ -1026,24 +1585,25 @@ void ScopBuilder::buildScop(Region &R, AssumptionCache &AC) {
 
 ScopBuilder::ScopBuilder(Region *R, AssumptionCache &AC, AliasAnalysis &AA,
                          const DataLayout &DL, DominatorTree &DT, LoopInfo &LI,
-                         ScopDetection &SD, ScalarEvolution &SE)
+                         ScopDetection &SD, ScalarEvolution &SE,
+                         OptimizationRemarkEmitter &ORE)
     : AA(AA), DL(DL), DT(DT), LI(LI), SD(SD), SE(SE) {
-
   DebugLoc Beg, End;
   auto P = getBBPairForRegion(R);
   getDebugLocations(P, Beg, End);
 
   std::string Msg = "SCoP begins here.";
-  SD.ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEntry", Beg, P.first)
-              << Msg);
+  ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEntry", Beg, P.first)
+           << Msg);
 
-  buildScop(*R, AC);
+  buildScop(*R, AC, ORE);
 
-  DEBUG(dbgs() << *scop);
+  LLVM_DEBUG(dbgs() << *scop);
 
   if (!scop->hasFeasibleRuntimeContext()) {
     InfeasibleScops++;
     Msg = "SCoP ends here but was dismissed.";
+    LLVM_DEBUG(dbgs() << "SCoP detected but dismissed\n");
     scop.reset();
   } else {
     Msg = "SCoP ends here.";
@@ -1053,9 +1613,9 @@ ScopBuilder::ScopBuilder(Region *R, AssumptionCache &AC, AliasAnalysis &AA,
   }
 
   if (R->isTopLevelRegion())
-    SD.ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEnd", End, P.first)
-                << Msg);
+    ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEnd", End, P.first)
+             << Msg);
   else
-    SD.ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEnd", End, P.second)
-                << Msg);
+    ORE.emit(OptimizationRemarkAnalysis(DEBUG_TYPE, "ScopEnd", End, P.second)
+             << Msg);
 }

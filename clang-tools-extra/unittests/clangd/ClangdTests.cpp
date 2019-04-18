@@ -1,148 +1,58 @@
 //===-- ClangdTests.cpp - Clangd unit tests ---------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
+#include "Annotations.h"
+#include "ClangdLSPServer.h"
 #include "ClangdServer.h"
-#include "clang/Basic/VirtualFileSystem.h"
+#include "GlobalCompilationDatabase.h"
+#include "Matchers.h"
+#include "SyncAPI.h"
+#include "TestFS.h"
+#include "Threading.h"
+#include "URI.h"
 #include "clang/Config/config.h"
+#include "clang/Sema/CodeCompleteConsumer.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Regex.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace clang {
-namespace vfs {
-
-/// An implementation of vfs::FileSystem that only allows access to
-/// files and folders inside a set of whitelisted directories.
-///
-/// FIXME(ibiryukov): should it also emulate access to parents of whitelisted
-/// directories with only whitelisted contents?
-class FilteredFileSystem : public vfs::FileSystem {
-public:
-  /// The paths inside \p WhitelistedDirs should be absolute
-  FilteredFileSystem(std::vector<std::string> WhitelistedDirs,
-                     IntrusiveRefCntPtr<vfs::FileSystem> InnerFS)
-      : WhitelistedDirs(std::move(WhitelistedDirs)), InnerFS(InnerFS) {
-    assert(std::all_of(WhitelistedDirs.begin(), WhitelistedDirs.end(),
-                       [](const std::string &Path) -> bool {
-                         return llvm::sys::path::is_absolute(Path);
-                       }) &&
-           "Not all WhitelistedDirs are absolute");
-  }
-
-  virtual llvm::ErrorOr<Status> status(const Twine &Path) {
-    if (!isInsideWhitelistedDir(Path))
-      return llvm::errc::no_such_file_or_directory;
-    return InnerFS->status(Path);
-  }
-
-  virtual llvm::ErrorOr<std::unique_ptr<File>>
-  openFileForRead(const Twine &Path) {
-    if (!isInsideWhitelistedDir(Path))
-      return llvm::errc::no_such_file_or_directory;
-    return InnerFS->openFileForRead(Path);
-  }
-
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
-  getBufferForFile(const Twine &Name, int64_t FileSize = -1,
-                   bool RequiresNullTerminator = true,
-                   bool IsVolatile = false) {
-    if (!isInsideWhitelistedDir(Name))
-      return llvm::errc::no_such_file_or_directory;
-    return InnerFS->getBufferForFile(Name, FileSize, RequiresNullTerminator,
-                                     IsVolatile);
-  }
-
-  virtual directory_iterator dir_begin(const Twine &Dir, std::error_code &EC) {
-    if (!isInsideWhitelistedDir(Dir)) {
-      EC = llvm::errc::no_such_file_or_directory;
-      return directory_iterator();
-    }
-    return InnerFS->dir_begin(Dir, EC);
-  }
-
-  virtual std::error_code setCurrentWorkingDirectory(const Twine &Path) {
-    return InnerFS->setCurrentWorkingDirectory(Path);
-  }
-
-  virtual llvm::ErrorOr<std::string> getCurrentWorkingDirectory() const {
-    return InnerFS->getCurrentWorkingDirectory();
-  }
-
-  bool exists(const Twine &Path) {
-    if (!isInsideWhitelistedDir(Path))
-      return false;
-    return InnerFS->exists(Path);
-  }
-
-  std::error_code makeAbsolute(SmallVectorImpl<char> &Path) const {
-    return InnerFS->makeAbsolute(Path);
-  }
-
-private:
-  bool isInsideWhitelistedDir(const Twine &InputPath) const {
-    SmallString<128> Path;
-    InputPath.toVector(Path);
-
-    if (makeAbsolute(Path))
-      return false;
-
-    for (const auto &Dir : WhitelistedDirs) {
-      if (Path.startswith(Dir))
-        return true;
-    }
-    return false;
-  }
-
-  std::vector<std::string> WhitelistedDirs;
-  IntrusiveRefCntPtr<vfs::FileSystem> InnerFS;
-};
-
-/// Create a vfs::FileSystem that has access only to temporary directories
-/// (obtained by calling system_temp_directory).
-IntrusiveRefCntPtr<vfs::FileSystem> getTempOnlyFS() {
-  llvm::SmallString<128> TmpDir1;
-  llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/false, TmpDir1);
-  llvm::SmallString<128> TmpDir2;
-  llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, TmpDir2);
-
-  std::vector<std::string> TmpDirs;
-  TmpDirs.push_back(TmpDir1.str());
-  if (TmpDir1 != TmpDir2)
-    TmpDirs.push_back(TmpDir2.str());
-  return new vfs::FilteredFileSystem(std::move(TmpDirs),
-                                     vfs::getRealFileSystem());
-}
-} // namespace vfs
-
 namespace clangd {
+
 namespace {
 
-// Don't wait for async ops in clangd test more than that to avoid blocking
-// indefinitely in case of bugs.
-static const std::chrono::seconds DefaultFutureTimeout =
-    std::chrono::seconds(10);
+using ::testing::ElementsAre;
+using ::testing::Field;
+using ::testing::Gt;
+using ::testing::IsEmpty;
+using ::testing::Pair;
+using ::testing::UnorderedElementsAre;
 
-static bool diagsContainErrors(ArrayRef<DiagWithFixIts> Diagnostics) {
-  for (const auto &DiagAndFixIts : Diagnostics) {
-    // FIXME: severities returned by clangd should have a descriptive
-    // diagnostic severity enum
-    const int ErrorSeverity = 1;
-    if (DiagAndFixIts.Diag.severity == ErrorSeverity)
+MATCHER_P2(DeclAt, File, Range, "") {
+  return arg.PreferredDeclaration ==
+         Location{URIForFile::canonicalize(File, testRoot()), Range};
+}
+
+bool diagsContainErrors(const std::vector<Diag> &Diagnostics) {
+  for (auto D : Diagnostics) {
+    if (D.Severity == DiagnosticsEngine::Error ||
+        D.Severity == DiagnosticsEngine::Fatal)
       return true;
   }
   return false;
@@ -150,14 +60,11 @@ static bool diagsContainErrors(ArrayRef<DiagWithFixIts> Diagnostics) {
 
 class ErrorCheckingDiagConsumer : public DiagnosticsConsumer {
 public:
-  void
-  onDiagnosticsReady(PathRef File,
-                     Tagged<std::vector<DiagWithFixIts>> Diagnostics) override {
-    bool HadError = diagsContainErrors(Diagnostics.Value);
-
+  void onDiagnosticsReady(PathRef File,
+                          std::vector<Diag> Diagnostics) override {
+    bool HadError = diagsContainErrors(Diagnostics);
     std::lock_guard<std::mutex> Lock(Mutex);
     HadErrorInLastDiags = HadError;
-    LastVFSTag = Diagnostics.Tag;
   }
 
   bool hadErrorInLastDiags() {
@@ -165,95 +72,51 @@ public:
     return HadErrorInLastDiags;
   }
 
-  VFSTag lastVFSTag() { return LastVFSTag; }
-
 private:
   std::mutex Mutex;
   bool HadErrorInLastDiags = false;
-  VFSTag LastVFSTag = VFSTag();
 };
 
-class MockCompilationDatabase : public GlobalCompilationDatabase {
+/// For each file, record whether the last published diagnostics contained at
+/// least one error.
+class MultipleErrorCheckingDiagConsumer : public DiagnosticsConsumer {
 public:
-  MockCompilationDatabase(bool AddFreestandingFlag) {
-    // We have to add -ffreestanding to VFS-specific tests to avoid errors on
-    // implicit includes of stdc-predef.h.
-    if (AddFreestandingFlag)
-      ExtraClangFlags.push_back("-ffreestanding");
+  void onDiagnosticsReady(PathRef File,
+                          std::vector<Diag> Diagnostics) override {
+    bool HadError = diagsContainErrors(Diagnostics);
+
+    std::lock_guard<std::mutex> Lock(Mutex);
+    LastDiagsHadError[File] = HadError;
   }
 
-  std::vector<tooling::CompileCommand>
-  getCompileCommands(PathRef File) override {
-    if (ExtraClangFlags.empty())
-      return {};
+  /// Exposes all files consumed by onDiagnosticsReady in an unspecified order.
+  /// For each file, a bool value indicates whether the last diagnostics
+  /// contained an error.
+  std::vector<std::pair<Path, bool>> filesWithDiags() const {
+    std::vector<std::pair<Path, bool>> Result;
+    std::lock_guard<std::mutex> Lock(Mutex);
 
-    std::vector<std::string> CommandLine;
-    CommandLine.reserve(3 + ExtraClangFlags.size());
-    CommandLine.insert(CommandLine.end(), {"clang", "-fsyntax-only"});
-    CommandLine.insert(CommandLine.end(), ExtraClangFlags.begin(),
-                       ExtraClangFlags.end());
-    CommandLine.push_back(File.str());
+    for (const auto &it : LastDiagsHadError) {
+      Result.emplace_back(it.first(), it.second);
+    }
 
-    return {tooling::CompileCommand(llvm::sys::path::parent_path(File),
-                                    llvm::sys::path::filename(File),
-                                    CommandLine, "")};
+    return Result;
   }
 
-  std::vector<std::string> ExtraClangFlags;
-};
-
-IntrusiveRefCntPtr<vfs::FileSystem>
-buildTestFS(llvm::StringMap<std::string> const &Files) {
-  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> MemFS(
-      new vfs::InMemoryFileSystem);
-  for (auto &FileAndContents : Files)
-    MemFS->addFile(FileAndContents.first(), time_t(),
-                   llvm::MemoryBuffer::getMemBuffer(FileAndContents.second,
-                                                    FileAndContents.first()));
-
-  auto OverlayFS = IntrusiveRefCntPtr<vfs::OverlayFileSystem>(
-      new vfs::OverlayFileSystem(vfs::getTempOnlyFS()));
-  OverlayFS->pushOverlay(std::move(MemFS));
-  return OverlayFS;
-}
-
-class ConstantFSProvider : public FileSystemProvider {
-public:
-  ConstantFSProvider(IntrusiveRefCntPtr<vfs::FileSystem> FS,
-                     VFSTag Tag = VFSTag())
-      : FS(std::move(FS)), Tag(std::move(Tag)) {}
-
-  Tagged<IntrusiveRefCntPtr<vfs::FileSystem>>
-  getTaggedFileSystem(PathRef File) override {
-    return make_tagged(FS, Tag);
+  void clear() {
+    std::lock_guard<std::mutex> Lock(Mutex);
+    LastDiagsHadError.clear();
   }
 
 private:
-  IntrusiveRefCntPtr<vfs::FileSystem> FS;
-  VFSTag Tag;
-};
-
-class MockFSProvider : public FileSystemProvider {
-public:
-  Tagged<IntrusiveRefCntPtr<vfs::FileSystem>>
-  getTaggedFileSystem(PathRef File) override {
-    if (ExpectedFile) {
-      EXPECT_EQ(*ExpectedFile, File);
-    }
-
-    auto FS = buildTestFS(Files);
-    return make_tagged(FS, Tag);
-  }
-
-  llvm::Optional<SmallString<32>> ExpectedFile;
-  llvm::StringMap<std::string> Files;
-  VFSTag Tag = VFSTag();
+  mutable std::mutex Mutex;
+  llvm::StringMap<bool> LastDiagsHadError;
 };
 
 /// Replaces all patterns of the form 0x123abc with spaces
 std::string replacePtrsInDump(std::string const &Dump) {
   llvm::Regex RE("0x[0-9a-fA-F]+");
-  llvm::SmallVector<StringRef, 1> Matches;
+  llvm::SmallVector<llvm::StringRef, 1> Matches;
   llvm::StringRef Pending = Dump;
 
   std::string Result;
@@ -270,55 +133,27 @@ std::string replacePtrsInDump(std::string const &Dump) {
 }
 
 std::string dumpASTWithoutMemoryLocs(ClangdServer &Server, PathRef File) {
-  auto DumpWithMemLocs = Server.dumpAST(File);
+  auto DumpWithMemLocs = runDumpAST(Server, File);
   return replacePtrsInDump(DumpWithMemLocs);
 }
 
-} // namespace
-
 class ClangdVFSTest : public ::testing::Test {
 protected:
-  SmallString<16> getVirtualTestRoot() {
-#ifdef LLVM_ON_WIN32
-    return SmallString<16>("C:\\clangd-test");
-#else
-    return SmallString<16>("/clangd-test");
-#endif
-  }
-
-  llvm::SmallString<32> getVirtualTestFilePath(PathRef File) {
-    assert(llvm::sys::path::is_relative(File) && "FileName should be relative");
-
-    llvm::SmallString<32> Path;
-    llvm::sys::path::append(Path, getVirtualTestRoot(), File);
-    return Path;
-  }
-
   std::string parseSourceAndDumpAST(
-      PathRef SourceFileRelPath, StringRef SourceContents,
-      std::vector<std::pair<PathRef, StringRef>> ExtraFiles = {},
+      PathRef SourceFileRelPath, llvm::StringRef SourceContents,
+      std::vector<std::pair<PathRef, llvm::StringRef>> ExtraFiles = {},
       bool ExpectErrors = false) {
     MockFSProvider FS;
     ErrorCheckingDiagConsumer DiagConsumer;
-    MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-    ClangdServer Server(CDB, DiagConsumer, FS, getDefaultAsyncThreadsCount());
+    MockCompilationDatabase CDB;
+    ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
     for (const auto &FileWithContents : ExtraFiles)
-      FS.Files[getVirtualTestFilePath(FileWithContents.first)] =
-          FileWithContents.second;
+      FS.Files[testPath(FileWithContents.first)] = FileWithContents.second;
 
-    auto SourceFilename = getVirtualTestFilePath(SourceFileRelPath);
-
-    FS.ExpectedFile = SourceFilename;
-
-    // Have to sync reparses because requests are processed on the calling
-    // thread.
-    auto AddDocFuture = Server.addDocument(SourceFilename, SourceContents);
-
+    auto SourceFilename = testPath(SourceFileRelPath);
+    Server.addDocument(SourceFilename, SourceContents);
     auto Result = dumpASTWithoutMemoryLocs(Server, SourceFilename);
-
-    // Wait for reparse to finish before checking for errors.
-    EXPECT_EQ(AddDocFuture.wait_for(DefaultFutureTimeout),
-              std::future_status::ready);
+    EXPECT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
     EXPECT_EQ(ExpectErrors, DiagConsumer.hadErrorInLastDiags());
     return Result;
   }
@@ -362,40 +197,32 @@ int b = a;
 TEST_F(ClangdVFSTest, Reparse) {
   MockFSProvider FS;
   ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-  ClangdServer Server(CDB, DiagConsumer, FS, getDefaultAsyncThreadsCount());
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
   const auto SourceContents = R"cpp(
 #include "foo.h"
 int b = a;
 )cpp";
 
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
-  auto FooH = getVirtualTestFilePath("foo.h");
+  auto FooCpp = testPath("foo.cpp");
 
-  FS.Files[FooH] = "int a;";
+  FS.Files[testPath("foo.h")] = "int a;";
   FS.Files[FooCpp] = SourceContents;
-  FS.ExpectedFile = FooCpp;
 
-  // To sync reparses before checking for errors.
-  std::future<void> ParseFuture;
-
-  ParseFuture = Server.addDocument(FooCpp, SourceContents);
+  Server.addDocument(FooCpp, SourceContents);
   auto DumpParse1 = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  ASSERT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
-  ParseFuture = Server.addDocument(FooCpp, "");
+  Server.addDocument(FooCpp, "");
   auto DumpParseEmpty = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  ASSERT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
-  ParseFuture = Server.addDocument(FooCpp, SourceContents);
+  Server.addDocument(FooCpp, SourceContents);
   auto DumpParse2 = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  ASSERT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
   EXPECT_EQ(DumpParse1, DumpParse2);
@@ -405,73 +232,68 @@ int b = a;
 TEST_F(ClangdVFSTest, ReparseOnHeaderChange) {
   MockFSProvider FS;
   ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-
-  ClangdServer Server(CDB, DiagConsumer, FS, getDefaultAsyncThreadsCount());
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
   const auto SourceContents = R"cpp(
 #include "foo.h"
 int b = a;
 )cpp";
 
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
-  auto FooH = getVirtualTestFilePath("foo.h");
+  auto FooCpp = testPath("foo.cpp");
+  auto FooH = testPath("foo.h");
 
   FS.Files[FooH] = "int a;";
   FS.Files[FooCpp] = SourceContents;
-  FS.ExpectedFile = FooCpp;
 
-  // To sync reparses before checking for errors.
-  std::future<void> ParseFuture;
-
-  ParseFuture = Server.addDocument(FooCpp, SourceContents);
+  Server.addDocument(FooCpp, SourceContents);
   auto DumpParse1 = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  ASSERT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
   FS.Files[FooH] = "";
-  ParseFuture = Server.forceReparse(FooCpp);
+  Server.addDocument(FooCpp, SourceContents);
   auto DumpParseDifferent = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  ASSERT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
 
   FS.Files[FooH] = "int a;";
-  ParseFuture = Server.forceReparse(FooCpp);
+  Server.addDocument(FooCpp, SourceContents);
   auto DumpParse2 = dumpASTWithoutMemoryLocs(Server, FooCpp);
-  EXPECT_EQ(ParseFuture.wait_for(DefaultFutureTimeout),
-            std::future_status::ready);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
   EXPECT_EQ(DumpParse1, DumpParse2);
   EXPECT_NE(DumpParse1, DumpParseDifferent);
 }
 
-TEST_F(ClangdVFSTest, CheckVersions) {
-  MockFSProvider FS;
-  ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-  // Run ClangdServer synchronously.
-  ClangdServer Server(CDB, DiagConsumer, FS,
-                      /*AsyncThreadsCount=*/0);
+TEST_F(ClangdVFSTest, PropagatesContexts) {
+  static Key<int> Secret;
+  struct FSProvider : public FileSystemProvider {
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> getFileSystem() const override {
+      Got = Context::current().getExisting(Secret);
+      return buildTestFS({});
+    }
+    mutable int Got;
+  } FS;
+  struct DiagConsumer : public DiagnosticsConsumer {
+    void onDiagnosticsReady(PathRef File,
+                            std::vector<Diag> Diagnostics) override {
+      Got = Context::current().getExisting(Secret);
+    }
+    int Got;
+  } DiagConsumer;
+  MockCompilationDatabase CDB;
 
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
-  const auto SourceContents = "int a;";
-  FS.Files[FooCpp] = SourceContents;
-  FS.ExpectedFile = FooCpp;
-
-  // No need to sync reparses, because requests are processed on the calling
-  // thread.
-  FS.Tag = "123";
-  Server.addDocument(FooCpp, SourceContents);
-  EXPECT_EQ(Server.codeComplete(FooCpp, Position{0, 0}).Tag, FS.Tag);
-  EXPECT_EQ(DiagConsumer.lastVFSTag(), FS.Tag);
-
-  FS.Tag = "321";
-  Server.addDocument(FooCpp, SourceContents);
-  EXPECT_EQ(DiagConsumer.lastVFSTag(), FS.Tag);
-  EXPECT_EQ(Server.codeComplete(FooCpp, Position{0, 0}).Tag, FS.Tag);
+  // Verify that the context is plumbed to the FS provider and diagnostics.
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+  {
+    WithContextValue Entrypoint(Secret, 42);
+    Server.addDocument(testPath("foo.cpp"), "void main(){}");
+  }
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_EQ(FS.Got, 42);
+  EXPECT_EQ(DiagConsumer.Got, 42);
 }
 
 // Only enable this test on Unix
@@ -480,14 +302,12 @@ TEST_F(ClangdVFSTest, SearchLibDir) {
   // Checks that searches for GCC installation is done through vfs.
   MockFSProvider FS;
   ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
+  MockCompilationDatabase CDB;
   CDB.ExtraClangFlags.insert(CDB.ExtraClangFlags.end(),
                              {"-xc++", "-target", "x86_64-linux-unknown",
                               "-m64", "--gcc-toolchain=/randomusr",
                               "-stdlib=libstdc++"});
-  // Run ClangdServer synchronously.
-  ClangdServer Server(CDB, DiagConsumer, FS,
-                      /*AsyncThreadsCount=*/0);
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
   // Just a random gcc version string
   SmallString<8> Version("4.9.3");
@@ -509,23 +329,21 @@ TEST_F(ClangdVFSTest, SearchLibDir) {
   llvm::sys::path::append(StringPath, IncludeDir, "string");
   FS.Files[StringPath] = "class mock_string {};";
 
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
+  auto FooCpp = testPath("foo.cpp");
   const auto SourceContents = R"cpp(
 #include <string>
 mock_string x;
 )cpp";
   FS.Files[FooCpp] = SourceContents;
 
-  // No need to sync reparses, because requests are processed on the calling
-  // thread.
-  Server.addDocument(FooCpp, SourceContents);
+  runAddDocument(Server, FooCpp, SourceContents);
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 
   const auto SourceContentsWithError = R"cpp(
 #include <string>
 std::string x;
 )cpp";
-  Server.addDocument(FooCpp, SourceContentsWithError);
+  runAddDocument(Server, FooCpp, SourceContentsWithError);
   EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
 }
 #endif // LLVM_ON_UNIX
@@ -533,13 +351,10 @@ std::string x;
 TEST_F(ClangdVFSTest, ForceReparseCompileCommand) {
   MockFSProvider FS;
   ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-  ClangdServer Server(CDB, DiagConsumer, FS,
-                      /*AsyncThreadsCount=*/0);
-  // No need to sync reparses, because reparses are performed on the calling
-  // thread to true.
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
+  auto FooCpp = testPath("foo.cpp");
   const auto SourceContents1 = R"cpp(
 template <class T>
 struct foo { T x; };
@@ -550,97 +365,185 @@ struct bar { T x; };
 )cpp";
 
   FS.Files[FooCpp] = "";
-  FS.ExpectedFile = FooCpp;
 
   // First parse files in C mode and check they produce errors.
   CDB.ExtraClangFlags = {"-xc"};
-  Server.addDocument(FooCpp, SourceContents1);
+  runAddDocument(Server, FooCpp, SourceContents1);
   EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
-  Server.addDocument(FooCpp, SourceContents2);
+  runAddDocument(Server, FooCpp, SourceContents2);
   EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
 
   // Now switch to C++ mode.
   CDB.ExtraClangFlags = {"-xc++"};
-  // Currently, addDocument never checks if CompileCommand has changed, so we
-  // expect to see the errors.
-  Server.addDocument(FooCpp, SourceContents1);
-  EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
-  Server.addDocument(FooCpp, SourceContents2);
-  EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
-  // But forceReparse should reparse the file with proper flags.
-  Server.forceReparse(FooCpp);
+  runAddDocument(Server, FooCpp, SourceContents2, WantDiagnostics::Auto);
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
   // Subsequent addDocument calls should finish without errors too.
-  Server.addDocument(FooCpp, SourceContents1);
+  runAddDocument(Server, FooCpp, SourceContents1);
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
-  Server.addDocument(FooCpp, SourceContents2);
+  runAddDocument(Server, FooCpp, SourceContents2);
   EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
 }
 
-class ClangdCompletionTest : public ClangdVFSTest {
-protected:
-  bool ContainsItem(std::vector<CompletionItem> const &Items, StringRef Name) {
-    for (const auto &Item : Items) {
-      if (Item.insertText == Name)
-        return true;
-    }
-    return false;
-  }
-};
-
-TEST_F(ClangdCompletionTest, CheckContentsOverride) {
+TEST_F(ClangdVFSTest, ForceReparseCompileCommandDefines) {
   MockFSProvider FS;
   ErrorCheckingDiagConsumer DiagConsumer;
-  MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
-  ClangdServer Server(CDB, DiagConsumer, FS, getDefaultAsyncThreadsCount());
-
-  auto FooCpp = getVirtualTestFilePath("foo.cpp");
+  auto FooCpp = testPath("foo.cpp");
   const auto SourceContents = R"cpp(
-int aba;
-int b =   ;
-)cpp";
+#ifdef WITH_ERROR
+this
+#endif
 
-  const auto OverridenSourceContents = R"cpp(
-int cbc;
-int b =   ;
+int main() { return 0; }
 )cpp";
-  // Complete after '=' sign. We need to be careful to keep the SourceContents'
-  // size the same.
-  // We complete on the 3rd line (2nd in zero-based numbering), because raw
-  // string literal of the SourceContents starts with a newline(it's easy to
-  // miss).
-  Position CompletePos = {2, 8};
-  FS.Files[FooCpp] = SourceContents;
-  FS.ExpectedFile = FooCpp;
+  FS.Files[FooCpp] = "";
 
-  // No need to sync reparses here as there are no asserts on diagnostics (or
-  // other async operations).
+  // Parse with define, we expect to see the errors.
+  CDB.ExtraClangFlags = {"-DWITH_ERROR"};
+  runAddDocument(Server, FooCpp, SourceContents);
+  EXPECT_TRUE(DiagConsumer.hadErrorInLastDiags());
+
+  // Parse without the define, no errors should be produced.
+  CDB.ExtraClangFlags = {};
+  runAddDocument(Server, FooCpp, SourceContents, WantDiagnostics::Auto);
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
+  // Subsequent addDocument call should finish without errors too.
+  runAddDocument(Server, FooCpp, SourceContents);
+  EXPECT_FALSE(DiagConsumer.hadErrorInLastDiags());
+}
+
+// Test ClangdServer.reparseOpenedFiles.
+TEST_F(ClangdVFSTest, ReparseOpenedFiles) {
+  Annotations FooSource(R"cpp(
+#ifdef MACRO
+static void $one[[bob]]() {}
+#else
+static void $two[[bob]]() {}
+#endif
+
+int main () { bo^b (); return 0; }
+)cpp");
+
+  Annotations BarSource(R"cpp(
+#ifdef MACRO
+this is an error
+#endif
+)cpp");
+
+  Annotations BazSource(R"cpp(
+int hello;
+)cpp");
+
+  MockFSProvider FS;
+  MockCompilationDatabase CDB;
+  MultipleErrorCheckingDiagConsumer DiagConsumer;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto FooCpp = testPath("foo.cpp");
+  auto BarCpp = testPath("bar.cpp");
+  auto BazCpp = testPath("baz.cpp");
+
+  FS.Files[FooCpp] = "";
+  FS.Files[BarCpp] = "";
+  FS.Files[BazCpp] = "";
+
+  CDB.ExtraClangFlags = {"-DMACRO=1"};
+  Server.addDocument(FooCpp, FooSource.code());
+  Server.addDocument(BarCpp, BarSource.code());
+  Server.addDocument(BazCpp, BazSource.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+
+  EXPECT_THAT(DiagConsumer.filesWithDiags(),
+              UnorderedElementsAre(Pair(FooCpp, false), Pair(BarCpp, true),
+                                   Pair(BazCpp, false)));
+
+  auto Locations = runLocateSymbolAt(Server, FooCpp, FooSource.point());
+  EXPECT_TRUE(bool(Locations));
+  EXPECT_THAT(*Locations, ElementsAre(DeclAt(FooCpp, FooSource.range("one"))));
+
+  // Undefine MACRO, close baz.cpp.
+  CDB.ExtraClangFlags.clear();
+  DiagConsumer.clear();
+  Server.removeDocument(BazCpp);
+  Server.addDocument(FooCpp, FooSource.code(), WantDiagnostics::Auto);
+  Server.addDocument(BarCpp, BarSource.code(), WantDiagnostics::Auto);
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+
+  EXPECT_THAT(DiagConsumer.filesWithDiags(),
+              UnorderedElementsAre(Pair(FooCpp, false), Pair(BarCpp, false)));
+
+  Locations = runLocateSymbolAt(Server, FooCpp, FooSource.point());
+  EXPECT_TRUE(bool(Locations));
+  EXPECT_THAT(*Locations, ElementsAre(DeclAt(FooCpp, FooSource.range("two"))));
+}
+
+TEST_F(ClangdVFSTest, MemoryUsage) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  Path FooCpp = testPath("foo.cpp");
+  const auto SourceContents = R"cpp(
+struct Something {
+  int method();
+};
+)cpp";
+  Path BarCpp = testPath("bar.cpp");
+
+  FS.Files[FooCpp] = "";
+  FS.Files[BarCpp] = "";
+
+  EXPECT_THAT(Server.getUsedBytesPerFile(), IsEmpty());
+
   Server.addDocument(FooCpp, SourceContents);
+  Server.addDocument(BarCpp, SourceContents);
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
 
-  {
-    auto CodeCompletionResults1 =
-        Server.codeComplete(FooCpp, CompletePos, None).Value;
-    EXPECT_TRUE(ContainsItem(CodeCompletionResults1, "aba"));
-    EXPECT_FALSE(ContainsItem(CodeCompletionResults1, "cbc"));
-  }
+  EXPECT_THAT(Server.getUsedBytesPerFile(),
+              UnorderedElementsAre(Pair(FooCpp, Gt(0u)), Pair(BarCpp, Gt(0u))));
 
-  {
-    auto CodeCompletionResultsOverriden =
-        Server
-            .codeComplete(FooCpp, CompletePos,
-                          StringRef(OverridenSourceContents))
-            .Value;
-    EXPECT_TRUE(ContainsItem(CodeCompletionResultsOverriden, "cbc"));
-    EXPECT_FALSE(ContainsItem(CodeCompletionResultsOverriden, "aba"));
-  }
+  Server.removeDocument(FooCpp);
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_THAT(Server.getUsedBytesPerFile(), ElementsAre(Pair(BarCpp, Gt(0u))));
 
-  {
-    auto CodeCompletionResults2 =
-        Server.codeComplete(FooCpp, CompletePos, None).Value;
-    EXPECT_TRUE(ContainsItem(CodeCompletionResults2, "aba"));
-    EXPECT_FALSE(ContainsItem(CodeCompletionResults2, "cbc"));
-  }
+  Server.removeDocument(BarCpp);
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_THAT(Server.getUsedBytesPerFile(), IsEmpty());
+}
+
+TEST_F(ClangdVFSTest, InvalidCompileCommand) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto FooCpp = testPath("foo.cpp");
+  // clang cannot create CompilerInvocation if we pass two files in the
+  // CompileCommand. We pass the file in ExtraFlags once and CDB adds another
+  // one in getCompileCommand().
+  CDB.ExtraClangFlags.push_back(FooCpp);
+
+  // Clang can't parse command args in that case, but we shouldn't crash.
+  runAddDocument(Server, FooCpp, "int main() {}");
+
+  EXPECT_EQ(runDumpAST(Server, FooCpp), "<no-ast>");
+  EXPECT_ERROR(runLocateSymbolAt(Server, FooCpp, Position()));
+  EXPECT_ERROR(runFindDocumentHighlights(Server, FooCpp, Position()));
+  EXPECT_ERROR(runRename(Server, FooCpp, Position(), "new_name"));
+  // Identifier-based fallback completion.
+  EXPECT_THAT(cantFail(runCodeComplete(Server, FooCpp, Position(),
+                                       clangd::CodeCompleteOptions()))
+                  .Completions,
+              ElementsAre(Field(&CodeCompletion::Name, "int"),
+                          Field(&CodeCompletion::Name, "main")));
+  auto SigHelp = runSignatureHelp(Server, FooCpp, Position());
+  ASSERT_TRUE(bool(SigHelp)) << "signatureHelp returned an error";
+  EXPECT_THAT(SigHelp->signatures, IsEmpty());
 }
 
 class ClangdThreadingTest : public ClangdVFSTest {};
@@ -674,17 +577,13 @@ int d;
   unsigned MaxLineForFileRequests = 7;
   unsigned MaxColumnForFileRequests = 10;
 
-  std::vector<SmallString<32>> FilePaths;
-  FilePaths.reserve(FilesCount);
-  for (unsigned I = 0; I < FilesCount; ++I)
-    FilePaths.push_back(getVirtualTestFilePath(std::string("Foo") +
-                                               std::to_string(I) + ".cpp"));
-  // Mark all of those files as existing.
-  llvm::StringMap<std::string> FileContents;
-  for (auto &&FilePath : FilePaths)
-    FileContents[FilePath] = "";
-
-  ConstantFSProvider FS(buildTestFS(FileContents));
+  std::vector<std::string> FilePaths;
+  MockFSProvider FS;
+  for (unsigned I = 0; I < FilesCount; ++I) {
+    std::string Name = std::string("Foo") + std::to_string(I) + ".cpp";
+    FS.Files[Name] = "";
+    FilePaths.push_back(testPath(Name));
+  }
 
   struct FileStat {
     unsigned HitsWithoutErrors = 0;
@@ -696,15 +595,14 @@ int d;
   public:
     TestDiagConsumer() : Stats(FilesCount, FileStat()) {}
 
-    void onDiagnosticsReady(
-        PathRef File,
-        Tagged<std::vector<DiagWithFixIts>> Diagnostics) override {
+    void onDiagnosticsReady(PathRef File,
+                            std::vector<Diag> Diagnostics) override {
       StringRef FileIndexStr = llvm::sys::path::stem(File);
       ASSERT_TRUE(FileIndexStr.consume_front("Foo"));
 
       unsigned long FileIndex = std::stoul(FileIndexStr.str());
 
-      bool HadError = diagsContainErrors(Diagnostics.Value);
+      bool HadError = diagsContainErrors(Diagnostics);
 
       std::lock_guard<std::mutex> Lock(Mutex);
       if (HadError)
@@ -729,7 +627,6 @@ int d;
     unsigned RequestsWithErrors = 0;
     bool LastContentsHadErrors = false;
     bool FileIsRemoved = true;
-    std::future<void> LastRequestFuture;
   };
 
   std::vector<RequestStats> ReqStats;
@@ -739,8 +636,8 @@ int d;
 
   TestDiagConsumer DiagConsumer;
   {
-    MockCompilationDatabase CDB(/*AddFreestandingFlag=*/true);
-    ClangdServer Server(CDB, DiagConsumer, FS, getDefaultAsyncThreadsCount());
+    MockCompilationDatabase CDB;
+    ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
 
     // Prepare some random distributions for the test.
     std::random_device RandGen;
@@ -754,8 +651,7 @@ int d;
     std::uniform_int_distribution<int> ColumnDist(0, MaxColumnForFileRequests);
 
     // Some helpers.
-    auto UpdateStatsOnAddDocument = [&](unsigned FileIndex, bool HadErrors,
-                                        std::future<void> Future) {
+    auto UpdateStatsOnAddDocument = [&](unsigned FileIndex, bool HadErrors) {
       auto &Stats = ReqStats[FileIndex];
 
       if (HadErrors)
@@ -764,86 +660,80 @@ int d;
         ++Stats.RequestsWithoutErrors;
       Stats.LastContentsHadErrors = HadErrors;
       Stats.FileIsRemoved = false;
-      Stats.LastRequestFuture = std::move(Future);
     };
 
-    auto UpdateStatsOnRemoveDocument = [&](unsigned FileIndex,
-                                           std::future<void> Future) {
+    auto UpdateStatsOnRemoveDocument = [&](unsigned FileIndex) {
       auto &Stats = ReqStats[FileIndex];
 
       Stats.FileIsRemoved = true;
-      Stats.LastRequestFuture = std::move(Future);
     };
 
-    auto UpdateStatsOnForceReparse = [&](unsigned FileIndex,
-                                         std::future<void> Future) {
-      auto &Stats = ReqStats[FileIndex];
-
-      Stats.LastRequestFuture = std::move(Future);
-      if (Stats.LastContentsHadErrors)
-        ++Stats.RequestsWithErrors;
-      else
-        ++Stats.RequestsWithoutErrors;
-    };
-
-    auto AddDocument = [&](unsigned FileIndex) {
+    auto AddDocument = [&](unsigned FileIndex, bool SkipCache) {
       bool ShouldHaveErrors = ShouldHaveErrorsDist(RandGen);
-      auto Future = Server.addDocument(
-          FilePaths[FileIndex], ShouldHaveErrors ? SourceContentsWithErrors
-                                                 : SourceContentsWithoutErrors);
-      UpdateStatsOnAddDocument(FileIndex, ShouldHaveErrors, std::move(Future));
+      Server.addDocument(FilePaths[FileIndex],
+                         ShouldHaveErrors ? SourceContentsWithErrors
+                                          : SourceContentsWithoutErrors,
+                         WantDiagnostics::Auto);
+      UpdateStatsOnAddDocument(FileIndex, ShouldHaveErrors);
     };
 
     // Various requests that we would randomly run.
     auto AddDocumentRequest = [&]() {
       unsigned FileIndex = FileIndexDist(RandGen);
-      AddDocument(FileIndex);
+      AddDocument(FileIndex, /*SkipCache=*/false);
     };
 
     auto ForceReparseRequest = [&]() {
       unsigned FileIndex = FileIndexDist(RandGen);
-      // Make sure we don't violate the ClangdServer's contract.
-      if (ReqStats[FileIndex].FileIsRemoved)
-        AddDocument(FileIndex);
-
-      auto Future = Server.forceReparse(FilePaths[FileIndex]);
-      UpdateStatsOnForceReparse(FileIndex, std::move(Future));
+      AddDocument(FileIndex, /*SkipCache=*/true);
     };
 
     auto RemoveDocumentRequest = [&]() {
       unsigned FileIndex = FileIndexDist(RandGen);
       // Make sure we don't violate the ClangdServer's contract.
       if (ReqStats[FileIndex].FileIsRemoved)
-        AddDocument(FileIndex);
+        AddDocument(FileIndex, /*SkipCache=*/false);
 
-      auto Future = Server.removeDocument(FilePaths[FileIndex]);
-      UpdateStatsOnRemoveDocument(FileIndex, std::move(Future));
+      Server.removeDocument(FilePaths[FileIndex]);
+      UpdateStatsOnRemoveDocument(FileIndex);
     };
 
     auto CodeCompletionRequest = [&]() {
       unsigned FileIndex = FileIndexDist(RandGen);
       // Make sure we don't violate the ClangdServer's contract.
       if (ReqStats[FileIndex].FileIsRemoved)
-        AddDocument(FileIndex);
+        AddDocument(FileIndex, /*SkipCache=*/false);
 
-      Position Pos{LineDist(RandGen), ColumnDist(RandGen)};
-      Server.codeComplete(FilePaths[FileIndex], Pos);
+      Position Pos;
+      Pos.line = LineDist(RandGen);
+      Pos.character = ColumnDist(RandGen);
+      // FIXME(ibiryukov): Also test async completion requests.
+      // Simply putting CodeCompletion into async requests now would make
+      // tests slow, since there's no way to cancel previous completion
+      // requests as opposed to AddDocument/RemoveDocument, which are implicitly
+      // cancelled by any subsequent AddDocument/RemoveDocument request to the
+      // same file.
+      cantFail(runCodeComplete(Server, FilePaths[FileIndex], Pos,
+                               clangd::CodeCompleteOptions()));
     };
 
-    auto FindDefinitionsRequest = [&]() {
+    auto LocateSymbolRequest = [&]() {
       unsigned FileIndex = FileIndexDist(RandGen);
       // Make sure we don't violate the ClangdServer's contract.
       if (ReqStats[FileIndex].FileIsRemoved)
-        AddDocument(FileIndex);
+        AddDocument(FileIndex, /*SkipCache=*/false);
 
-      Position Pos{LineDist(RandGen), ColumnDist(RandGen)};
-      Server.findDefinitions(FilePaths[FileIndex], Pos);
+      Position Pos;
+      Pos.line = LineDist(RandGen);
+      Pos.character = ColumnDist(RandGen);
+
+      ASSERT_TRUE(!!runLocateSymbolAt(Server, FilePaths[FileIndex], Pos));
     };
 
     std::vector<std::function<void()>> AsyncRequests = {
         AddDocumentRequest, ForceReparseRequest, RemoveDocumentRequest};
     std::vector<std::function<void()>> BlockingRequests = {
-        CodeCompletionRequest, FindDefinitionsRequest};
+        CodeCompletionRequest, LocateSymbolRequest};
 
     // Bash requests to ClangdServer in a loop.
     std::uniform_int_distribution<int> AsyncRequestIndexDist(
@@ -861,18 +751,8 @@ int d;
         BlockingRequests[RequestIndex]();
       }
     }
-
-    // Wait for last requests to finish.
-    for (auto &ReqStat : ReqStats) {
-      if (!ReqStat.LastRequestFuture.valid())
-        continue; // We never ran any requests for this file.
-
-      // Future should be ready much earlier than in 5 seconds, the timeout is
-      // there to check we won't wait indefinitely.
-      ASSERT_EQ(ReqStat.LastRequestFuture.wait_for(std::chrono::seconds(5)),
-                std::future_status::ready);
-    }
-  } // Wait for ClangdServer to shutdown before proceeding.
+    ASSERT_TRUE(Server.blockUntilIdleForTest());
+  }
 
   // Check some invariants about the state of the program.
   std::vector<FileStat> Stats = DiagConsumer.takeFileStats();
@@ -887,5 +767,338 @@ int d;
   }
 }
 
+TEST_F(ClangdVFSTest, CheckSourceHeaderSwitch) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto SourceContents = R"cpp(
+  #include "foo.h"
+  int b = a;
+  )cpp";
+
+  auto FooCpp = testPath("foo.cpp");
+  auto FooH = testPath("foo.h");
+  auto Invalid = testPath("main.cpp");
+
+  FS.Files[FooCpp] = SourceContents;
+  FS.Files[FooH] = "int a;";
+  FS.Files[Invalid] = "int main() { \n return 0; \n }";
+
+  Optional<Path> PathResult = Server.switchSourceHeader(FooCpp);
+  EXPECT_TRUE(PathResult.hasValue());
+  ASSERT_EQ(PathResult.getValue(), FooH);
+
+  PathResult = Server.switchSourceHeader(FooH);
+  EXPECT_TRUE(PathResult.hasValue());
+  ASSERT_EQ(PathResult.getValue(), FooCpp);
+
+  SourceContents = R"c(
+  #include "foo.HH"
+  int b = a;
+  )c";
+
+  // Test with header file in capital letters and different extension, source
+  // file with different extension
+  auto FooC = testPath("bar.c");
+  auto FooHH = testPath("bar.HH");
+
+  FS.Files[FooC] = SourceContents;
+  FS.Files[FooHH] = "int a;";
+
+  PathResult = Server.switchSourceHeader(FooC);
+  EXPECT_TRUE(PathResult.hasValue());
+  ASSERT_EQ(PathResult.getValue(), FooHH);
+
+  // Test with both capital letters
+  auto Foo2C = testPath("foo2.C");
+  auto Foo2HH = testPath("foo2.HH");
+  FS.Files[Foo2C] = SourceContents;
+  FS.Files[Foo2HH] = "int a;";
+
+  PathResult = Server.switchSourceHeader(Foo2C);
+  EXPECT_TRUE(PathResult.hasValue());
+  ASSERT_EQ(PathResult.getValue(), Foo2HH);
+
+  // Test with source file as capital letter and .hxx header file
+  auto Foo3C = testPath("foo3.C");
+  auto Foo3HXX = testPath("foo3.hxx");
+
+  SourceContents = R"c(
+  #include "foo3.hxx"
+  int b = a;
+  )c";
+
+  FS.Files[Foo3C] = SourceContents;
+  FS.Files[Foo3HXX] = "int a;";
+
+  PathResult = Server.switchSourceHeader(Foo3C);
+  EXPECT_TRUE(PathResult.hasValue());
+  ASSERT_EQ(PathResult.getValue(), Foo3HXX);
+
+  // Test if asking for a corresponding file that doesn't exist returns an empty
+  // string.
+  PathResult = Server.switchSourceHeader(Invalid);
+  EXPECT_FALSE(PathResult.hasValue());
+}
+
+TEST_F(ClangdThreadingTest, NoConcurrentDiagnostics) {
+  class NoConcurrentAccessDiagConsumer : public DiagnosticsConsumer {
+  public:
+    std::atomic<int> Count = {0};
+
+    NoConcurrentAccessDiagConsumer(std::promise<void> StartSecondReparse)
+        : StartSecondReparse(std::move(StartSecondReparse)) {}
+
+    void onDiagnosticsReady(PathRef, std::vector<Diag>) override {
+      ++Count;
+      std::unique_lock<std::mutex> Lock(Mutex, std::try_to_lock_t());
+      ASSERT_TRUE(Lock.owns_lock())
+          << "Detected concurrent onDiagnosticsReady calls for the same file.";
+
+      // If we started the second parse immediately, it might cancel the first.
+      // So we don't allow it to start until the first has delivered diags...
+      if (FirstRequest) {
+        FirstRequest = false;
+        StartSecondReparse.set_value();
+        // ... but then we wait long enough that the callbacks would overlap.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    }
+
+  private:
+    std::mutex Mutex;
+    bool FirstRequest = true;
+    std::promise<void> StartSecondReparse;
+  };
+
+  const auto SourceContentsWithoutErrors = R"cpp(
+int a;
+int b;
+int c;
+int d;
+)cpp";
+
+  const auto SourceContentsWithErrors = R"cpp(
+int a = x;
+int b;
+int c;
+int d;
+)cpp";
+
+  auto FooCpp = testPath("foo.cpp");
+  MockFSProvider FS;
+  FS.Files[FooCpp] = "";
+
+  std::promise<void> StartSecondPromise;
+  std::future<void> StartSecond = StartSecondPromise.get_future();
+
+  NoConcurrentAccessDiagConsumer DiagConsumer(std::move(StartSecondPromise));
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+  Server.addDocument(FooCpp, SourceContentsWithErrors);
+  StartSecond.wait();
+  Server.addDocument(FooCpp, SourceContentsWithoutErrors);
+  ASSERT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
+  ASSERT_EQ(DiagConsumer.Count, 2); // Sanity check - we actually ran both?
+}
+
+TEST_F(ClangdVFSTest, FormatCode) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto Path = testPath("foo.cpp");
+  std::string Code = R"cpp(
+#include "x.h"
+#include "y.h"
+
+void f(  )  {}
+)cpp";
+  std::string Expected = R"cpp(
+#include "x.h"
+#include "y.h"
+
+void f() {}
+)cpp";
+  FS.Files[Path] = Code;
+  runAddDocument(Server, Path, Code);
+
+  auto Replaces = Server.formatFile(Code, Path);
+  EXPECT_TRUE(static_cast<bool>(Replaces));
+  auto Changed = tooling::applyAllReplacements(Code, *Replaces);
+  EXPECT_TRUE(static_cast<bool>(Changed));
+  EXPECT_EQ(Expected, *Changed);
+}
+
+TEST_F(ClangdVFSTest, ChangedHeaderFromISystem) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto SourcePath = testPath("source/foo.cpp");
+  auto HeaderPath = testPath("headers/foo.h");
+  FS.Files[HeaderPath] = "struct X { int bar; };";
+  Annotations Code(R"cpp(
+    #include "foo.h"
+
+    int main() {
+      X().ba^
+    })cpp");
+  CDB.ExtraClangFlags.push_back("-xc++");
+  CDB.ExtraClangFlags.push_back("-isystem" + testPath("headers"));
+
+  runAddDocument(Server, SourcePath, Code.code());
+  auto Completions = cantFail(runCodeComplete(Server, SourcePath, Code.point(),
+                                              clangd::CodeCompleteOptions()))
+                         .Completions;
+  EXPECT_THAT(Completions, ElementsAre(Field(&CodeCompletion::Name, "bar")));
+  // Update the header and rerun addDocument to make sure we get the updated
+  // files.
+  FS.Files[HeaderPath] = "struct X { int bar; int baz; };";
+  runAddDocument(Server, SourcePath, Code.code());
+  Completions = cantFail(runCodeComplete(Server, SourcePath, Code.point(),
+                                         clangd::CodeCompleteOptions()))
+                    .Completions;
+  // We want to make sure we see the updated version.
+  EXPECT_THAT(Completions, ElementsAre(Field(&CodeCompletion::Name, "bar"),
+                                       Field(&CodeCompletion::Name, "baz")));
+}
+
+// FIXME(ioeric): make this work for windows again.
+#ifndef _WIN32
+// Check that running code completion doesn't stat() a bunch of files from the
+// preamble again. (They should be using the preamble's stat-cache)
+TEST(ClangdTests, PreambleVFSStatCache) {
+  class ListenStatsFSProvider : public FileSystemProvider {
+  public:
+    ListenStatsFSProvider(llvm::StringMap<unsigned> &CountStats)
+        : CountStats(CountStats) {}
+
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> getFileSystem() const override {
+      class ListenStatVFS : public llvm::vfs::ProxyFileSystem {
+      public:
+        ListenStatVFS(IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS,
+                      llvm::StringMap<unsigned> &CountStats)
+            : ProxyFileSystem(std::move(FS)), CountStats(CountStats) {}
+
+        llvm::ErrorOr<std::unique_ptr<llvm::vfs::File>>
+        openFileForRead(const Twine &Path) override {
+          ++CountStats[llvm::sys::path::filename(Path.str())];
+          return ProxyFileSystem::openFileForRead(Path);
+        }
+        llvm::ErrorOr<llvm::vfs::Status> status(const Twine &Path) override {
+          ++CountStats[llvm::sys::path::filename(Path.str())];
+          return ProxyFileSystem::status(Path);
+        }
+
+      private:
+        llvm::StringMap<unsigned> &CountStats;
+      };
+
+      return IntrusiveRefCntPtr<ListenStatVFS>(
+          new ListenStatVFS(buildTestFS(Files), CountStats));
+    }
+
+    // If relative paths are used, they are resolved with testPath().
+    llvm::StringMap<std::string> Files;
+    llvm::StringMap<unsigned> &CountStats;
+  };
+
+  llvm::StringMap<unsigned> CountStats;
+  ListenStatsFSProvider FS(CountStats);
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto SourcePath = testPath("foo.cpp");
+  auto HeaderPath = testPath("foo.h");
+  FS.Files[HeaderPath] = "struct TestSym {};";
+  Annotations Code(R"cpp(
+    #include "foo.h"
+
+    int main() {
+      TestSy^
+    })cpp");
+
+  runAddDocument(Server, SourcePath, Code.code());
+
+  unsigned Before = CountStats["foo.h"];
+  EXPECT_GT(Before, 0u);
+  auto Completions = cantFail(runCodeComplete(Server, SourcePath, Code.point(),
+                                              clangd::CodeCompleteOptions()))
+                         .Completions;
+  EXPECT_EQ(CountStats["foo.h"], Before);
+  EXPECT_THAT(Completions,
+              ElementsAre(Field(&CodeCompletion::Name, "TestSym")));
+}
+#endif
+
+TEST_F(ClangdVFSTest, FlagsWithPlugins) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  CDB.ExtraClangFlags = {
+      "-Xclang",
+      "-add-plugin",
+      "-Xclang",
+      "random-plugin",
+  };
+  OverlayCDB OCDB(&CDB);
+  ClangdServer Server(OCDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto FooCpp = testPath("foo.cpp");
+  const auto SourceContents = "int main() { return 0; }";
+  FS.Files[FooCpp] = FooCpp;
+  Server.addDocument(FooCpp, SourceContents);
+  auto Result = dumpASTWithoutMemoryLocs(Server, FooCpp);
+  EXPECT_TRUE(Server.blockUntilIdleForTest()) << "Waiting for diagnostics";
+  EXPECT_NE(Result, "<no-ast>");
+}
+
+TEST_F(ClangdVFSTest, FallbackWhenPreambleIsNotReady) {
+  MockFSProvider FS;
+  ErrorCheckingDiagConsumer DiagConsumer;
+  MockCompilationDatabase CDB;
+  ClangdServer Server(CDB, FS, DiagConsumer, ClangdServer::optsForTest());
+
+  auto FooCpp = testPath("foo.cpp");
+   Annotations Code(R"cpp(
+    namespace ns { int xyz; }
+    using namespace ns;
+    int main() {
+       xy^
+    })cpp");
+  FS.Files[FooCpp] = FooCpp;
+
+  auto Opts = clangd::CodeCompleteOptions();
+  Opts.AllowFallback = true;
+
+  // This will make compile command broken and preamble absent.
+  CDB.ExtraClangFlags = {"yolo.cc"};
+  Server.addDocument(FooCpp, Code.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  auto Res = cantFail(runCodeComplete(Server, FooCpp, Code.point(), Opts));
+  EXPECT_EQ(Res.Context, CodeCompletionContext::CCC_Recovery);
+  // Identifier-based fallback completion doesn't know about "symbol" scope.
+  EXPECT_THAT(Res.Completions,
+              ElementsAre(AllOf(Field(&CodeCompletion::Name, "xyz"),
+                                Field(&CodeCompletion::Scope, ""))));
+
+  // Make the compile command work again.
+  CDB.ExtraClangFlags = {"-std=c++11"};
+  Server.addDocument(FooCpp, Code.code());
+  ASSERT_TRUE(Server.blockUntilIdleForTest());
+  EXPECT_THAT(cantFail(runCodeComplete(Server, FooCpp, Code.point(),
+                                       clangd::CodeCompleteOptions()))
+                  .Completions,
+              ElementsAre(AllOf(Field(&CodeCompletion::Name, "xyz"),
+                                Field(&CodeCompletion::Scope, "ns::"))));
+}
+
+} // namespace
 } // namespace clangd
 } // namespace clang

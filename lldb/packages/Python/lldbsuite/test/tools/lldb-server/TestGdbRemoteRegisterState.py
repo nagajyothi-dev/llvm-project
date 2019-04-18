@@ -12,6 +12,7 @@ class TestGdbRemoteRegisterState(gdbremote_testcase.GdbRemoteTestCaseBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
+    @skipIfDarwinEmbedded # <rdar://problem/34539270> lldb-server tests not updated to work on ios etc yet
     def grp_register_save_restore_works(self, with_suffix):
         # Start up the process, use thread suffix, grab main thread id.
         inferior_args = ["message:main entered", "sleep:5"]
@@ -23,15 +24,6 @@ class TestGdbRemoteRegisterState(gdbremote_testcase.GdbRemoteTestCaseBase):
         if with_suffix:
             self.add_thread_suffix_request_packets()
         self.add_threadinfo_collection_packets()
-        self.test_sequence.add_log_lines([
-            # Start the inferior...
-            "read packet: $c#63",
-            # ... match output....
-            {"type": "output_match", "regex": self.maybe_strict_output_regex(
-                r"message:main entered\r\n")},
-        ], True)
-        # ... then interrupt.
-        self.add_interrupt_packets()
 
         context = self.expect_gdbremote_sequence()
         self.assertIsNotNone(context)

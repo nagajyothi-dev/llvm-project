@@ -1,13 +1,11 @@
 //===-- PlatformAndroidRemoteGDBServer.cpp ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// Other libraries and framework includes
 #include "lldb/Host/ConnectionFileDescriptor.h"
 #include "lldb/Host/common/TCPSocket.h"
 #include "lldb/Utility/Log.h"
@@ -180,9 +178,9 @@ Status PlatformAndroidRemoteGDBServer::MakeConnectURL(
   static const int kAttempsNum = 5;
 
   Status error;
-  // There is a race possibility that somebody will occupy
-  // a port while we're in between FindUnusedPort and ForwardPortWithAdb -
-  // adding the loop to mitigate such problem.
+  // There is a race possibility that somebody will occupy a port while we're
+  // in between FindUnusedPort and ForwardPortWithAdb - adding the loop to
+  // mitigate such problem.
   for (auto i = 0; i < kAttempsNum; ++i) {
     uint16_t local_port = 0;
     error = FindUnusedPort(local_port);
@@ -208,10 +206,9 @@ lldb::ProcessSP PlatformAndroidRemoteGDBServer::ConnectProcess(
     lldb_private::Debugger &debugger, lldb_private::Target *target,
     lldb_private::Status &error) {
   // We don't have the pid of the remote gdbserver when it isn't started by us
-  // but we still want
-  // to store the list of port forwards we set up in our port forward map.
-  // Generate a fake pid for
-  // these cases what won't collide with any other valid pid on android.
+  // but we still want to store the list of port forwards we set up in our port
+  // forward map. Generate a fake pid for these cases what won't collide with
+  // any other valid pid on android.
   static lldb::pid_t s_remote_gdbserver_fake_pid = 0xffffffffffffffffULL;
 
   int remote_port;

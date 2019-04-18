@@ -1,15 +1,14 @@
 //===-- tsan_test_util_posix.cc -------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 // This file is a part of ThreadSanitizer (TSan), a race detector.
 //
-// Test utils, Linux, FreeBSD and Darwin implementation.
+// Test utils, Linux, FreeBSD, NetBSD and Darwin implementation.
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common/sanitizer_atomic.h"
@@ -270,7 +269,7 @@ void ScopedThread::Impl::HandleEvent(Event *ev) {
       }
     }
     CHECK_NE(tsan_mop, 0);
-#if defined(__FreeBSD__) || defined(__APPLE__)
+#if defined(__FreeBSD__) || defined(__APPLE__) || defined(__NetBSD__)
     const int ErrCode = ESOCKTNOSUPPORT;
 #else
     const int ErrCode = ECHRNG;

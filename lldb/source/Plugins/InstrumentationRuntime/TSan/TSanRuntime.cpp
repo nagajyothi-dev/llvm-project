@@ -1,9 +1,8 @@
 //===-- TSanRuntime.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +29,8 @@
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/RegularExpression.h"
 #include "lldb/Utility/Stream.h"
+
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -58,8 +59,6 @@ lldb::InstrumentationRuntimeType ThreadSanitizerRuntime::GetTypeStatic() {
 }
 
 ThreadSanitizerRuntime::~ThreadSanitizerRuntime() { Deactivate(); }
-
-static constexpr std::chrono::seconds g_retrieve_data_function_timeout(2);
 
 const char *thread_sanitizer_retrieve_report_data_prefix = R"(
 extern "C"
@@ -282,9 +281,8 @@ GetRenumberedThreadIds(ProcessSP process_sp, ValueObjectSP data,
         } else {
           // This isn't a live thread anymore.  Ask process to assign a new
           // Index ID (or return an old one if we've already seen this
-          // thread_os_id).
-          // It will also make sure that no new threads are assigned this Index
-          // ID.
+          // thread_os_id). It will also make sure that no new threads are
+          // assigned this Index ID.
           lldb_user_id = process_sp->AssignIndexIDToThread(thread_os_id);
         }
 
@@ -318,7 +316,7 @@ ThreadSanitizerRuntime::RetrieveReportData(ExecutionContextRef exe_ctx_ref) {
   options.SetTryAllThreads(true);
   options.SetStopOthers(true);
   options.SetIgnoreBreakpoints(true);
-  options.SetTimeout(g_retrieve_data_function_timeout);
+  options.SetTimeout(process_sp->GetUtilityExpressionTimeout());
   options.SetPrefix(thread_sanitizer_retrieve_report_data_prefix);
   options.SetAutoApplyFixIts(false);
   options.SetLanguage(eLanguageTypeObjC_plus_plus);
@@ -574,7 +572,7 @@ static void GetSymbolDeclarationFromAddress(ProcessSP process_sp, addr_t addr,
     return;
 
   VariableList var_list;
-  module->FindGlobalVariables(sym_name, nullptr, true, 1U, var_list);
+  module->FindGlobalVariables(sym_name, nullptr, 1U, var_list);
   if (var_list.GetSize() < 1)
     return;
 
@@ -1052,7 +1050,7 @@ lldb::ThreadCollectionSP
 ThreadSanitizerRuntime::GetBacktracesFromExtendedStopInfo(
     StructuredData::ObjectSP info) {
   ThreadCollectionSP threads;
-  threads.reset(new ThreadCollection());
+  threads = std::make_shared<ThreadCollection>();
 
   if (info->GetObjectForDotSeparatedPath("instrumentation_class")
           ->GetStringValue() != "ThreadSanitizer")

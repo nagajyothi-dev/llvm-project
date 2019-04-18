@@ -1,9 +1,8 @@
 //===- LoopGenerators.h - IR helper to create loops -------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,44 +15,58 @@
 
 #include "polly/CodeGen/IRBuilder.h"
 #include "polly/Support/ScopHelper.h"
-
 #include "llvm/ADT/SetVector.h"
-#include "llvm/IR/ValueMap.h"
-
-namespace llvm {
-class Value;
-class Pass;
-class BasicBlock;
-} // namespace llvm
 
 namespace polly {
 using namespace llvm;
 
+/// General scheduling types of parallel OpenMP for loops.
+/// Initialization values taken from OpenMP's enum in kmp.h: sched_type.
+/// Currently, only 'static' scheduling may change from chunked to non-chunked.
+enum class OMPGeneralSchedulingType {
+  StaticChunked = 33,
+  StaticNonChunked = 34,
+  Dynamic = 35,
+  Guided = 36,
+  Runtime = 37
+};
+
+extern int PollyNumThreads;
+extern OMPGeneralSchedulingType PollyScheduling;
+extern int PollyChunkSize;
+
 /// Create a scalar do/for-style loop.
 ///
-/// @param LowerBound The starting value of the induction variable.
-/// @param UpperBound The upper bound of the induction variable.
-/// @param Stride     The value by which the induction variable is incremented.
+/// @param LowerBound         The starting value of the induction variable.
+/// @param UpperBound         The upper bound of the induction variable.
+/// @param Stride             The value by which the induction variable
+///                           is incremented.
 ///
-/// @param Builder    The builder used to create the loop.
-/// @param P          A pointer to the pass that uses this function. It is used
-///                   to update analysis information.
-/// @param LI         The loop info for the current function
-/// @param DT         The dominator tree we need to update
-/// @param ExitBlock  The block the loop will exit to.
-/// @param Predicate  The predicate used to generate the upper loop bound.
-/// @param Annotator  This function can (optionally) take a ScopAnnotator which
-///                   annotates loops and alias information in the SCoP.
-/// @param Parallel   If this loop should be marked parallel in the Annotator.
-/// @param UseGuard   Create a guard in front of the header to check if the
-///                   loop is executed at least once, otherwise just assume it.
+/// @param Builder            The builder used to create the loop.
+/// @param P                  A pointer to the pass that uses this function.
+///                           It is used to update analysis information.
+/// @param LI                 The loop info for the current function
+/// @param DT                 The dominator tree we need to update
+/// @param ExitBlock          The block the loop will exit to.
+/// @param Predicate          The predicate used to generate the upper loop
+///                           bound.
+/// @param Annotator          This function can (optionally) take
+///                           a ScopAnnotator which
+///                           annotates loops and alias information in the SCoP.
+/// @param Parallel           If this loop should be marked parallel in
+///                           the Annotator.
+/// @param UseGuard           Create a guard in front of the header to check if
+///                           the loop is executed at least once, otherwise just
+///                           assume it.
+/// @param LoopVectDisabled   If the Loop vectorizer should be disabled for this
+///                           loop.
 ///
 /// @return Value*    The newly created induction variable for this loop.
 Value *createLoop(Value *LowerBound, Value *UpperBound, Value *Stride,
                   PollyIRBuilder &Builder, LoopInfo &LI, DominatorTree &DT,
                   BasicBlock *&ExitBlock, ICmpInst::Predicate Predicate,
                   ScopAnnotator *Annotator = NULL, bool Parallel = false,
-                  bool UseGuard = true);
+                  bool UseGuard = true, bool LoopVectDisabled = false);
 
 /// The ParallelLoopGenerator allows to create parallelized loops
 ///
@@ -126,7 +139,7 @@ public:
                             SetVector<Value *> &Values, ValueMapT &VMap,
                             BasicBlock::iterator *LoopBody);
 
-private:
+protected:
   /// The IR builder we use to create instructions.
   PollyIRBuilder &Builder;
 
@@ -143,38 +156,6 @@ private:
   Module *M;
 
 public:
-  /// The functions below can be used if one does not want to generate a
-  /// specific OpenMP parallel loop, but generate individual parts of it
-  /// (e.g., the subfunction definition).
-
-  /// Create a runtime library call to spawn the worker threads.
-  ///
-  /// @param SubFn      The subfunction which holds the loop body.
-  /// @param SubFnParam The parameter for the subfunction (basically the struct
-  ///                   filled with the outside values).
-  /// @param LB         The lower bound for the loop we parallelize.
-  /// @param UB         The upper bound for the loop we parallelize.
-  /// @param Stride     The stride of the loop we parallelize.
-  void createCallSpawnThreads(Value *SubFn, Value *SubFnParam, Value *LB,
-                              Value *UB, Value *Stride);
-
-  /// Create a runtime library call to join the worker threads.
-  void createCallJoinThreads();
-
-  /// Create a runtime library call to get the next work item.
-  ///
-  /// @param LBPtr A pointer value to store the work item begin in.
-  /// @param UBPtr A pointer value to store the work item end in.
-  ///
-  /// @returns A true value if the work item is not empty.
-  Value *createCallGetWorkItem(Value *LBPtr, Value *UBPtr);
-
-  /// Create a runtime library call to allow cleanup of the thread.
-  ///
-  /// @note This function is called right before the thread will exit the
-  ///       subfunction and only if the runtime system depends on it.
-  void createCallCleanupThread();
-
   /// Create a struct for all @p Values and store them in there.
   ///
   /// @param Values The values which should be stored in the struct.
@@ -192,7 +173,29 @@ public:
                                Value *Struct, ValueMapT &VMap);
 
   /// Create the definition of the parallel subfunction.
+  ///
+  /// @return A pointer to the subfunction.
   Function *createSubFnDefinition();
+
+  /// Create the runtime library calls for spawn and join of the worker threads.
+  /// Additionally, places a call to the specified subfunction.
+  ///
+  /// @param SubFn      The subfunction which holds the loop body.
+  /// @param SubFnParam The parameter for the subfunction (basically the struct
+  ///                   filled with the outside values).
+  /// @param LB         The lower bound for the loop we parallelize.
+  /// @param UB         The upper bound for the loop we parallelize.
+  /// @param Stride     The stride of the loop we parallelize.
+  virtual void deployParallelExecution(Value *SubFn, Value *SubFnParam,
+                                       Value *LB, Value *UB, Value *Stride) = 0;
+
+  /// Prepare the definition of the parallel subfunction.
+  /// Creates the argument list and names them (as well as the subfunction).
+  ///
+  /// @param F A pointer to the (parallel) subfunction's parent function.
+  ///
+  /// @return The pointer to the (parallel) subfunction.
+  virtual Function *prepareSubFnDefinition(Function *F) const = 0;
 
   /// Create the parallel subfunction.
   ///
@@ -205,9 +208,9 @@ public:
   /// @param SubFn  The newly created subfunction is returned here.
   ///
   /// @return The newly created induction variable.
-  Value *createSubFn(Value *Stride, AllocaInst *Struct,
-                     SetVector<Value *> UsedValues, ValueMapT &VMap,
-                     Function **SubFn);
+  virtual std::tuple<Value *, Function *>
+  createSubFn(Value *Stride, AllocaInst *Struct, SetVector<Value *> UsedValues,
+              ValueMapT &VMap) = 0;
 };
 } // end namespace polly
 #endif

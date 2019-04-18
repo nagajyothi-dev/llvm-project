@@ -1,16 +1,14 @@
 //===-- IRInterpreter.cpp ---------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Expression/IRInterpreter.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
-#include "lldb/Core/Scalar.h"
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Expression/DiagnosticManager.h"
 #include "lldb/Expression/IRExecutionUnit.h"
@@ -19,6 +17,7 @@
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Endian.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/Scalar.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StreamString.h"
 
@@ -152,23 +151,13 @@ public:
                          Type *type) {
     size_t type_size = m_target_data.getTypeStoreSize(type);
 
-    switch (type_size) {
-    case 1:
-      scalar = (uint8_t)u64value;
-      break;
-    case 2:
-      scalar = (uint16_t)u64value;
-      break;
-    case 4:
-      scalar = (uint32_t)u64value;
-      break;
-    case 8:
-      scalar = (uint64_t)u64value;
-      break;
-    default:
+    if (type_size > 8)
       return false;
-    }
 
+    if (type_size != 1)
+      type_size = PowerOf2Ceil(type_size);
+
+    scalar = llvm::APInt(type_size*8, u64value);
     return true;
   }
 
@@ -198,8 +187,7 @@ public:
         return false;
 
       lldb::offset_t offset = 0;
-      if (value_size == 1 || value_size == 2 || value_size == 4 ||
-          value_size == 8) {
+      if (value_size <= 8) {
         uint64_t u64value = value_extractor.GetMaxU64(&offset, value_size);
         return AssignToMatchType(scalar, u64value, value->getType());
       }
@@ -383,11 +371,6 @@ public:
 
     m_stack_pointer = ret;
     return ret;
-  }
-
-  lldb::addr_t MallocPointer() {
-    return Malloc(m_target_data.getPointerSize(),
-                  m_target_data.getPointerPrefAlignment());
   }
 
   lldb::addr_t Malloc(llvm::Type *type) {
@@ -627,6 +610,18 @@ bool IRInterpreter::CanInterpret(llvm::Module &module, llvm::Function &function,
           error.SetErrorString(unsupported_operand_error);
           return false;
         }
+        }
+
+        // The IR interpreter currently doesn't know about
+        // 128-bit integers. As they're not that frequent,
+        // we can just fall back to the JIT rather than
+        // choking.
+        if (operand_type->getPrimitiveSizeInBits() > 64) {
+          if (log)
+            log->Printf("Unsupported operand type: %s",
+                        PrintType(operand_type).c_str());
+          error.SetErrorString(unsupported_operand_error);
+          return false;
         }
 
         if (Constant *constant = llvm::dyn_cast<Constant>(operand)) {
@@ -1572,8 +1567,8 @@ bool IRInterpreter::Interpret(llvm::Module &module, llvm::Function &function,
         return false;
       }
 
-      // Push all function arguments to the argument list that will
-      // be passed to the call function thread plan
+      // Push all function arguments to the argument list that will be passed
+      // to the call function thread plan
       for (int i = 0; i < numArgs; i++) {
         // Get details of this argument
         llvm::Value *arg_op = call_inst->getArgOperand(i);
@@ -1596,9 +1591,6 @@ bool IRInterpreter::Interpret(llvm::Module &module, llvm::Function &function,
 
         // Check if this is a string literal or constant string pointer
         if (arg_ty->isPointerTy()) {
-          // Pointer to just one type
-          assert(arg_ty->getNumContainedTypes() == 1);
-
           lldb::addr_t addr = tmp_op.ULongLong();
           size_t dataSize = 0;
 
@@ -1608,16 +1600,16 @@ bool IRInterpreter::Interpret(llvm::Module &module, llvm::Function &function,
                  "unable to locate host data for transfer to device");
           // Create the required buffer
           rawArgs[i].size = dataSize;
-          rawArgs[i].data_ap.reset(new uint8_t[dataSize + 1]);
+          rawArgs[i].data_up.reset(new uint8_t[dataSize + 1]);
 
           // Read string from host memory
-          execution_unit.ReadMemory(rawArgs[i].data_ap.get(), addr, dataSize,
+          execution_unit.ReadMemory(rawArgs[i].data_up.get(), addr, dataSize,
                                     error);
           assert(!error.Fail() &&
                  "we have failed to read the string from memory");
 
           // Add null terminator
-          rawArgs[i].data_ap[dataSize] = '\0';
+          rawArgs[i].data_up[dataSize] = '\0';
           rawArgs[i].type = lldb_private::ABI::CallArgument::HostPointer;
         } else /* if ( arg_ty->isPointerTy() ) */
         {

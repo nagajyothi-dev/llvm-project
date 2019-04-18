@@ -1,9 +1,8 @@
 //===- Driver.h -------------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,8 +10,8 @@
 #define LLD_ELF_DRIVER_H
 
 #include "SymbolTable.h"
-#include "lld/Core/LLVM.h"
-#include "lld/Core/Reproduce.h"
+#include "lld/Common/LLVM.h"
+#include "lld/Common/Reproduce.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
@@ -26,7 +25,7 @@ extern class LinkerDriver *Driver;
 
 class LinkerDriver {
 public:
-  void main(ArrayRef<const char *> Args, bool CanExitEarly);
+  void main(ArrayRef<const char *> Args);
   void addFile(StringRef Path, bool WithLOption);
   void addLibrary(StringRef Name);
 
@@ -41,9 +40,6 @@ private:
 
   // True if we are in --start-lib and --end-lib.
   bool InLib = false;
-
-  // True if we are in -format=binary and -format=elf.
-  bool InBinary = false;
 
   std::vector<InputFile *> Files;
 };
@@ -63,10 +59,11 @@ enum {
 #undef OPTION
 };
 
-void printHelp(const char *Argv0);
+void printHelp();
 std::string createResponseFile(const llvm::opt::InputArgList &Args);
 
 llvm::Optional<std::string> findFromSearchPaths(StringRef Path);
+llvm::Optional<std::string> searchScript(StringRef Path);
 llvm::Optional<std::string> searchLibrary(StringRef Path);
 
 } // namespace elf

@@ -31,8 +31,8 @@ define i8 @calli8_reg() {
 define i8 @calli8_stack() {
 ; CHECK-LABEL: calli8_stack:
 ; CHECK: ldi [[REG1:r[0-9]+]], 10
-; CHECK: push [[REG1]]
-; CHECK: ldi [[REG1]], 11
+; CHECK: ldi [[REG2:r[0-9]+]], 11
+; CHECK: push [[REG2]]
 ; CHECK: push [[REG1]]
 ; CHECK: call foo8_3
     %result1 = call i8 @foo8_3(i8 1, i8 2, i8 3, i8 4, i8 5, i8 6, i8 7, i8 8, i8 9, i8 10, i8 11)
@@ -142,7 +142,7 @@ define void @testcallprologue() {
 ; CHECK-LABEL: testcallprologue:
 ; CHECK: push r28
 ; CHECK: push r29
-; CHECK: sbiw r28, 28
+; CHECK: sbiw r28, 27
 ; CHECK: ldi [[REG1:r[0-9]+]], 88
 ; CHECK: std Y+9, [[REG1]]
 ; CHECK: ldi [[REG1:r[0-9]+]], 11
@@ -171,12 +171,11 @@ define void @testcallprologue() {
 
 define i32 @icall(i32 (i32)* %foo) {
 ; CHECK-LABEL: icall:
-; CHECK: movw [[REG:r[0-9]+]], r24
+; CHECK: movw r30, r24
 ; CHECK: ldi r22, 147
 ; CHECK: ldi r23, 248
 ; CHECK: ldi r24, 214
 ; CHECK: ldi r25, 198
-; CHECK: movw r30, [[REG]]
 ; CHECK: icall
 ; CHECK: subi r22, 251
 ; CHECK: sbci r23, 255

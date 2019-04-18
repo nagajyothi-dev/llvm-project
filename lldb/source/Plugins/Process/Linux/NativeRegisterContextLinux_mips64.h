@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextLinux_mips64.h ---------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +14,7 @@
 #include "Plugins/Process/Linux/NativeRegisterContextLinux.h"
 #include "Plugins/Process/Utility/RegisterContext_mips.h"
 #include "Plugins/Process/Utility/lldb-mips-linux-register-enums.h"
+#include <sys/uio.h>
 
 #define MAX_NUM_WP 8
 
@@ -26,8 +26,7 @@ class NativeProcessLinux;
 class NativeRegisterContextLinux_mips64 : public NativeRegisterContextLinux {
 public:
   NativeRegisterContextLinux_mips64(const ArchSpec &target_arch,
-                                    NativeThreadProtocol &native_thread,
-                                    uint32_t concrete_frame_idx);
+                                    NativeThreadProtocol &native_thread);
 
   uint32_t GetRegisterSetCount() const override;
 
@@ -129,7 +128,7 @@ private:
 
   lldb::addr_t hw_addr_map[MAX_NUM_WP];
 
-  IOVEC_mips m_iovec;
+  struct iovec m_iovec;
 };
 
 } // namespace process_linux

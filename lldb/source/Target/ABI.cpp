@@ -1,16 +1,11 @@
 //===-- ABI.cpp -------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Target/ABI.h"
 #include "Plugins/ExpressionParser/Clang/ClangPersistentVariables.h"
 #include "lldb/Core/PluginManager.h"
@@ -44,7 +39,7 @@ ABI::FindPlugin(lldb::ProcessSP process_sp, const ArchSpec &arch) {
 
 ABI::~ABI() = default;
 
-bool ABI::GetRegisterInfoByName(const ConstString &name, RegisterInfo &info) {
+bool ABI::GetRegisterInfoByName(ConstString name, RegisterInfo &info) {
   uint32_t count = 0;
   const RegisterInfo *register_info_array = GetRegisterInfoArray(count);
   if (register_info_array) {
@@ -102,15 +97,18 @@ ValueObjectSP ABI::GetReturnValueObject(Thread &thread, CompilerType &ast_type,
   // work.
 
   if (persistent) {
+    Target &target = *thread.CalculateTarget();
     PersistentExpressionState *persistent_expression_state =
-        thread.CalculateTarget()->GetPersistentExpressionStateForLanguage(
+        target.GetPersistentExpressionStateForLanguage(
             ast_type.GetMinimumLanguage());
 
     if (!persistent_expression_state)
       return ValueObjectSP();
 
-    ConstString persistent_variable_name(
-        persistent_expression_state->GetNextPersistentVariableName());
+    auto prefix = persistent_expression_state->GetPersistentVariablePrefix();
+    ConstString persistent_variable_name =
+        persistent_expression_state->GetNextPersistentVariableName(target,
+                                                                   prefix);
 
     lldb::ValueObjectSP const_valobj_sp;
 
@@ -193,18 +191,18 @@ bool ABI::PrepareTrivialCall(Thread &thread, lldb::addr_t sp,
 bool ABI::GetFallbackRegisterLocation(
     const RegisterInfo *reg_info,
     UnwindPlan::Row::RegisterLocation &unwind_regloc) {
-  // Did the UnwindPlan fail to give us the caller's stack pointer?
-  // The stack pointer is defined to be the same as THIS frame's CFA, so return
-  // the CFA value as
-  // the caller's stack pointer.  This is true on x86-32/x86-64 at least.
+  // Did the UnwindPlan fail to give us the caller's stack pointer? The stack
+  // pointer is defined to be the same as THIS frame's CFA, so return the CFA
+  // value as the caller's stack pointer.  This is true on x86-32/x86-64 at
+  // least.
   if (reg_info->kinds[eRegisterKindGeneric] == LLDB_REGNUM_GENERIC_SP) {
     unwind_regloc.SetIsCFAPlusOffset(0);
     return true;
   }
 
   // If a volatile register is being requested, we don't want to forward the
-  // next frame's register contents
-  // up the stack -- the register is not retrievable at this frame.
+  // next frame's register contents up the stack -- the register is not
+  // retrievable at this frame.
   if (RegisterIsVolatile(reg_info)) {
     unwind_regloc.SetUndefined();
     return true;

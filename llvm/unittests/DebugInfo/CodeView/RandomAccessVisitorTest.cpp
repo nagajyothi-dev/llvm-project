@@ -1,19 +1,16 @@
 //===- llvm/unittest/DebugInfo/CodeView/RandomAccessVisitorTest.cpp -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/DebugInfo/CodeView/AppendingTypeTableBuilder.h"
 #include "llvm/DebugInfo/CodeView/CVTypeVisitor.h"
 #include "llvm/DebugInfo/CodeView/LazyRandomTypeCollection.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
 #include "llvm/DebugInfo/CodeView/TypeRecordMapping.h"
-#include "llvm/DebugInfo/CodeView/TypeSerializer.h"
-#include "llvm/DebugInfo/CodeView/TypeTableBuilder.h"
 #include "llvm/DebugInfo/CodeView/TypeVisitorCallbacks.h"
 #include "llvm/DebugInfo/PDB/Native/RawTypes.h"
 #include "llvm/Support/Allocator.h"
@@ -45,8 +42,6 @@ inline bool operator!=(const ArrayRecord &R1, const ArrayRecord &R2) {
 }
 
 inline bool operator==(const CVType &R1, const CVType &R2) {
-  if (R1.Type != R2.Type)
-    return false;
   if (R1.RecordData != R2.RecordData)
     return false;
   return true;
@@ -95,7 +90,7 @@ public:
   static void SetUpTestCase() {
     GlobalState = llvm::make_unique<GlobalTestState>();
 
-    TypeTableBuilder Builder(GlobalState->Allocator);
+    AppendingTypeTableBuilder Builder(GlobalState->Allocator);
 
     uint32_t Offset = 0;
     for (int I = 0; I < 11; ++I) {
@@ -108,9 +103,9 @@ public:
       Stream << "Array [" << I << "]";
       AR.Name = GlobalState->Strings.save(Stream.str());
       GlobalState->Records.push_back(AR);
-      GlobalState->Indices.push_back(Builder.writeKnownType(AR));
+      GlobalState->Indices.push_back(Builder.writeLeafType(AR));
 
-      CVType Type(TypeLeafKind::LF_ARRAY, Builder.records().back());
+      CVType Type(Builder.records().back());
       GlobalState->TypeVector.push_back(Type);
 
       GlobalState->AllOffsets.push_back(
@@ -352,7 +347,7 @@ TEST_F(RandomAccessVisitorTest, InnerChunk) {
 }
 
 TEST_F(RandomAccessVisitorTest, CrossChunkName) {
-  TypeTableBuilder Builder(GlobalState->Allocator);
+  AppendingTypeTableBuilder Builder(GlobalState->Allocator);
 
   // TypeIndex 0
   ClassRecord Class(TypeRecordKind::Class);
@@ -363,20 +358,19 @@ TEST_F(RandomAccessVisitorTest, CrossChunkName) {
   Class.DerivationList = TypeIndex::fromArrayIndex(0);
   Class.FieldList = TypeIndex::fromArrayIndex(0);
   Class.VTableShape = TypeIndex::fromArrayIndex(0);
-  TypeIndex IndexZero = Builder.writeKnownType(Class);
+  TypeIndex IndexZero = Builder.writeLeafType(Class);
 
   // TypeIndex 1 refers to type index 0.
   ModifierRecord Modifier(TypeRecordKind::Modifier);
   Modifier.ModifiedType = TypeIndex::fromArrayIndex(0);
   Modifier.Modifiers = ModifierOptions::Const;
-  TypeIndex IndexOne = Builder.writeKnownType(Modifier);
+  TypeIndex IndexOne = Builder.writeLeafType(Modifier);
 
   // set up a type stream that refers to the above two serialized records.
-  std::vector<CVType> TypeArray;
-  TypeArray.push_back(
-      CVType(static_cast<TypeLeafKind>(Class.Kind), Builder.records()[0]));
-  TypeArray.push_back(
-      CVType(static_cast<TypeLeafKind>(Modifier.Kind), Builder.records()[1]));
+  std::vector<CVType> TypeArray = {
+      {Builder.records()[0]},
+      {Builder.records()[1]},
+  };
   BinaryItemStream<CVType> ItemStream(llvm::support::little);
   ItemStream.setItems(TypeArray);
   VarStreamArray<CVType> TypeStream(ItemStream);

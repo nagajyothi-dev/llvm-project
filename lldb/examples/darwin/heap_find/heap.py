@@ -8,8 +8,8 @@
 #   (lldb) script import lldb.macosx.heap
 #----------------------------------------------------------------------
 
+from __future__ import print_function
 import lldb
-import commands
 import optparse
 import os
 import os.path
@@ -228,7 +228,7 @@ def append_regex_callback(option, opt, value, parser):
         ivar_regex = re.compile(value)
         parser.values.ivar_regex_blacklist.append(ivar_regex)
     except:
-        print 'error: an exception was thrown when compiling the ivar regular expression for "%s"' % value
+        print('error: an exception was thrown when compiling the ivar regular expression for "%s"' % value)
 
 
 def add_common_options(parser):
@@ -389,16 +389,16 @@ def find_variable_containing_address(verbose, frame, match_addr):
         if var_addr != lldb.LLDB_INVALID_ADDRESS:
             byte_size = var.GetType().GetByteSize()
             if verbose:
-                print 'frame #%u: [%#x - %#x) %s' % (frame.GetFrameID(), var.load_addr, var.load_addr + byte_size, var.name)
+                print('frame #%u: [%#x - %#x) %s' % (frame.GetFrameID(), var.load_addr, var.load_addr + byte_size, var.name))
             if var_addr == match_addr:
                 if verbose:
-                    print 'match'
+                    print('match')
                 return var
             else:
                 if byte_size > 0 and var_addr <= match_addr and match_addr < (
                         var_addr + byte_size):
                     if verbose:
-                        print 'match'
+                        print('match')
                     return var
     return None
 
@@ -576,19 +576,19 @@ typedef struct $malloc_stack_history {
     unsigned idx;
     malloc_stack_entry entries[MAX_HISTORY];
 } $malloc_stack_history;
-$malloc_stack_history info = { (task_t)mach_task_self(), 0 };
+$malloc_stack_history lldb_info = { (task_t)mach_task_self(), 0 };
 uint32_t max_stack_frames = MAX_FRAMES;
 enumerate_callback_t callback = [] (mach_stack_logging_record_t stack_record, void *baton) -> void {
-    $malloc_stack_history *info = ($malloc_stack_history *)baton;
-    if (info->idx < MAX_HISTORY) {
-        malloc_stack_entry *stack_entry = &(info->entries[info->idx]);
+    $malloc_stack_history *lldb_info = ($malloc_stack_history *)baton;
+    if (lldb_info->idx < MAX_HISTORY) {
+        malloc_stack_entry *stack_entry = &(lldb_info->entries[lldb_info->idx]);
         stack_entry->address = stack_record.address;
         stack_entry->type_flags = stack_record.type_flags;
         stack_entry->argument = stack_record.argument;
         stack_entry->num_frames = 0;
         stack_entry->frames[0] = 0;
         stack_entry->frames_err = (kern_return_t)__mach_stack_logging_frames_for_uniqued_stack (
-            info->task,
+            lldb_info->task,
             stack_record.stack_identifier,
             stack_entry->frames,
             (uint32_t)MAX_FRAMES,
@@ -597,10 +597,10 @@ enumerate_callback_t callback = [] (mach_stack_logging_record_t stack_record, vo
         if (stack_entry->num_frames < MAX_FRAMES)
             stack_entry->frames[stack_entry->num_frames] = 0;
     }
-    ++info->idx;
+    ++lldb_info->idx;
 };
-(kern_return_t)__mach_stack_logging_enumerate_records (info.task, (uint64_t)0x%x, callback, &info);
-info''' % (options.max_frames, options.max_history, addr)
+(kern_return_t)__mach_stack_logging_enumerate_records (lldb_info.task, (uint64_t)0x%x, callback, &lldb_info);
+lldb_info''' % (options.max_frames, options.max_history, addr)
 
     frame = lldb.debugger.GetSelectedTarget().GetProcess(
     ).GetSelectedThread().GetSelectedFrame()
@@ -616,10 +616,10 @@ info''' % (options.max_frames, options.max_history, addr)
     expr_options.SetPrefix(expr_prefix)
     expr_sbvalue = frame.EvaluateExpression(expr, expr_options)
     if options.verbose:
-        print "expression:"
-        print expr
-        print "expression result:"
-        print expr_sbvalue
+        print("expression:")
+        print(expr)
+        print("expression result:")
+        print(expr_sbvalue)
     if expr_sbvalue.error.Success():
         if history:
             malloc_stack_history = lldb.value(expr_sbvalue)
@@ -670,10 +670,10 @@ def display_match_results(
         expr_options.SetPrefix(expr_prefix)
     expr_sbvalue = frame.EvaluateExpression(expr, expr_options)
     if options.verbose:
-        print "expression:"
-        print expr
-        print "expression result:"
-        print expr_sbvalue
+        print("expression:")
+        print(expr)
+        print("expression result:")
+        print(expr_sbvalue)
     if expr_sbvalue.error.Success():
         match_value = lldb.value(expr_sbvalue)
         i = 0
@@ -863,14 +863,14 @@ def find_variable(debugger, command, result, dict):
 
     for arg in args:
         var_addr = int(arg, 16)
-        print >>result, "Finding a variable with address %#x..." % (var_addr)
+        print("Finding a variable with address %#x..." % (var_addr), file=result)
         done = False
         for thread in process:
             for frame in thread:
                 var = find_variable_containing_address(
                     options.verbose, frame, var_addr)
                 if var:
-                    print var
+                    print(var)
                     done = True
                     break
             if done:
@@ -924,18 +924,18 @@ typedef struct callback_baton_t {
     void *ptr;
 } callback_baton_t;
 range_callback_t range_callback = [](task_t task, void *baton, unsigned type, uintptr_t ptr_addr, uintptr_t ptr_size) -> void {
-    callback_baton_t *info = (callback_baton_t *)baton;
+    callback_baton_t *lldb_info = (callback_baton_t *)baton;
     typedef void* T;
     const unsigned size = sizeof(T);
     T *array = (T*)ptr_addr;
     for (unsigned idx = 0; ((idx + 1) * sizeof(T)) <= ptr_size; ++idx) {
-        if (array[idx] == info->ptr) {
-            if (info->num_matches < MAX_MATCHES) {
-                info->matches[info->num_matches].addr = (void*)ptr_addr;
-                info->matches[info->num_matches].size = ptr_size;
-                info->matches[info->num_matches].offset = idx*sizeof(T);
-                info->matches[info->num_matches].type = type;
-                ++info->num_matches;
+        if (array[idx] == lldb_info->ptr) {
+            if (lldb_info->num_matches < MAX_MATCHES) {
+                lldb_info->matches[lldb_info->num_matches].addr = (void*)ptr_addr;
+                lldb_info->matches[lldb_info->num_matches].size = ptr_size;
+                lldb_info->matches[lldb_info->num_matches].offset = idx*sizeof(T);
+                lldb_info->matches[lldb_info->num_matches].type = type;
+                ++lldb_info->num_matches;
             }
         }
     }
@@ -1033,18 +1033,18 @@ typedef struct callback_baton_t {
     unsigned cstr_len;
 } callback_baton_t;
 range_callback_t range_callback = [](task_t task, void *baton, unsigned type, uintptr_t ptr_addr, uintptr_t ptr_size) -> void {
-    callback_baton_t *info = (callback_baton_t *)baton;
-    if (info->cstr_len < ptr_size) {
+    callback_baton_t *lldb_info = (callback_baton_t *)baton;
+    if (lldb_info->cstr_len < ptr_size) {
         const char *begin = (const char *)ptr_addr;
-        const char *end = begin + ptr_size - info->cstr_len;
+        const char *end = begin + ptr_size - lldb_info->cstr_len;
         for (const char *s = begin; s < end; ++s) {
-            if ((int)memcmp(s, info->cstr, info->cstr_len) == 0) {
-                if (info->num_matches < MAX_MATCHES) {
-                    info->matches[info->num_matches].addr = (void*)ptr_addr;
-                    info->matches[info->num_matches].size = ptr_size;
-                    info->matches[info->num_matches].offset = s - begin;
-                    info->matches[info->num_matches].type = type;
-                    ++info->num_matches;
+            if ((int)memcmp(s, lldb_info->cstr, lldb_info->cstr_len) == 0) {
+                if (lldb_info->num_matches < MAX_MATCHES) {
+                    lldb_info->matches[lldb_info->num_matches].addr = (void*)ptr_addr;
+                    lldb_info->matches[lldb_info->num_matches].size = ptr_size;
+                    lldb_info->matches[lldb_info->num_matches].offset = s - begin;
+                    lldb_info->matches[lldb_info->num_matches].type = type;
+                    ++lldb_info->num_matches;
                 }
             }
         }
@@ -1135,17 +1135,17 @@ typedef struct callback_baton_t {
     void *ptr;
 } callback_baton_t;
 range_callback_t range_callback = [](task_t task, void *baton, unsigned type, uintptr_t ptr_addr, uintptr_t ptr_size) -> void {
-    callback_baton_t *info = (callback_baton_t *)baton;
-    if (info->num_matches == 0) {
-        uint8_t *p = (uint8_t *)info->ptr;
+    callback_baton_t *lldb_info = (callback_baton_t *)baton;
+    if (lldb_info->num_matches == 0) {
+        uint8_t *p = (uint8_t *)lldb_info->ptr;
         uint8_t *lo = (uint8_t *)ptr_addr;
         uint8_t *hi = lo + ptr_size;
         if (lo <= p && p < hi) {
-            info->matches[info->num_matches].addr = (void*)ptr_addr;
-            info->matches[info->num_matches].size = ptr_size;
-            info->matches[info->num_matches].offset = p - lo;
-            info->matches[info->num_matches].type = type;
-            info->num_matches = 1;
+            lldb_info->matches[lldb_info->num_matches].addr = (void*)ptr_addr;
+            lldb_info->matches[lldb_info->num_matches].size = ptr_size;
+            lldb_info->matches[lldb_info->num_matches].offset = p - lo;
+            lldb_info->matches[lldb_info->num_matches].type = type;
+            lldb_info->num_matches = 1;
         }
     }
 };
@@ -1397,24 +1397,24 @@ compare_callback_t compare_callback = [](const void *a, const void *b) -> int {
 typedef Class (*class_getSuperclass_type)(void *isa);
 range_callback_t range_callback = [](task_t task, void *baton, unsigned type, uintptr_t ptr_addr, uintptr_t ptr_size) -> void {
     class_getSuperclass_type class_getSuperclass_impl = (class_getSuperclass_type)class_getSuperclass;
-    callback_baton_t *info = (callback_baton_t *)baton;
+    callback_baton_t *lldb_info = (callback_baton_t *)baton;
     if (sizeof(Class) <= ptr_size) {
         Class *curr_class_ptr = (Class *)ptr_addr;
         Class *matching_class_ptr = (Class *)bsearch (curr_class_ptr,
-                                                      (const void *)info->classes,
-                                                      sizeof(info->classes)/sizeof(Class),
+                                                      (const void *)lldb_info->classes,
+                                                      sizeof(lldb_info->classes)/sizeof(Class),
                                                       sizeof(Class),
-                                                      info->compare_callback);
+                                                      lldb_info->compare_callback);
         if (matching_class_ptr) {
             bool match = false;
-            if (info->isa) {
+            if (lldb_info->isa) {
                 Class isa = *curr_class_ptr;
-                if (info->isa == isa)
+                if (lldb_info->isa == isa)
                     match = true;
-                else { // if (info->objc.match_superclasses) {
+                else { // if (lldb_info->objc.match_superclasses) {
                     Class super = class_getSuperclass_impl(isa);
                     while (super) {
-                        if (super == info->isa) {
+                        if (super == lldb_info->isa) {
                             match = true;
                             break;
                         }
@@ -1425,12 +1425,12 @@ range_callback_t range_callback = [](task_t task, void *baton, unsigned type, ui
             else
                 match = true;
             if (match) {
-                if (info->num_matches < MAX_MATCHES) {
-                    info->matches[info->num_matches].addr = (void*)ptr_addr;
-                    info->matches[info->num_matches].size = ptr_size;
-                    info->matches[info->num_matches].offset = 0;
-                    info->matches[info->num_matches].type = type;
-                    ++info->num_matches;
+                if (lldb_info->num_matches < MAX_MATCHES) {
+                    lldb_info->matches[lldb_info->num_matches].addr = (void*)ptr_addr;
+                    lldb_info->matches[lldb_info->num_matches].size = ptr_size;
+                    lldb_info->matches[lldb_info->num_matches].offset = 0;
+                    lldb_info->matches[lldb_info->num_matches].type = type;
+                    ++lldb_info->num_matches;
                 }
             }
         }
@@ -1519,4 +1519,4 @@ lldb.debugger.HandleCommand(
 lldb.debugger.HandleCommand(
     'command script add -f %s.objc_refs objc_refs' %
     __name__)
-print '"malloc_info", "ptr_refs", "cstr_refs", "find_variable", and "objc_refs" commands have been installed, use the "--help" options on these commands for detailed help.'
+print('"malloc_info", "ptr_refs", "cstr_refs", "find_variable", and "objc_refs" commands have been installed, use the "--help" options on these commands for detailed help.')

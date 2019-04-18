@@ -1,21 +1,37 @@
 //===- CGSCCPassManager.cpp - Managing & running CGSCC passes -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/Analysis/LazyCallGraph.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Constant.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cassert>
+#include <iterator>
 
 #define DEBUG_TYPE "cgscc"
 
 using namespace llvm;
 
-// Explicit template instantiations and specialization defininitions for core
+// Explicit template instantiations and specialization definitions for core
 // template typedefs.
 namespace llvm {
 
@@ -37,6 +53,11 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
             CGSCCUpdateResult &>::run(LazyCallGraph::SCC &InitialC,
                                       CGSCCAnalysisManager &AM,
                                       LazyCallGraph &G, CGSCCUpdateResult &UR) {
+  // Request PassInstrumentation from analysis manager, will use it to run
+  // instrumenting callbacks for the passes later.
+  PassInstrumentation PI =
+      AM.getResult<PassInstrumentationAnalysis>(InitialC, G);
+
   PreservedAnalyses PA = PreservedAnalyses::all();
 
   if (DebugLogging)
@@ -50,13 +71,28 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
     if (DebugLogging)
       dbgs() << "Running pass: " << Pass->name() << " on " << *C << "\n";
 
+    // Check the PassInstrumentation's BeforePass callbacks before running the
+    // pass, skip its execution completely if asked to (callback returns false).
+    if (!PI.runBeforePass(*Pass, *C))
+      continue;
+
     PreservedAnalyses PassPA = Pass->run(*C, AM, G, UR);
+
+    if (UR.InvalidatedSCCs.count(C))
+      PI.runAfterPassInvalidated<LazyCallGraph::SCC>(*Pass);
+    else
+      PI.runAfterPass<LazyCallGraph::SCC>(*Pass, *C);
 
     // Update the SCC if necessary.
     C = UR.UpdatedC ? UR.UpdatedC : C;
 
+    // If the CGSCC pass wasn't able to provide a valid updated SCC, the
+    // current SCC may simply need to be skipped if invalid.
+    if (UR.InvalidatedSCCs.count(C)) {
+      LLVM_DEBUG(dbgs() << "Skipping invalidated root or island SCC!\n");
+      break;
+    }
     // Check that we didn't miss any update scenario.
-    assert(!UR.InvalidatedSCCs.count(C) && "Processing an invalid SCC!");
     assert(C->begin() != C->end() && "Cannot have an empty SCC!");
 
     // Update the analysis manager as each pass runs and potentially
@@ -74,7 +110,13 @@ PassManager<LazyCallGraph::SCC, CGSCCAnalysisManager, LazyCallGraph &,
     // ...getContext().yield();
   }
 
-  // Invaliadtion was handled after each pass in the above loop for the current
+  // Before we mark all of *this* SCC's analyses as preserved below, intersect
+  // this with the cross-SCC preserved analysis set. This is used to allow
+  // CGSCC passes to mutate ancestor SCCs and still trigger proper invalidation
+  // for them.
+  UR.CrossSCCPA.intersect(PA);
+
+  // Invalidation was handled after each pass in the above loop for the current
   // SCC. Therefore, the remaining analysis results in the AnalysisManager are
   // preserved. We mark this with a set so that we don't need to inspect each
   // one individually.
@@ -213,7 +255,7 @@ bool FunctionAnalysisManagerCGSCCProxy::Result::invalidate(
   auto PAC = PA.getChecker<FunctionAnalysisManagerCGSCCProxy>();
   if (!PAC.preserved() && !PAC.preservedSet<AllAnalysesOn<LazyCallGraph::SCC>>()) {
     for (LazyCallGraph::Node &N : C)
-      FAM->clear(N.getFunction());
+      FAM->clear(N.getFunction(), N.getFunction().getName());
 
     return true;
   }
@@ -262,7 +304,7 @@ bool FunctionAnalysisManagerCGSCCProxy::Result::invalidate(
   return false;
 }
 
-} // End llvm namespace
+} // end namespace llvm
 
 /// When a new SCC is created for the graph and there might be function
 /// analysis results cached for the functions now in that SCC two forms of
@@ -309,7 +351,6 @@ static void updateNewSCCFunctionAnalyses(LazyCallGraph::SCC &C,
   }
 }
 
-namespace {
 /// Helper function to update both the \c CGSCCAnalysisManager \p AM and the \c
 /// CGSCCPassManager's \c CGSCCUpdateResult \p UR based on a range of newly
 /// added SCCs.
@@ -321,18 +362,19 @@ namespace {
 /// This function returns the SCC containing \p N. This will be either \p C if
 /// no new SCCs have been split out, or it will be the new SCC containing \p N.
 template <typename SCCRangeT>
-LazyCallGraph::SCC *
+static LazyCallGraph::SCC *
 incorporateNewSCCRange(const SCCRangeT &NewSCCRange, LazyCallGraph &G,
                        LazyCallGraph::Node &N, LazyCallGraph::SCC *C,
                        CGSCCAnalysisManager &AM, CGSCCUpdateResult &UR) {
-  typedef LazyCallGraph::SCC SCC;
+  using SCC = LazyCallGraph::SCC;
 
   if (NewSCCRange.begin() == NewSCCRange.end())
     return C;
 
   // Add the current SCC to the worklist as its shape has changed.
   UR.CWorklist.insert(C);
-  DEBUG(dbgs() << "Enqueuing the existing SCC in the worklist:" << *C << "\n");
+  LLVM_DEBUG(dbgs() << "Enqueuing the existing SCC in the worklist:" << *C
+                    << "\n");
 
   SCC *OldC = C;
 
@@ -351,7 +393,7 @@ incorporateNewSCCRange(const SCCRangeT &NewSCCRange, LazyCallGraph &G,
   // We need to propagate an invalidation call to all but the newly current SCC
   // because the outer pass manager won't do that for us after splitting them.
   // FIXME: We should accept a PreservedAnalysis from the CG updater so that if
-  // there are preserved ananalyses we can avoid invalidating them here for
+  // there are preserved analysis we can avoid invalidating them here for
   // split-off SCCs.
   // We know however that this will preserve any FAM proxy so go ahead and mark
   // that.
@@ -363,12 +405,12 @@ incorporateNewSCCRange(const SCCRangeT &NewSCCRange, LazyCallGraph &G,
   if (NeedFAMProxy)
     updateNewSCCFunctionAnalyses(*C, G, AM);
 
-  for (SCC &NewC :
-       reverse(make_range(std::next(NewSCCRange.begin()), NewSCCRange.end()))) {
+  for (SCC &NewC : llvm::reverse(make_range(std::next(NewSCCRange.begin()),
+                                            NewSCCRange.end()))) {
     assert(C != &NewC && "No need to re-visit the current SCC!");
     assert(OldC != &NewC && "Already handled the original SCC!");
     UR.CWorklist.insert(&NewC);
-    DEBUG(dbgs() << "Enqueuing a newly formed SCC:" << NewC << "\n");
+    LLVM_DEBUG(dbgs() << "Enqueuing a newly formed SCC:" << NewC << "\n");
 
     // Ensure new SCCs' function analyses are updated.
     if (NeedFAMProxy)
@@ -380,15 +422,14 @@ incorporateNewSCCRange(const SCCRangeT &NewSCCRange, LazyCallGraph &G,
   }
   return C;
 }
-}
 
 LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
     LazyCallGraph &G, LazyCallGraph::SCC &InitialC, LazyCallGraph::Node &N,
     CGSCCAnalysisManager &AM, CGSCCUpdateResult &UR) {
-  typedef LazyCallGraph::Node Node;
-  typedef LazyCallGraph::Edge Edge;
-  typedef LazyCallGraph::SCC SCC;
-  typedef LazyCallGraph::RefSCC RefSCC;
+  using Node = LazyCallGraph::Node;
+  using Edge = LazyCallGraph::Edge;
+  using SCC = LazyCallGraph::SCC;
+  using RefSCC = LazyCallGraph::RefSCC;
 
   RefSCC &InitialRC = InitialC.getOuterRefSCC();
   SCC *C = &InitialC;
@@ -430,7 +471,7 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
   // Now walk all references.
   for (Instruction &I : instructions(F))
     for (Value *Op : I.operand_values())
-      if (Constant *C = dyn_cast<Constant>(Op))
+      if (auto *C = dyn_cast<Constant>(Op))
         if (Visited.insert(C).second)
           Worklist.push_back(C);
 
@@ -494,8 +535,8 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
                           return false;
 
                         RC->removeOutgoingEdge(N, *TargetN);
-                        DEBUG(dbgs() << "Deleting outgoing edge from '" << N
-                                     << "' to '" << TargetN << "'\n");
+                        LLVM_DEBUG(dbgs() << "Deleting outgoing edge from '"
+                                          << N << "' to '" << TargetN << "'\n");
                         return true;
                       }),
       DeadTargets.end());
@@ -521,13 +562,13 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
     // "bottom" we will continue processing in the bottom-up walk.
     assert(NewRefSCCs.front() == RC &&
            "New current RefSCC not first in the returned list!");
-    for (RefSCC *NewRC :
-         reverse(make_range(std::next(NewRefSCCs.begin()), NewRefSCCs.end()))) {
+    for (RefSCC *NewRC : llvm::reverse(make_range(std::next(NewRefSCCs.begin()),
+                                                  NewRefSCCs.end()))) {
       assert(NewRC != RC && "Should not encounter the current RefSCC further "
                             "in the postorder list of new RefSCCs.");
       UR.RCWorklist.insert(NewRC);
-      DEBUG(dbgs() << "Enqueuing a new RefSCC in the update worklist: "
-                   << *NewRC << "\n");
+      LLVM_DEBUG(dbgs() << "Enqueuing a new RefSCC in the update worklist: "
+                        << *NewRC << "\n");
     }
   }
 
@@ -544,8 +585,8 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
       assert(RC->isAncestorOf(TargetRC) &&
              "Cannot potentially form RefSCC cycles here!");
       RC->switchOutgoingEdgeToRef(N, *RefTarget);
-      DEBUG(dbgs() << "Switch outgoing call edge to a ref edge from '" << N
-                   << "' to '" << *RefTarget << "'\n");
+      LLVM_DEBUG(dbgs() << "Switch outgoing call edge to a ref edge from '" << N
+                        << "' to '" << *RefTarget << "'\n");
       continue;
     }
 
@@ -573,12 +614,12 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
       assert(RC->isAncestorOf(TargetRC) &&
              "Cannot potentially form RefSCC cycles here!");
       RC->switchOutgoingEdgeToCall(N, *CallTarget);
-      DEBUG(dbgs() << "Switch outgoing ref edge to a call edge from '" << N
-                   << "' to '" << *CallTarget << "'\n");
+      LLVM_DEBUG(dbgs() << "Switch outgoing ref edge to a call edge from '" << N
+                        << "' to '" << *CallTarget << "'\n");
       continue;
     }
-    DEBUG(dbgs() << "Switch an internal ref edge to a call edge from '" << N
-                 << "' to '" << *CallTarget << "'\n");
+    LLVM_DEBUG(dbgs() << "Switch an internal ref edge to a call edge from '"
+                      << N << "' to '" << *CallTarget << "'\n");
 
     // Otherwise we are switching an internal ref edge to a call edge. This
     // may merge away some SCCs, and we add those to the UpdateResult. We also
@@ -615,7 +656,7 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
 
       // If one of the invalidated SCCs had a cached proxy to a function
       // analysis manager, we need to create a proxy in the new current SCC as
-      // the invaliadted SCCs had their functions moved.
+      // the invalidated SCCs had their functions moved.
       if (HasFunctionAnalysisProxy)
         AM.getResult<FunctionAnalysisManagerCGSCCProxy>(*C, G);
 
@@ -641,14 +682,14 @@ LazyCallGraph::SCC &llvm::updateCGAndAnalysisManagerForFunctionPass(
       // post-order sequence, and may end up observing more precise context to
       // optimize the current SCC.
       UR.CWorklist.insert(C);
-      DEBUG(dbgs() << "Enqueuing the existing SCC in the worklist: " << *C
-                   << "\n");
+      LLVM_DEBUG(dbgs() << "Enqueuing the existing SCC in the worklist: " << *C
+                        << "\n");
       // Enqueue in reverse order as we pop off the back of the worklist.
-      for (SCC &MovedC : reverse(make_range(RC->begin() + InitialSCCIndex,
-                                            RC->begin() + NewSCCIndex))) {
+      for (SCC &MovedC : llvm::reverse(make_range(RC->begin() + InitialSCCIndex,
+                                                  RC->begin() + NewSCCIndex))) {
         UR.CWorklist.insert(&MovedC);
-        DEBUG(dbgs() << "Enqueuing a newly earlier in post-order SCC: "
-                     << MovedC << "\n");
+        LLVM_DEBUG(dbgs() << "Enqueuing a newly earlier in post-order SCC: "
+                          << MovedC << "\n");
       }
     }
   }

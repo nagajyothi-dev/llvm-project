@@ -1,10 +1,8 @@
-//===-- lldb-python.h --------------------------------------------*- C++
-//-*-===//
+//===-- lldb-python.h -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,7 +16,7 @@
 // Python is disabled in this build
 #else
 #include "llvm/Support/Compiler.h"
-#if defined(LLVM_ON_WIN32)
+#if defined(_WIN32)
 // If anyone #includes Host/PosixApi.h later, it will try to typedef pid_t.  We
 // need to ensure this doesn't happen.  At the same time, Python.h will also try
 // to redefine a bunch of stuff that PosixApi.h defines.  So define it all now
@@ -32,6 +30,12 @@
 // holds for _XOPEN_SOURCE.
 #undef _POSIX_C_SOURCE
 #undef _XOPEN_SOURCE
+#endif
+
+// Include locale before Python so _PY_PORT_CTYPE_UTF8_ISSUE doesn't cause
+// macro redefinitions.
+#if defined(__APPLE__)
+#include <locale>
 #endif
 
 // Include python for non windows machines

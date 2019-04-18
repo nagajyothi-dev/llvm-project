@@ -1,5 +1,5 @@
 # RUN: llvm-mc %s -filetype obj -triple x86_64-apple-darwin -o - \
-# RUN: | not llvm-dwarfdump -verify - \
+# RUN: | not llvm-dwarfdump -v -verify - \
 # RUN: | FileCheck %s
 
 # CHECK: error: DIE has invalid DW_AT_stmt_list encoding:{{[[:space:]]}}
@@ -7,13 +7,26 @@
 # CHECK-NEXT: DW_AT_producer [DW_FORM_strp]	( .debug_str[0x00000000] = "clang version 5.0.0 (trunk 308185) (llvm/trunk 308186)")
 # CHECK-NEXT: DW_AT_language [DW_FORM_data2]	(DW_LANG_C99)
 # CHECK-NEXT: DW_AT_name [DW_FORM_strp]	( .debug_str[0x00000037] = "basic.c")
-# CHECK-NEXT: DW_AT_stmt_list [DW_FORM_strx4]	( indexed (00000000) string = )
+# CHECK-NEXT: DW_AT_stmt_list [DW_FORM_block4]
 # CHECK-NEXT: DW_AT_comp_dir [DW_FORM_strp]	( .debug_str[0x0000003f] = "/Users/sgravani/Development/tests")
 # CHECK-NEXT: DW_AT_low_pc [DW_FORM_addr]	(0x0000000000000000)
 # CHECK-NEXT: DW_AT_high_pc [DW_FORM_data4]	(0x00000016){{[[:space:]]}}
-# CHECK-NEXT: Units[2] - start offset: 0x00000068 
-# CHECK-NEXT:	Error: The length for this unit is too large for the .debug_info provided.
-# CHECK-NEXT:	Error: The unit type encoding is not valid.
+# CHECK-NEXT: error: DIE has DW_AT_type with incompatible tag DW_TAG_null{{[[:space:]]}}
+# CHECK-NEXT: 0x0000002b: DW_TAG_subprogram [2] *
+# CHECK-NEXT: DW_AT_low_pc [DW_FORM_addr]       (0x0000000000000000)
+# CHECK-NEXT: DW_AT_high_pc [DW_FORM_data4]     (0x00000016)
+# CHECK-NEXT: DW_AT_frame_base [DW_FORM_exprloc]        (DW_OP_reg6)
+# CHECK-NEXT: DW_AT_name [DW_FORM_strp] ( .debug_str[0x00000061] = "main")
+# CHECK-NEXT: DW_AT_decl_file [DW_FORM_data1]   (0x01)
+# CHECK-NEXT: DW_AT_decl_line [DW_FORM_data1]   (1)
+# CHECK-NEXT: DW_AT_prototyped [DW_FORM_flag_present]   (true)
+# CHECK-NEXT: DW_AT_type [DW_FORM_ref4] (cu + 0x0052 => {0x00000052} "")
+# CHECK-NEXT: DW_AT_external [DW_FORM_flag_present]     (true){{[[:space:]]}}
+# CHECK-NEXT: error: Compilation unit root DIE is not a unit DIE: DW_TAG_null.
+# CHECK-NEXT: error: Compilation unit type (DW_UT_compile) and root DIE (DW_TAG_null) do not match.
+# CHECK-NEXT: error: Units[2] - start offset: 0x00000068
+# CHECK-NEXT: note: The length for this unit is too large for the .debug_info provided.
+# CHECK-NEXT: note: The unit type encoding is not valid.
 
 
 	.section	__TEXT,__text,regular,pure_instructions
@@ -24,14 +37,11 @@ Lfunc_begin0:
 	.file	1 "basic.c"
 	.loc	1 1 0                   ## basic.c:1:0
 	.cfi_startproc
-## BB#0:                                ## %entry
+## %bb.0:                               ## %entry
 	pushq	%rbp
-Lcfi0:
 	.cfi_def_cfa_offset 16
-Lcfi1:
 	.cfi_offset %rbp, -16
 	movq	%rsp, %rbp
-Lcfi2:
 	.cfi_def_cfa_register %rbp
 	xorl	%eax, %eax
 	movl	$0, -4(%rbp)
@@ -65,7 +75,7 @@ Lsection_abbrev:
 	.byte	3                       ## DW_AT_name
 	.byte	14                      ## DW_FORM_strp
 	.byte	16                      ## DW_AT_stmt_list
-	.byte	40                      ## DW_FORM_sec_offset -- error: DIE has invalid DW_AT_stmt_list encoding:
+	.byte	4                       ## DW_FORM_sec_offset -- error: DIE has invalid DW_AT_stmt_list encoding:
 	.byte	27                      ## DW_AT_comp_dir
 	.byte	14                      ## DW_FORM_strp
 	.byte	17                      ## DW_AT_low_pc
@@ -108,7 +118,7 @@ Lsection_abbrev:
 	.byte	11                      ## DW_FORM_data1
 	.byte	59                      ## DW_AT_decl_line
 	.byte	11                      ## DW_FORM_data1
-	.byte	73                      ## DW_AT_type
+	.byte	74                      ## DW_AT_type
 	.byte	19                      ## DW_FORM_ref4
 	.byte	0                       ## EOM(1)
 	.byte	0                       ## EOM(2)
@@ -153,7 +163,7 @@ Lset3 = Lfunc_end0-Lfunc_begin0         ## DW_AT_high_pc
 	.byte	1                       ## DW_AT_decl_file
 	.byte	1                       ## DW_AT_decl_line
                                         ## DW_AT_prototyped
-	.long	83                      ## DW_AT_type
+	.long	82                      ## DW_AT_type
                                         ## DW_AT_external
 	.byte	3                       ## Abbrev [3] 0x44:0xe DW_TAG_variable
 	.byte	2                       ## DW_AT_location
@@ -175,7 +185,7 @@ Lcu_begin1:
 	.byte	1                       ## DWARF Unit Type
 	.byte	4                       ## Address Size (in bytes)
 	.long	0						## Abbrev offset
-	.byte 	0	
+	.byte 	0
 Ltu_begin0:
 	.long	26                      ## Length of Unit -- Error: The length for this unit is too large for the .debug_info provided.
 	.short	5                       ## DWARF version number
@@ -184,7 +194,7 @@ Ltu_begin0:
 	.long	0
 	.quad	0
 	.long   0
-	.byte 	0			
+	.byte 	0
 
 .subsections_via_symbols
 	.section	__DWARF,__debug_line,regular,debug

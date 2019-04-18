@@ -1,9 +1,8 @@
 //===- CoverageMappingReader.cpp - Code coverage mapping reader -----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,10 +19,10 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Object/Binary.h"
-#include "llvm/Object/COFF.h"
 #include "llvm/Object/Error.h"
 #include "llvm/Object/MachOUniversal.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/COFF.h"
 #include "llvm/ProfileData/InstrProf.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -33,13 +32,6 @@
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
-#include <cassert>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <memory>
-#include <utility>
 #include <vector>
 
 using namespace llvm;
@@ -49,23 +41,25 @@ using namespace object;
 #define DEBUG_TYPE "coverage-mapping"
 
 void CoverageMappingIterator::increment() {
+  if (ReadErr != coveragemap_error::success)
+    return;
+
   // Check if all the records were read or if an error occurred while reading
   // the next record.
-  if (auto E = Reader->readNextRecord(Record)) {
+  if (auto E = Reader->readNextRecord(Record))
     handleAllErrors(std::move(E), [&](const CoverageMapError &CME) {
       if (CME.get() == coveragemap_error::eof)
         *this = CoverageMappingIterator();
       else
-        llvm_unreachable("Unexpected error in coverage mapping iterator");
+        ReadErr = CME.get();
     });
-  }
 }
 
 Error RawCoverageReader::readULEB128(uint64_t &Result) {
   if (Data.empty())
     return make_error<CoverageMapError>(coveragemap_error::truncated);
   unsigned N = 0;
-  Result = decodeULEB128(reinterpret_cast<const uint8_t *>(Data.data()), &N);
+  Result = decodeULEB128(Data.bytes_begin(), &N);
   if (N > Data.size())
     return make_error<CoverageMapError>(coveragemap_error::malformed);
   Data = Data.substr(N);
@@ -153,7 +147,7 @@ Error RawCoverageMappingReader::readCounter(Counter &C) {
 static const unsigned EncodingExpansionRegionBit = 1
                                                    << Counter::EncodingTagBits;
 
-/// \brief Read the sub-array of regions for the given inferred file id.
+/// Read the sub-array of regions for the given inferred file id.
 /// \param NumFileIDs the number of file ids that are defined for this
 /// function.
 Error RawCoverageMappingReader::readMappingRegionsSubArray(
@@ -214,6 +208,13 @@ Error RawCoverageMappingReader::readMappingRegionsSubArray(
     if (auto Err = readIntMax(ColumnEnd, std::numeric_limits<unsigned>::max()))
       return Err;
     LineStart += LineStartDelta;
+
+    // If the high bit of ColumnEnd is set, this is a gap region.
+    if (ColumnEnd & (1U << 31)) {
+      Kind = CounterMappingRegion::GapRegion;
+      ColumnEnd &= ~(1U << 31);
+    }
+
     // Adjust the column locations for the empty regions that are supposed to
     // cover whole lines. Those regions should be encoded with the
     // column range (1 -> std::numeric_limits<unsigned>::max()), but because
@@ -227,7 +228,7 @@ Error RawCoverageMappingReader::readMappingRegionsSubArray(
       ColumnEnd = std::numeric_limits<unsigned>::max();
     }
 
-    DEBUG({
+    LLVM_DEBUG({
       dbgs() << "Counter in file " << InferredFileID << " " << LineStart << ":"
              << ColumnStart << " -> " << (LineStart + NumLines) << ":"
              << ColumnEnd << ", ";
@@ -238,9 +239,12 @@ Error RawCoverageMappingReader::readMappingRegionsSubArray(
       dbgs() << "\n";
     });
 
-    MappingRegions.push_back(CounterMappingRegion(
-        C, InferredFileID, ExpandedFileID, LineStart, ColumnStart,
-        LineStart + NumLines, ColumnEnd, Kind));
+    auto CMR = CounterMappingRegion(C, InferredFileID, ExpandedFileID,
+                                    LineStart, ColumnStart,
+                                    LineStart + NumLines, ColumnEnd, Kind);
+    if (CMR.startLoc() > CMR.endLoc())
+      return make_error<CoverageMapError>(coveragemap_error::malformed);
+    MappingRegions.push_back(CMR);
   }
   return Error::success();
 }
@@ -347,6 +351,13 @@ Error InstrProfSymtab::create(SectionRef &Section) {
   if (auto EC = Section.getContents(Data))
     return errorCodeToError(EC);
   Address = Section.getAddress();
+
+  // If this is a linked PE/COFF file, then we have to skip over the null byte
+  // that is allocated in the .lprfn$A section in the LLVM profiling runtime.
+  const ObjectFile *Obj = Section.getObject();
+  if (isa<COFFObjectFile>(Obj) && !Obj->isRelocatableObject())
+    Data = Data.drop_front(1);
+
   return Error::success();
 }
 
@@ -529,11 +540,16 @@ Expected<std::unique_ptr<CovMapFuncRecordReader>> CovMapFuncRecordReader::get(
     return llvm::make_unique<VersionedCovMapFuncRecordReader<
         CovMapVersion::Version1, IntPtrT, Endian>>(P, R, F);
   case CovMapVersion::Version2:
+  case CovMapVersion::Version3:
     // Decompress the name data.
     if (Error E = P.create(P.getNameData()))
       return std::move(E);
-    return llvm::make_unique<VersionedCovMapFuncRecordReader<
-        CovMapVersion::Version2, IntPtrT, Endian>>(P, R, F);
+    if (Version == CovMapVersion::Version2)
+      return llvm::make_unique<VersionedCovMapFuncRecordReader<
+          CovMapVersion::Version2, IntPtrT, Endian>>(P, R, F);
+    else
+      return llvm::make_unique<VersionedCovMapFuncRecordReader<
+          CovMapVersion::Version3, IntPtrT, Endian>>(P, R, F);
   }
   llvm_unreachable("Unsupported version");
 }
@@ -579,16 +595,14 @@ static Error loadTestingFormat(StringRef Data, InstrProfSymtab &ProfileNames,
   if (Data.empty())
     return make_error<CoverageMapError>(coveragemap_error::truncated);
   unsigned N = 0;
-  auto ProfileNamesSize =
-      decodeULEB128(reinterpret_cast<const uint8_t *>(Data.data()), &N);
+  uint64_t ProfileNamesSize = decodeULEB128(Data.bytes_begin(), &N);
   if (N > Data.size())
     return make_error<CoverageMapError>(coveragemap_error::malformed);
   Data = Data.substr(N);
   if (Data.empty())
     return make_error<CoverageMapError>(coveragemap_error::truncated);
   N = 0;
-  uint64_t Address =
-      decodeULEB128(reinterpret_cast<const uint8_t *>(Data.data()), &N);
+  uint64_t Address = decodeULEB128(Data.bytes_begin(), &N);
   if (N > Data.size())
     return make_error<CoverageMapError>(coveragemap_error::malformed);
   Data = Data.substr(N);
@@ -608,11 +622,20 @@ static Error loadTestingFormat(StringRef Data, InstrProfSymtab &ProfileNames,
 }
 
 static Expected<SectionRef> lookupSection(ObjectFile &OF, StringRef Name) {
+  // On COFF, the object file section name may end in "$M". This tells the
+  // linker to sort these sections between "$A" and "$Z". The linker removes the
+  // dollar and everything after it in the final binary. Do the same to match.
+  bool IsCOFF = isa<COFFObjectFile>(OF);
+  auto stripSuffix = [IsCOFF](StringRef N) {
+    return IsCOFF ? N.split('$').first : N;
+  };
+  Name = stripSuffix(Name);
+
   StringRef FoundName;
   for (const auto &Section : OF.sections()) {
     if (auto EC = Section.getName(FoundName))
       return errorCodeToError(EC);
-    if (FoundName == Name)
+    if (stripSuffix(FoundName) == Name)
       return Section;
   }
   return make_error<CoverageMapError>(coveragemap_error::no_data_found);

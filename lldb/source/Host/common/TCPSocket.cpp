@@ -1,9 +1,8 @@
 //===-- TCPSocket.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,6 +17,7 @@
 #include "lldb/Utility/Log.h"
 
 #include "llvm/Config/llvm-config.h"
+#include "llvm/Support/Errno.h"
 #include "llvm/Support/raw_ostream.h"
 
 #ifndef LLDB_DISABLE_POSIX
@@ -26,11 +26,11 @@
 #include <sys/socket.h>
 #endif
 
-#if defined(LLVM_ON_WIN32)
+#if defined(_WIN32)
 #include <winsock2.h>
 #endif
 
-#ifdef LLVM_ON_WIN32
+#ifdef _WIN32
 #define CLOSE_SOCKET closesocket
 typedef const char *set_socket_option_arg_type;
 #else
@@ -151,8 +151,8 @@ Status TCPSocket::Connect(llvm::StringRef name) {
 
     address.SetPort(port);
 
-    if (-1 == ::connect(GetNativeSocket(), &address.sockaddr(),
-                        address.GetLength())) {
+    if (-1 == llvm::sys::RetryAfterSignal(-1, ::connect,
+          GetNativeSocket(), &address.sockaddr(), address.GetLength())) {
       CLOSE_SOCKET(GetNativeSocket());
       continue;
     }
@@ -198,9 +198,14 @@ Status TCPSocket::Listen(llvm::StringRef name, int backlog) {
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, option_value_p,
                  sizeof(option_value));
 
-    address.SetPort(port);
+    SocketAddress listen_address = address;
+    if(!listen_address.IsLocalhost())
+      listen_address.SetToAnyAddress(address.GetFamily(), port);
+    else
+      listen_address.SetPort(port);
 
-    int err = ::bind(fd, &address.sockaddr(), address.GetLength());
+    int err =
+        ::bind(fd, &listen_address.sockaddr(), listen_address.GetLength());
     if (-1 != err)
       err = ::listen(fd, backlog);
 

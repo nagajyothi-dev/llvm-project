@@ -1,16 +1,18 @@
 //===---- RuntimeDyldChecker.h - RuntimeDyld tester framework -----*- C++ -*-=//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_EXECUTIONENGINE_RUNTIMEDYLDCHECKER_H
 #define LLVM_EXECUTIONENGINE_RUNTIMEDYLDCHECKER_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Optional.h"
+#include "llvm/ExecutionEngine/JITSymbol.h"
+#include "llvm/Support/Endian.h"
 
 #include <cstdint>
 #include <memory>
@@ -27,7 +29,7 @@ class RuntimeDyld;
 class RuntimeDyldCheckerImpl;
 class raw_ostream;
 
-/// \brief RuntimeDyld invariant checker for verifying that RuntimeDyld has
+/// RuntimeDyld invariant checker for verifying that RuntimeDyld has
 ///        correctly applied relocations.
 ///
 /// The RuntimeDyldChecker class evaluates expressions against an attached
@@ -70,26 +72,44 @@ class raw_ostream;
 ///
 class RuntimeDyldChecker {
 public:
-  RuntimeDyldChecker(RuntimeDyld &RTDyld, MCDisassembler *Disassembler,
+
+  using IsSymbolValidFunction = std::function<bool(StringRef Symbol)>;
+  using GetSymbolAddressFunction =
+    std::function<Expected<JITTargetAddress>(StringRef Symbol)>;
+  using GetSymbolContentFunction =
+    std::function<Expected<StringRef>(StringRef Symbol)>;
+  using GetSectionLoadAddressFunction =
+    std::function<Optional<JITTargetAddress>(StringRef FileName,
+                                             StringRef SectionName)>;
+  using GetSectionContentFunction =
+    std::function<Expected<StringRef>(StringRef FileName,
+                                      StringRef SectionName)>;
+  using GetStubOffsetInSectionFunction =
+    std::function<Expected<uint32_t>(StringRef FileName,
+                                     StringRef SectionName,
+                                     StringRef SymbolName)>;
+
+  RuntimeDyldChecker(IsSymbolValidFunction IsSymbolValid,
+                     GetSymbolAddressFunction GetSymbolAddress,
+                     GetSymbolContentFunction GetSymbolContent,
+                     GetSectionLoadAddressFunction GetSectionLoadAddresss,
+                     GetSectionContentFunction GetSectionContent,
+                     GetStubOffsetInSectionFunction GetStubOffsetInSection,
+                     support::endianness Endianness,
+                     MCDisassembler *Disassembler,
                      MCInstPrinter *InstPrinter, raw_ostream &ErrStream);
   ~RuntimeDyldChecker();
 
-  // \brief Get the associated RTDyld instance.
-  RuntimeDyld& getRTDyld();
-
-  // \brief Get the associated RTDyld instance.
-  const RuntimeDyld& getRTDyld() const;
-
-  /// \brief Check a single expression against the attached RuntimeDyld
+  /// Check a single expression against the attached RuntimeDyld
   ///        instance.
   bool check(StringRef CheckExpr) const;
 
-  /// \brief Scan the given memory buffer for lines beginning with the string
+  /// Scan the given memory buffer for lines beginning with the string
   ///        in RulePrefix. The remainder of the line is passed to the check
   ///        method to be evaluated as an expression.
   bool checkAllRulesInBuffer(StringRef RulePrefix, MemoryBuffer *MemBuf) const;
 
-  /// \brief Returns the address of the requested section (or an error message
+  /// Returns the address of the requested section (or an error message
   ///        in the second element of the pair if the address cannot be found).
   ///
   /// if 'LocalAddress' is true, this returns the address of the section
@@ -99,8 +119,8 @@ public:
                                                   StringRef SectionName,
                                                   bool LocalAddress);
 
-  /// \brief If there is a section at the given local address, return its load
-  ///        address, otherwise return none.
+  /// If there is a section at the given local address, return its load
+  /// address, otherwise return none.
   Optional<uint64_t> getSectionLoadAddress(void *LocalAddress) const;
 
 private:

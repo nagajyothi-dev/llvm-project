@@ -1,9 +1,8 @@
 //===--- GlobalModuleIndex.cpp - Global Module Index ------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,24 +10,26 @@
 //
 //===----------------------------------------------------------------------===//
 
+
 #include "ASTReaderInternals.h"
-#include "clang/Frontend/PCHContainerOperations.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/GlobalModuleIndex.h"
 #include "clang/Serialization/Module.h"
+#include "clang/Serialization/PCHContainerOperations.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Bitcode/BitstreamWriter.h"
+#include "llvm/Support/DJB.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LockFileManager.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/OnDiskHashTable.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/TimeProfiler.h"
 #include <cstdio>
 using namespace clang;
 using namespace serialization;
@@ -38,26 +39,26 @@ using namespace serialization;
 //----------------------------------------------------------------------------//
 namespace {
   enum {
-    /// \brief The block containing the index.
+    /// The block containing the index.
     GLOBAL_INDEX_BLOCK_ID = llvm::bitc::FIRST_APPLICATION_BLOCKID
   };
 
-  /// \brief Describes the record types in the index.
+  /// Describes the record types in the index.
   enum IndexRecordTypes {
-    /// \brief Contains version information and potentially other metadata,
+    /// Contains version information and potentially other metadata,
     /// used to determine if we can read this global index file.
     INDEX_METADATA,
-    /// \brief Describes a module, including its file name and dependencies.
+    /// Describes a module, including its file name and dependencies.
     MODULE,
-    /// \brief The index for identifiers.
+    /// The index for identifiers.
     IDENTIFIER_INDEX
   };
 }
 
-/// \brief The name of the global index file.
+/// The name of the global index file.
 static const char * const IndexFileName = "modules.idx";
 
-/// \brief The global index file version.
+/// The global index file version.
 static const unsigned CurrentVersion = 1;
 
 //----------------------------------------------------------------------------//
@@ -66,7 +67,7 @@ static const unsigned CurrentVersion = 1;
 
 namespace {
 
-/// \brief Trait used to read the identifier index from the on-disk hash
+/// Trait used to read the identifier index from the on-disk hash
 /// table.
 class IdentifierIndexReaderTrait {
 public:
@@ -81,7 +82,7 @@ public:
   }
 
   static hash_value_type ComputeHash(const internal_key_type& a) {
-    return llvm::HashString(a);
+    return llvm::djbHash(a);
   }
 
   static std::pair<unsigned, unsigned>
@@ -127,6 +128,7 @@ GlobalModuleIndex::GlobalModuleIndex(std::unique_ptr<llvm::MemoryBuffer> Buffer,
                                      llvm::BitstreamCursor Cursor)
     : Buffer(std::move(Buffer)), IdentifierIndex(), NumIdentifierLookups(),
       NumIdentifierLookupHits() {
+  llvm::TimeTraceScope TimeScope("Module LoadIndex", StringRef(""));
   // Read the global index.
   bool InGlobalIndexBlock = false;
   bool Done = false;
@@ -245,7 +247,7 @@ GlobalModuleIndex::readIndex(StringRef Path) {
     return std::make_pair(nullptr, EC_NotFound);
   std::unique_ptr<llvm::MemoryBuffer> Buffer = std::move(BufferOrErr.get());
 
-  /// \brief The main bitstream cursor for the main block.
+  /// The main bitstream cursor for the main block.
   llvm::BitstreamCursor Cursor(*Buffer);
 
   // Sniff for the signature.
@@ -289,7 +291,7 @@ void GlobalModuleIndex::getModuleDependencies(
 
 bool GlobalModuleIndex::lookupIdentifier(StringRef Name, HitSet &Hits) {
   Hits.clear();
-  
+
   // If there's no identifier index, there is nothing we can do.
   if (!IdentifierIndex)
     return false;
@@ -368,12 +370,12 @@ LLVM_DUMP_METHOD void GlobalModuleIndex::dump() {
 //----------------------------------------------------------------------------//
 
 namespace {
-  /// \brief Provides information about a specific module file.
+  /// Provides information about a specific module file.
   struct ModuleFileInfo {
-    /// \brief The numberic ID for this module file.
+    /// The numberic ID for this module file.
     unsigned ID;
 
-    /// \brief The set of modules on which this module depends. Each entry is
+    /// The set of modules on which this module depends. Each entry is
     /// a module ID.
     SmallVector<unsigned, 4> Dependencies;
     ASTFileSignature Signature;
@@ -387,7 +389,7 @@ namespace {
         : StoredSize(Size), StoredModTime(ModTime), StoredSignature(Sig) {}
   };
 
-  /// \brief Builder that generates the global module index file.
+  /// Builder that generates the global module index file.
   class GlobalModuleIndexBuilder {
     FileManager &FileMgr;
     const PCHContainerReader &PCHContainerRdr;
@@ -398,26 +400,26 @@ namespace {
     /// Information about each of the known module files.
     ModuleFilesMap ModuleFiles;
 
-    /// \brief Mapping from the imported module file to the imported
+    /// Mapping from the imported module file to the imported
     /// information.
     typedef std::multimap<const FileEntry *, ImportedModuleFileInfo>
         ImportedModuleFilesMap;
 
-    /// \brief Information about each importing of a module file.
+    /// Information about each importing of a module file.
     ImportedModuleFilesMap ImportedModuleFiles;
 
-    /// \brief Mapping from identifiers to the list of module file IDs that
+    /// Mapping from identifiers to the list of module file IDs that
     /// consider this identifier to be interesting.
     typedef llvm::StringMap<SmallVector<unsigned, 2> > InterestingIdentifierMap;
 
-    /// \brief A mapping from all interesting identifiers to the set of module
+    /// A mapping from all interesting identifiers to the set of module
     /// files in which those identifiers are considered interesting.
     InterestingIdentifierMap InterestingIdentifiers;
-    
-    /// \brief Write the block-info block for the global module index file.
+
+    /// Write the block-info block for the global module index file.
     void emitBlockInfoBlock(llvm::BitstreamWriter &Stream);
 
-    /// \brief Retrieve the module file information for the given file.
+    /// Retrieve the module file information for the given file.
     ModuleFileInfo &getModuleFileInfo(const FileEntry *File) {
       llvm::MapVector<const FileEntry *, ModuleFileInfo>::iterator Known
         = ModuleFiles.find(File);
@@ -435,12 +437,12 @@ namespace {
         FileManager &FileMgr, const PCHContainerReader &PCHContainerRdr)
         : FileMgr(FileMgr), PCHContainerRdr(PCHContainerRdr) {}
 
-    /// \brief Load the contents of the given module file into the builder.
+    /// Load the contents of the given module file into the builder.
     ///
     /// \returns true if an error occurred, false otherwise.
     bool loadModuleFile(const FileEntry *File);
 
-    /// \brief Write the index to the given bitstream.
+    /// Write the index to the given bitstream.
     /// \returns true if an error occurred, false otherwise.
     bool writeIndex(llvm::BitstreamWriter &Stream);
   };
@@ -493,7 +495,7 @@ namespace {
     : public serialization::reader::ASTIdentifierLookupTraitBase {
 
   public:
-    /// \brief The identifier and whether it is "interesting".
+    /// The identifier and whether it is "interesting".
     typedef std::pair<StringRef, bool> data_type;
 
     data_type ReadData(const internal_key_type& k,
@@ -608,7 +610,7 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
         // Skip the import location
         ++Idx;
 
-        // Load stored size/modification time. 
+        // Load stored size/modification time.
         off_t StoredSize = (off_t)Record[Idx++];
         time_t StoredModTime = (time_t)Record[Idx++];
 
@@ -618,6 +620,10 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
             {{(uint32_t)Record[Idx++], (uint32_t)Record[Idx++],
               (uint32_t)Record[Idx++], (uint32_t)Record[Idx++],
               (uint32_t)Record[Idx++]}}};
+
+        // Skip the module name (currently this is only used for prebuilt
+        // modules while here we are only dealing with cached).
+        Idx += Record[Idx] + 1;
 
         // Retrieve the imported file name.
         unsigned Length = Record[Idx++];
@@ -681,7 +687,7 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
 
 namespace {
 
-/// \brief Trait used to generate the identifier index as an on-disk hash
+/// Trait used to generate the identifier index as an on-disk hash
 /// table.
 class IdentifierIndexWriterTrait {
 public:
@@ -693,20 +699,20 @@ public:
   typedef unsigned offset_type;
 
   static hash_value_type ComputeHash(key_type_ref Key) {
-    return llvm::HashString(Key);
+    return llvm::djbHash(Key);
   }
 
   std::pair<unsigned,unsigned>
   EmitKeyDataLength(raw_ostream& Out, key_type_ref Key, data_type_ref Data) {
     using namespace llvm::support;
-    endian::Writer<little> LE(Out);
+    endian::Writer LE(Out, little);
     unsigned KeyLen = Key.size();
     unsigned DataLen = Data.size() * 4;
     LE.write<uint16_t>(KeyLen);
     LE.write<uint16_t>(DataLen);
     return std::make_pair(KeyLen, DataLen);
   }
-  
+
   void EmitKey(raw_ostream& Out, key_type_ref Key, unsigned KeyLen) {
     Out.write(Key.data(), KeyLen);
   }
@@ -715,7 +721,7 @@ public:
                 unsigned DataLen) {
     using namespace llvm::support;
     for (unsigned I = 0, N = Data.size(); I != N; ++I)
-      endian::Writer<little>(Out).write<uint32_t>(Data[I]);
+      endian::write<uint32_t>(Out, Data[I], little);
   }
 };
 
@@ -736,7 +742,8 @@ bool GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
   }
 
   using namespace llvm;
-  
+  llvm::TimeTraceScope TimeScope("Module WriteIndex", StringRef(""));
+
   // Emit the file header.
   Stream.Emit((unsigned)'B', 8);
   Stream.Emit((unsigned)'C', 8);
@@ -785,7 +792,7 @@ bool GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
          I != IEnd; ++I) {
       Generator.insert(I->first(), I->second, Trait);
     }
-    
+
     // Create the on-disk hash table in a buffer.
     SmallString<4096> IdentifierTable;
     uint32_t BucketOffset;
@@ -793,7 +800,7 @@ bool GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
       using namespace llvm::support;
       llvm::raw_svector_ostream Out(IdentifierTable);
       // Make sure that no bucket is at offset 0
-      endian::Writer<little>(Out).write<uint32_t>(0);
+      endian::write<uint32_t>(Out, 0, little);
       BucketOffset = Generator.Emit(Out, Trait);
     }
 
@@ -898,7 +905,7 @@ GlobalModuleIndex::writeIndex(FileManager &FileMgr,
 
   // Rename the newly-written index file to the proper name.
   if (llvm::sys::fs::rename(IndexTmpPath, IndexPath)) {
-    // Rename failed; just remove the 
+    // Rename failed; just remove the
     llvm::sys::fs::remove(IndexTmpPath);
     return EC_IOError;
   }
@@ -909,10 +916,10 @@ GlobalModuleIndex::writeIndex(FileManager &FileMgr,
 
 namespace {
   class GlobalIndexIdentifierIterator : public IdentifierIterator {
-    /// \brief The current position within the identifier lookup table.
+    /// The current position within the identifier lookup table.
     IdentifierIndexTable::key_iterator Current;
 
-    /// \brief The end position within the identifier lookup table.
+    /// The end position within the identifier lookup table.
     IdentifierIndexTable::key_iterator End;
 
   public:

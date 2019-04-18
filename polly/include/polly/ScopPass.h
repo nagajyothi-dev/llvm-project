@@ -1,9 +1,8 @@
 //===--------- ScopPass.h - Pass for Static Control Parts --------*-C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -40,12 +39,12 @@ using FunctionAnalysisManagerScopProxy =
 } // namespace polly
 
 namespace llvm {
-using polly::SPMUpdater;
 using polly::Scop;
 using polly::ScopAnalysisManager;
 using polly::ScopAnalysisManagerFunctionProxy;
 using polly::ScopInfo;
 using polly::ScopStandardAnalysisResults;
+using polly::SPMUpdater;
 
 template <>
 class InnerAnalysisManagerProxy<ScopAnalysisManager, Function>::Result {
@@ -191,7 +190,7 @@ public:
       InvalidateCurrentScop = true;
 
     Worklist.erase(&S.getRegion());
-    SAM.clear(S);
+    SAM.clear(S, S.getName());
   }
 
 private:
@@ -261,14 +260,13 @@ public:
 
 private:
   ScopPassT Pass;
-}; // namespace polly
+};
 
 template <typename ScopPassT>
 FunctionToScopPassAdaptor<ScopPassT>
 createFunctionToScopPassAdaptor(ScopPassT Pass) {
   return FunctionToScopPassAdaptor<ScopPassT>(std::move(Pass));
 }
-
 } // namespace polly
 
 #endif

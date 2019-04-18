@@ -1,37 +1,32 @@
 //===-- PlatformLinux.cpp ---------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "PlatformLinux.h"
 #include "lldb/Host/Config.h"
 
-// C Includes
 #include <stdio.h>
 #ifndef LLDB_DISABLE_POSIX
 #include <sys/utsname.h>
 #endif
 
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/State.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/State.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StreamString.h"
 
-// Define these constants from Linux mman.h for use when targeting
-// remote linux systems even when host has different values.
+// Define these constants from Linux mman.h for use when targeting remote linux
+// systems even when host has different values.
 #define MAP_PRIVATE 2
 #define MAP_ANON 0x20
 
@@ -41,7 +36,6 @@ using namespace lldb_private::platform_linux;
 
 static uint32_t g_initialize_count = 0;
 
-//------------------------------------------------------------------
 
 PlatformSP PlatformLinux::CreateInstance(bool force, const ArchSpec *arch) {
   Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PLATFORM));
@@ -50,7 +44,7 @@ PlatformSP PlatformLinux::CreateInstance(bool force, const ArchSpec *arch) {
            arch ? arch->GetTriple().getTriple() : "<null>");
 
   bool create = force;
-  if (create == false && arch && arch->IsValid()) {
+  if (!create && arch && arch->IsValid()) {
     const llvm::Triple &triple = arch->GetTriple();
     switch (triple.getOS()) {
     case llvm::Triple::Linux:
@@ -58,9 +52,8 @@ PlatformSP PlatformLinux::CreateInstance(bool force, const ArchSpec *arch) {
       break;
 
 #if defined(__linux__)
-    // Only accept "unknown" for the OS if the host is linux and
-    // it "unknown" wasn't specified (it was just returned because it
-    // was NOT specified)
+    // Only accept "unknown" for the OS if the host is linux and it "unknown"
+    // wasn't specified (it was just returned because it was NOT specified)
     case llvm::Triple::OSType::UnknownOS:
       create = !arch->TripleOSWasSpecified();
       break;
@@ -124,9 +117,7 @@ void PlatformLinux::Terminate() {
   PlatformPOSIX::Terminate();
 }
 
-//------------------------------------------------------------------
 /// Default Constructor
-//------------------------------------------------------------------
 PlatformLinux::PlatformLinux(bool is_host)
     : PlatformPOSIX(is_host) // This is the local host platform
 {}
@@ -142,7 +133,8 @@ bool PlatformLinux::GetSupportedArchitectureAtIndex(uint32_t idx,
         arch = hostArch;
         return arch.IsValid();
       } else if (idx == 1) {
-        // If the default host architecture is 64-bit, look for a 32-bit variant
+        // If the default host architecture is 64-bit, look for a 32-bit
+        // variant
         if (hostArch.IsValid() && hostArch.GetTriple().isArch64Bit()) {
           arch = HostInfo::GetArchitecture(HostInfo::eArchKind32);
           return arch.IsValid();
@@ -192,13 +184,10 @@ bool PlatformLinux::GetSupportedArchitectureAtIndex(uint32_t idx,
       return false;
     }
     // Leave the vendor as "llvm::Triple:UnknownVendor" and don't specify the
-    // vendor by
-    // calling triple.SetVendorName("unknown") so that it is a "unspecified
-    // unknown".
-    // This means when someone calls triple.GetVendorName() it will return an
-    // empty string
-    // which indicates that the vendor can be set when two architectures are
-    // merged
+    // vendor by calling triple.SetVendorName("unknown") so that it is a
+    // "unspecified unknown". This means when someone calls
+    // triple.GetVendorName() it will return an empty string which indicates
+    // that the vendor can be set when two architectures are merged
 
     // Now set the triple into "arch" and return true
     arch.SetTriple(triple);
@@ -212,8 +201,8 @@ void PlatformLinux::GetStatus(Stream &strm) {
 
 #ifndef LLDB_DISABLE_POSIX
   // Display local kernel information only when we are running in host mode.
-  // Otherwise, we would end up printing non-Linux information (when running
-  // on Mac OS for example).
+  // Otherwise, we would end up printing non-Linux information (when running on
+  // Mac OS for example).
   if (IsHost()) {
     struct utsname un;
 
@@ -271,9 +260,28 @@ bool PlatformLinux::CanDebugProcess() {
   }
 }
 
+std::vector<std::string>
+PlatformLinux::GetSystemIncludeDirectories(lldb::LanguageType lang) {
+  std::string sys_root = GetSDKRootDirectory().AsCString("");
+  switch (lang) {
+  case lldb::eLanguageTypeC:
+  case lldb::eLanguageTypeC89:
+  case lldb::eLanguageTypeC99:
+  case lldb::eLanguageTypeC11:
+  case lldb::eLanguageTypeC_plus_plus:
+  case lldb::eLanguageTypeC_plus_plus_03:
+  case lldb::eLanguageTypeC_plus_plus_11:
+  case lldb::eLanguageTypeC_plus_plus_14:
+  case lldb::eLanguageTypeObjC_plus_plus:
+    return {sys_root + "/usr/include/"};
+  default:
+    return {};
+  }
+}
+
 // For local debugging, Linux will override the debug logic to use llgs-launch
-// rather than lldb-launch, llgs-attach.  This differs from current lldb-launch,
-// debugserver-attach approach on MacOSX.
+// rather than lldb-launch, llgs-attach.  This differs from current lldb-
+// launch, debugserver-attach approach on MacOSX.
 lldb::ProcessSP
 PlatformLinux::DebugProcess(ProcessLaunchInfo &launch_info, Debugger &debugger,
                             Target *target, // Can be NULL, if NULL create a new
@@ -297,16 +305,16 @@ PlatformLinux::DebugProcess(ProcessLaunchInfo &launch_info, Debugger &debugger,
   launch_info.GetFlags().Set(eLaunchFlagDebug);
 
   // We always launch the process we are going to debug in a separate process
-  // group, since then we can handle ^C interrupts ourselves w/o having to worry
-  // about the target getting them as well.
+  // group, since then we can handle ^C interrupts ourselves w/o having to
+  // worry about the target getting them as well.
   launch_info.SetLaunchInSeparateProcessGroup(true);
 
   // Ensure we have a target.
   if (target == nullptr) {
     LLDB_LOG(log, "creating new target");
     TargetSP new_target_sp;
-    error = debugger.GetTargetList().CreateTarget(debugger, "", "", false,
-                                                  nullptr, new_target_sp);
+    error = debugger.GetTargetList().CreateTarget(
+        debugger, "", "", eLoadDependentsNo, nullptr, new_target_sp);
     if (error.Fail()) {
       LLDB_LOG(log, "failed to create new target: {0}", error);
       return process_sp;
@@ -325,8 +333,8 @@ PlatformLinux::DebugProcess(ProcessLaunchInfo &launch_info, Debugger &debugger,
 
   // Now create the gdb-remote process.
   LLDB_LOG(log, "having target create process with gdb-remote plugin");
-  process_sp = target->CreateProcess(
-      launch_info.GetListenerForProcess(debugger), "gdb-remote", nullptr);
+  process_sp =
+      target->CreateProcess(launch_info.GetListener(), "gdb-remote", nullptr);
 
   if (!process_sp) {
     error.SetErrorString("CreateProcess() failed for gdb-remote process");
@@ -372,7 +380,7 @@ PlatformLinux::DebugProcess(ProcessLaunchInfo &launch_info, Debugger &debugger,
     // Hook up process PTY if we have one (which we should for local debugging
     // with llgs).
     int pty_fd = launch_info.GetPTY().ReleaseMasterFileDescriptor();
-    if (pty_fd != lldb_utility::PseudoTerminal::invalid_fd) {
+    if (pty_fd != PseudoTerminal::invalid_fd) {
       process_sp->SetSTDIOFileDescriptor(pty_fd);
       LLDB_LOG(log, "hooked up STDIO pty to process");
     } else

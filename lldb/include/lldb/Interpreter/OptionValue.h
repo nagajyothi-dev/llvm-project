@@ -1,20 +1,16 @@
 //===-- OptionValue.h -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_OptionValue_h_
 #define liblldb_OptionValue_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/FormatEntity.h"
+#include "lldb/Utility/CompletionRequest.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-defines.h"
@@ -23,9 +19,7 @@
 
 namespace lldb_private {
 
-//---------------------------------------------------------------------
 // OptionValue
-//---------------------------------------------------------------------
 class OptionValue {
 public:
   typedef enum {
@@ -57,9 +51,11 @@ public:
     eDumpOptionValue = (1u << 2),
     eDumpOptionDescription = (1u << 3),
     eDumpOptionRaw = (1u << 4),
+    eDumpOptionCommand = (1u << 5),
     eDumpGroupValue = (eDumpOptionName | eDumpOptionType | eDumpOptionValue),
     eDumpGroupHelp =
-        (eDumpOptionName | eDumpOptionType | eDumpOptionDescription)
+        (eDumpOptionName | eDumpOptionType | eDumpOptionDescription),
+    eDumpGroupExport = (eDumpOptionCommand | eDumpOptionName | eDumpOptionValue)
   };
 
   OptionValue()
@@ -71,13 +67,11 @@ public:
 
   virtual ~OptionValue() = default;
 
-  //-----------------------------------------------------------------
   // Subclasses should override these functions
-  //-----------------------------------------------------------------
   virtual Type GetType() const = 0;
 
-  // If this value is always hidden, the avoid showing any info on this
-  // value, just show the info for the child values.
+  // If this value is always hidden, the avoid showing any info on this value,
+  // just show the info for the child values.
   virtual bool ValueIsTransparent() const {
     return GetType() == eTypeProperties;
   }
@@ -100,13 +94,9 @@ public:
   virtual lldb::OptionValueSP DeepCopy() const = 0;
 
   virtual size_t AutoComplete(CommandInterpreter &interpreter,
-                              llvm::StringRef s, int match_start_point,
-                              int max_return_elements, bool &word_complete,
-                              StringList &matches);
+                              CompletionRequest &request);
 
-  //-----------------------------------------------------------------
   // Subclasses can override these functions
-  //-----------------------------------------------------------------
   virtual lldb::OptionValueSP GetSubValue(const ExecutionContext *exe_ctx,
                                           llvm::StringRef name,
                                           bool will_modify,
@@ -125,10 +115,8 @@ public:
 
   virtual bool DumpQualifiedName(Stream &strm) const;
 
-  //-----------------------------------------------------------------
-  // Subclasses should NOT override these functions as they use the
-  // above functions to implement functionality
-  //-----------------------------------------------------------------
+  // Subclasses should NOT override these functions as they use the above
+  // functions to implement functionality
   uint32_t GetTypeAsMask() { return 1u << GetType(); }
 
   static uint32_t ConvertTypeToMask(OptionValue::Type type) {
@@ -183,9 +171,8 @@ public:
   CreateValueFromCStringForTypeMask(const char *value_cstr, uint32_t type_mask,
                                     Status &error);
 
-  // Get this value as a uint64_t value if it is encoded as a boolean,
-  // uint64_t or int64_t. Other types will cause "fail_value" to be
-  // returned
+  // Get this value as a uint64_t value if it is encoded as a boolean, uint64_t
+  // or int64_t. Other types will cause "fail_value" to be returned
   uint64_t GetUInt64Value(uint64_t fail_value, bool *success_ptr);
 
   OptionValueArch *GetAsArch();
@@ -339,10 +326,10 @@ protected:
   void *m_baton;
   bool m_value_was_set; // This can be used to see if a value has been set
                         // by a call to SetValueFromCString(). It is often
-                        // handy to know if an option value was set from
-                        // the command line or as a setting, versus if we
-                        // just have the default value that was already
-                        // populated in the option value.
+                        // handy to know if an option value was set from the
+                        // command line or as a setting, versus if we just have
+                        // the default value that was already populated in the
+                        // option value.
 };
 
 } // namespace lldb_private

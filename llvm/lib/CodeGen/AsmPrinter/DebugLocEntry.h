@@ -1,9 +1,8 @@
 //===-- llvm/CodeGen/DebugLocEntry.h - Entry in debug_loc list -*- C++ -*--===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,6 +10,7 @@
 #define LLVM_LIB_CODEGEN_ASMPRINTER_DEBUGLOCENTRY_H
 
 #include "DebugLocStream.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/MC/MCSymbol.h"
@@ -20,7 +20,7 @@
 namespace llvm {
 class AsmPrinter;
 
-/// \brief This struct describes location entries emitted in the .debug_loc
+/// This struct describes location entries emitted in the .debug_loc
 /// section.
 class DebugLocEntry {
   /// Begin and end symbols for the address range that this location is valid.
@@ -28,7 +28,7 @@ class DebugLocEntry {
   const MCSymbol *End;
 
 public:
-  /// \brief A single location or constant.
+  /// A single location or constant.
   struct Value {
     Value(const DIExpression *Expr, int64_t i)
         : Expression(Expr), EntryKind(E_Integer) {
@@ -100,18 +100,16 @@ private:
   SmallVector<Value, 1> Values;
 
 public:
-  DebugLocEntry(const MCSymbol *B, const MCSymbol *E, Value Val)
-      : Begin(B), End(E) {
-    Values.push_back(std::move(Val));
+  /// Create a location list entry for the range [\p Begin, \p End).
+  ///
+  /// \param Vals One or more values describing (parts of) the variable.
+  DebugLocEntry(const MCSymbol *Begin, const MCSymbol *End,
+                ArrayRef<Value> Vals)
+      : Begin(Begin), End(End) {
+    addValues(Vals);
   }
 
-  /// \brief If this and Next are describing different pieces of the same
-  /// variable, merge them by appending Next's values to the current
-  /// list of values.
-  /// Return true if the merge was successful.
-  bool MergeValues(const DebugLocEntry &Next);
-
-  /// \brief Attempt to merge this DebugLocEntry with Next and return
+  /// Attempt to merge this DebugLocEntry with Next and return
   /// true if the merge was successful. Entries can be merged if they
   /// share the same Loc/Constant and if Next immediately follows this
   /// Entry.
@@ -130,15 +128,16 @@ public:
   void addValues(ArrayRef<DebugLocEntry::Value> Vals) {
     Values.append(Vals.begin(), Vals.end());
     sortUniqueValues();
-    assert(all_of(Values, [](DebugLocEntry::Value V) {
-          return V.isFragment();
-        }) && "value must be a piece");
+    assert((Values.size() == 1 ||
+            all_of(Values,
+                   [](DebugLocEntry::Value V) { return V.isFragment(); })) &&
+           "must either have a single value or multiple pieces");
   }
 
-  // \brief Sort the pieces by offset.
+  // Sort the pieces by offset.
   // Remove any duplicate entries by dropping all but the first.
   void sortUniqueValues() {
-    std::sort(Values.begin(), Values.end());
+    llvm::sort(Values);
     Values.erase(
         std::unique(
             Values.begin(), Values.end(), [](const Value &A, const Value &B) {
@@ -147,12 +146,14 @@ public:
         Values.end());
   }
 
-  /// \brief Lower this entry into a DWARF expression.
-  void finalize(const AsmPrinter &AP, DebugLocStream::ListBuilder &List,
-                const DIBasicType *BT);
+  /// Lower this entry into a DWARF expression.
+  void finalize(const AsmPrinter &AP,
+                DebugLocStream::ListBuilder &List,
+                const DIBasicType *BT,
+                DwarfCompileUnit &TheCU);
 };
 
-/// \brief Compare two Values for equality.
+/// Compare two Values for equality.
 inline bool operator==(const DebugLocEntry::Value &A,
                        const DebugLocEntry::Value &B) {
   if (A.EntryKind != B.EntryKind)

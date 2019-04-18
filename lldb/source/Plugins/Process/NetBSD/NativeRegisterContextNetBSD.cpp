@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextNetBSD.cpp -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,9 +19,9 @@ using namespace lldb_private::process_netbsd;
 // clang-format on
 
 NativeRegisterContextNetBSD::NativeRegisterContextNetBSD(
-    NativeThreadProtocol &native_thread, uint32_t concrete_frame_idx,
+    NativeThreadProtocol &native_thread,
     RegisterInfoInterface *reg_info_interface_p)
-    : NativeRegisterContextRegisterInfo(native_thread, concrete_frame_idx,
+    : NativeRegisterContextRegisterInfo(native_thread,
                                         reg_info_interface_p) {}
 
 Status NativeRegisterContextNetBSD::ReadGPR() {

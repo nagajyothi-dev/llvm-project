@@ -1,9 +1,8 @@
 //===- lib/ReaderWriter/YAML/ReaderWriterYAML.cpp -------------------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -280,7 +279,7 @@ template <> struct ScalarTraits<RefKind> {
     return StringRef("unknown reference kind");
   }
 
-  static bool mustQuote(StringRef) { return false; }
+  static QuotingType mustQuote(StringRef) { return QuotingType::None; }
 };
 
 template <> struct ScalarEnumerationTraits<lld::File::Kind> {
@@ -495,7 +494,7 @@ template <> struct ScalarTraits<lld::DefinedAtom::Alignment> {
     return StringRef(); // returning empty string means success
   }
 
-  static bool mustQuote(StringRef) { return false; }
+  static QuotingType mustQuote(StringRef) { return QuotingType::None; }
 };
 
 template <> struct ScalarEnumerationTraits<FileKinds> {
@@ -552,7 +551,7 @@ template <> struct ScalarTraits<ImplicitHex8> {
     return StringRef(); // returning empty string means success
   }
 
-  static bool mustQuote(StringRef) { return false; }
+  static QuotingType mustQuote(StringRef) { return QuotingType::None; }
 };
 
 // YAML conversion for std::vector<const lld::File*>

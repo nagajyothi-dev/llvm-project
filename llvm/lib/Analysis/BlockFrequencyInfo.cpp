@@ -1,9 +1,8 @@
 //===- BlockFrequencyInfo.cpp - Block Frequency Analysis ------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -61,24 +60,36 @@ cl::opt<unsigned>
                                 "is no less than the max frequency of the "
                                 "function multiplied by this percent."));
 
-// Command line option to turn on CFG dot dump after profile annotation.
-cl::opt<bool>
-    PGOViewCounts("pgo-view-counts", cl::init(false), cl::Hidden,
-                  cl::desc("A boolean option to show CFG dag with "
-                           "block profile counts and branch probabilities "
-                           "right after PGO profile annotation step. The "
-                           "profile counts are computed using branch "
-                           "probabilities from the runtime profile data and "
-                           "block frequency propagation algorithm. To view "
-                           "the raw counts from the profile, use option "
-                           "-pgo-view-raw-counts instead. To limit graph "
-                           "display to only one function, use filtering option "
-                           "-view-bfi-func-name."));
+// Command line option to turn on CFG dot or text dump after profile annotation.
+cl::opt<PGOViewCountsType> PGOViewCounts(
+    "pgo-view-counts", cl::Hidden,
+    cl::desc("A boolean option to show CFG dag or text with "
+             "block profile counts and branch probabilities "
+             "right after PGO profile annotation step. The "
+             "profile counts are computed using branch "
+             "probabilities from the runtime profile data and "
+             "block frequency propagation algorithm. To view "
+             "the raw counts from the profile, use option "
+             "-pgo-view-raw-counts instead. To limit graph "
+             "display to only one function, use filtering option "
+             "-view-bfi-func-name."),
+    cl::values(clEnumValN(PGOVCT_None, "none", "do not show."),
+               clEnumValN(PGOVCT_Graph, "graph", "show a graph."),
+               clEnumValN(PGOVCT_Text, "text", "show in text.")));
+
+static cl::opt<bool> PrintBlockFreq(
+    "print-bfi", cl::init(false), cl::Hidden,
+    cl::desc("Print the block frequency info."));
+
+cl::opt<std::string> PrintBlockFreqFuncName(
+    "print-bfi-func-name", cl::Hidden,
+    cl::desc("The option to specify the name of the function "
+             "whose block frequency info is printed."));
 
 namespace llvm {
 
 static GVDAGType getGVDT() {
-  if (PGOViewCounts)
+  if (PGOViewCounts == PGOVCT_Graph)
     return GVDT_Count;
   return ViewBlockFreqPropagationDAG;
 }
@@ -180,6 +191,11 @@ void BlockFrequencyInfo::calculate(const Function &F,
        F.getName().equals(ViewBlockFreqFuncName))) {
     view();
   }
+  if (PrintBlockFreq &&
+      (PrintBlockFreqFuncName.empty() ||
+       F.getName().equals(PrintBlockFreqFuncName))) {
+    print(dbgs());
+  }
 }
 
 BlockFrequency BlockFrequencyInfo::getBlockFreq(const BasicBlock *BB) const {
@@ -199,6 +215,11 @@ BlockFrequencyInfo::getProfileCountFromFreq(uint64_t Freq) const {
   if (!BFI)
     return None;
   return BFI->getProfileCountFromFreq(*getFunction(), Freq);
+}
+
+bool BlockFrequencyInfo::isIrrLoopHeader(const BasicBlock *BB) {
+  assert(BFI && "Expected analysis to be available");
+  return BFI->isIrrLoopHeader(BB);
 }
 
 void BlockFrequencyInfo::setBlockFreq(const BasicBlock *BB, uint64_t Freq) {
@@ -230,8 +251,8 @@ void BlockFrequencyInfo::setBlockFreqAndScale(
 
 /// Pop up a ghostview window with the current block frequency propagation
 /// rendered using dot.
-void BlockFrequencyInfo::view() const {
-  ViewGraph(const_cast<BlockFrequencyInfo *>(this), "BlockFrequencyDAGs");
+void BlockFrequencyInfo::view(StringRef title) const {
+  ViewGraph(const_cast<BlockFrequencyInfo *>(this), title);
 }
 
 const Function *BlockFrequencyInfo::getFunction() const {

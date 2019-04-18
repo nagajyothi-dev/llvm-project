@@ -1,8 +1,7 @@
 """
-                     The LLVM Compiler Infrastructure
-
- This file is distributed under the University of Illinois Open Source
- License. See LICENSE.TXT for details.
+  Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+  See https://llvm.org/LICENSE.txt for license information.
+  SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 Configuration options for lldbtest.py set by dotest.py during initialization
 """
@@ -15,6 +14,9 @@ channels = []
 
 # leave logs/traces even for successful test runs
 log_success = False
+
+# Indicate whether we're testing with an out-of-tree debugserver
+out_of_tree_debugserver = False
 
 # path to the lldb command line executable tool
 lldbExec = None

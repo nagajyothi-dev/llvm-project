@@ -1,22 +1,21 @@
 //===-- Disassembler.cpp ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Core/Disassembler.h"
 
-#include "lldb/Core/AddressRange.h" // for AddressRange
+#include "lldb/Core/AddressRange.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/EmulateInstruction.h"
-#include "lldb/Core/Mangled.h" // for Mangled, Mangled...
+#include "lldb/Core/Mangled.h"
 #include "lldb/Core/Module.h"
-#include "lldb/Core/ModuleList.h" // for ModuleList
+#include "lldb/Core/ModuleList.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/SourceManager.h" // for SourceManager
+#include "lldb/Core/SourceManager.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Interpreter/OptionValue.h"
 #include "lldb/Interpreter/OptionValueArray.h"
@@ -25,31 +24,31 @@
 #include "lldb/Interpreter/OptionValueString.h"
 #include "lldb/Interpreter/OptionValueUInt64.h"
 #include "lldb/Symbol/Function.h"
-#include "lldb/Symbol/Symbol.h"        // for Symbol
-#include "lldb/Symbol/SymbolContext.h" // for SymbolContext
+#include "lldb/Symbol/Symbol.h"
+#include "lldb/Symbol/SymbolContext.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/StackFrame.h"
 #include "lldb/Target/Target.h"
-#include "lldb/Target/Thread.h" // for Thread
+#include "lldb/Target/Thread.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/RegularExpression.h"
 #include "lldb/Utility/Status.h"
-#include "lldb/Utility/Stream.h"       // for Stream
-#include "lldb/Utility/StreamString.h" // for StreamString
+#include "lldb/Utility/Stream.h"
+#include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/Timer.h"
-#include "lldb/lldb-private-enumerations.h" // for InstructionType:...
-#include "lldb/lldb-private-interfaces.h"   // for DisassemblerCrea...
-#include "lldb/lldb-private-types.h"        // for RegisterInfo
-#include "llvm/ADT/Triple.h"                // for Triple, Triple::...
-#include "llvm/Support/Compiler.h"          // for LLVM_PRETTY_FUNC...
+#include "lldb/lldb-private-enumerations.h"
+#include "lldb/lldb-private-interfaces.h"
+#include "lldb/lldb-private-types.h"
+#include "llvm/ADT/Triple.h"
+#include "llvm/Support/Compiler.h"
 
-#include <cstdint> // for uint32_t, UINT32...
+#include <cstdint>
 #include <cstring>
-#include <utility> // for pair
+#include <utility>
 
-#include <assert.h> // for assert
+#include <assert.h>
 
 #define DEFAULT_DISASM_BYTE_SIZE 32
 
@@ -96,8 +95,8 @@ DisassemblerSP Disassembler::FindPluginForTarget(const TargetSP target_sp,
                                                  const char *plugin_name) {
   if (target_sp && flavor == nullptr) {
     // FIXME - we don't have the mechanism in place to do per-architecture
-    // settings.  But since we know that for now
-    // we only support flavors on x86 & x86_64,
+    // settings.  But since we know that for now we only support flavors on x86
+    // & x86_64,
     if (arch.GetTriple().getArch() == llvm::Triple::x86 ||
         arch.GetTriple().getArch() == llvm::Triple::x86_64)
       flavor = target_sp->GetDisassemblyFlavor();
@@ -108,19 +107,19 @@ DisassemblerSP Disassembler::FindPluginForTarget(const TargetSP target_sp,
 static void ResolveAddress(const ExecutionContext &exe_ctx, const Address &addr,
                            Address &resolved_addr) {
   if (!addr.IsSectionOffset()) {
-    // If we weren't passed in a section offset address range,
-    // try and resolve it to something
+    // If we weren't passed in a section offset address range, try and resolve
+    // it to something
     Target *target = exe_ctx.GetTargetPtr();
     if (target) {
-      if (target->GetSectionLoadList().IsEmpty()) {
-        target->GetImages().ResolveFileAddress(addr.GetOffset(), resolved_addr);
-      } else {
-        target->GetSectionLoadList().ResolveLoadAddress(addr.GetOffset(),
-                                                        resolved_addr);
-      }
-      // We weren't able to resolve the address, just treat it as a
-      // raw address
-      if (resolved_addr.IsValid())
+      bool is_resolved =
+          target->GetSectionLoadList().IsEmpty() ?
+              target->GetImages().ResolveFileAddress(addr.GetOffset(),
+                                                     resolved_addr) :
+              target->GetSectionLoadList().ResolveLoadAddress(addr.GetOffset(),
+                                                              resolved_addr);
+
+      // We weren't able to resolve the address, just treat it as a raw address
+      if (is_resolved && resolved_addr.IsValid())
         return;
     }
   }
@@ -162,7 +161,7 @@ size_t Disassembler::Disassemble(Debugger &debugger, const ArchSpec &arch,
 bool Disassembler::Disassemble(Debugger &debugger, const ArchSpec &arch,
                                const char *plugin_name, const char *flavor,
                                const ExecutionContext &exe_ctx,
-                               const ConstString &name, Module *module,
+                               ConstString name, Module *module,
                                uint32_t num_instructions,
                                bool mixed_source_and_assembly,
                                uint32_t num_mixed_context_lines,
@@ -410,15 +409,13 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
     disassembly_format = &format;
   }
 
-  // First pass: step through the list of instructions,
-  // find how long the initial addresses strings are, insert padding
-  // in the second pass so the opcodes all line up nicely.
+  // First pass: step through the list of instructions, find how long the
+  // initial addresses strings are, insert padding in the second pass so the
+  // opcodes all line up nicely.
 
   // Also build up the source line mapping if this is mixed source & assembly
-  // mode.
-  // Calculate the source line for each assembly instruction (eliding inlined
-  // functions
-  // which the user wants to skip).
+  // mode. Calculate the source line for each assembly instruction (eliding
+  // inlined functions which the user wants to skip).
 
   std::map<FileSpec, std::set<uint32_t>> source_lines_seen;
   Symbol *previous_symbol = nullptr;
@@ -431,9 +428,9 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
       const Address &addr = inst->GetAddress();
       ModuleSP module_sp(addr.GetModule());
       if (module_sp) {
-        const uint32_t resolve_mask = eSymbolContextFunction |
-                                      eSymbolContextSymbol |
-                                      eSymbolContextLineEntry;
+        const SymbolContextItem resolve_mask = eSymbolContextFunction |
+                                               eSymbolContextSymbol |
+                                               eSymbolContextLineEntry;
         uint32_t resolved_mask =
             module_sp->ResolveSymbolContextForAddress(addr, resolve_mask, sc);
         if (resolved_mask) {
@@ -454,8 +451,7 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
           if (mixed_source_and_assembly && sc.line_entry.IsValid()) {
             if (sc.symbol != previous_symbol) {
               SourceLine decl_line = GetFunctionDeclLineEntry(sc);
-              if (ElideMixedSourceAndDisassemblyLine(exe_ctx, sc, decl_line) ==
-                  false)
+              if (!ElideMixedSourceAndDisassemblyLine(exe_ctx, sc, decl_line))
                 AddLineToSourceLineTables(decl_line, source_lines_seen);
             }
             if (sc.line_entry.IsValid()) {
@@ -463,8 +459,7 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
               this_line.file = sc.line_entry.file;
               this_line.line = sc.line_entry.line;
               this_line.column = sc.line_entry.column;
-              if (ElideMixedSourceAndDisassemblyLine(exe_ctx, sc, this_line) ==
-                  false)
+              if (!ElideMixedSourceAndDisassemblyLine(exe_ctx, sc, this_line))
                 AddLineToSourceLineTables(this_line, source_lines_seen);
             }
           }
@@ -495,34 +490,30 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
           if (mixed_source_and_assembly) {
 
             // If we've started a new function (non-inlined), print all of the
-            // source lines from the
-            // function declaration until the first line table entry - typically
-            // the opening curly brace of
-            // the function.
+            // source lines from the function declaration until the first line
+            // table entry - typically the opening curly brace of the function.
             if (previous_symbol != sc.symbol) {
-              // The default disassembly format puts an extra blank line between
-              // functions - so
-              // when we're displaying the source context for a function, we
-              // don't want to add
-              // a blank line after the source context or we'll end up with two
-              // of them.
+              // The default disassembly format puts an extra blank line
+              // between functions - so when we're displaying the source
+              // context for a function, we don't want to add a blank line
+              // after the source context or we'll end up with two of them.
               if (previous_symbol != nullptr)
                 source_lines_to_display.print_source_context_end_eol = false;
 
               previous_symbol = sc.symbol;
               if (sc.function && sc.line_entry.IsValid()) {
                 LineEntry prologue_end_line = sc.line_entry;
-                if (ElideMixedSourceAndDisassemblyLine(
-                        exe_ctx, sc, prologue_end_line) == false) {
+                if (!ElideMixedSourceAndDisassemblyLine(exe_ctx, sc,
+                                                        prologue_end_line)) {
                   FileSpec func_decl_file;
                   uint32_t func_decl_line;
                   sc.function->GetStartLineSourceInfo(func_decl_file,
                                                       func_decl_line);
                   if (func_decl_file == prologue_end_line.file ||
                       func_decl_file == prologue_end_line.original_file) {
-                    // Add all the lines between the function declaration
-                    // and the first non-prologue source line to the list
-                    // of lines to print.
+                    // Add all the lines between the function declaration and
+                    // the first non-prologue source line to the list of lines
+                    // to print.
                     for (uint32_t lineno = func_decl_line;
                          lineno <= prologue_end_line.line; lineno++) {
                       SourceLine this_line;
@@ -530,8 +521,8 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
                       this_line.line = lineno;
                       source_lines_to_display.lines.push_back(this_line);
                     }
-                    // Mark the last line as the "current" one.  Usually
-                    // this is the open curly brace.
+                    // Mark the last line as the "current" one.  Usually this
+                    // is the open curly brace.
                     if (source_lines_to_display.lines.size() > 0)
                       source_lines_to_display.current_source_line =
                           source_lines_to_display.lines.size() - 1;
@@ -542,8 +533,8 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
                                  current_source_line_range);
             }
 
-            // If we've left a previous source line's address range, print a new
-            // source line
+            // If we've left a previous source line's address range, print a
+            // new source line
             if (!current_source_line_range.ContainsFileAddress(addr)) {
               sc.GetAddressRange(scope, 0, use_inline_block_range,
                                  current_source_line_range);
@@ -553,13 +544,13 @@ bool Disassembler::PrintInstructions(Disassembler *disasm_ptr,
                 this_line.file = sc.line_entry.file;
                 this_line.line = sc.line_entry.line;
 
-                if (ElideMixedSourceAndDisassemblyLine(exe_ctx, sc,
-                                                       this_line) == false) {
+                if (!ElideMixedSourceAndDisassemblyLine(exe_ctx, sc,
+                                                        this_line)) {
                   // Only print this source line if it is different from the
                   // last source line we printed.  There may have been inlined
                   // functions between these lines that we elided, resulting in
-                  // the same line being printed twice in a row for a contiguous
-                  // block of assembly instructions.
+                  // the same line being printed twice in a row for a
+                  // contiguous block of assembly instructions.
                   if (this_line != previous_line) {
 
                     std::vector<uint32_t> previous_lines;
@@ -683,7 +674,7 @@ Instruction::Instruction(const Address &address, AddressClass addr_class)
 Instruction::~Instruction() = default;
 
 AddressClass Instruction::GetAddressClass() {
-  if (m_address_class == eAddressClassInvalid)
+  if (m_address_class == AddressClass::eInvalid)
     m_address_class = m_address.GetAddressClass();
   return m_address_class;
 }
@@ -710,16 +701,16 @@ void Instruction::Dump(lldb_private::Stream *s, uint32_t max_opcode_byte_size,
 
   if (show_bytes) {
     if (m_opcode.GetType() == Opcode::eTypeBytes) {
-      // x86_64 and i386 are the only ones that use bytes right now so
-      // pad out the byte dump to be able to always show 15 bytes (3 chars each)
-      // plus a space
+      // x86_64 and i386 are the only ones that use bytes right now so pad out
+      // the byte dump to be able to always show 15 bytes (3 chars each) plus a
+      // space
       if (max_opcode_byte_size > 0)
         m_opcode.Dump(&ss, max_opcode_byte_size * 3 + 1);
       else
         m_opcode.Dump(&ss, 15 * 3 + 1);
     } else {
-      // Else, we have ARM or MIPS which can show up to a uint32_t
-      // 0x00000000 (10 spaces) plus two for padding...
+      // Else, we have ARM or MIPS which can show up to a uint32_t 0x00000000
+      // (10 spaces) plus two for padding...
       if (max_opcode_byte_size > 0)
         m_opcode.Dump(&ss, max_opcode_byte_size * 3 + 1);
       else
@@ -750,11 +741,11 @@ void Instruction::Dump(lldb_private::Stream *s, uint32_t max_opcode_byte_size,
 }
 
 bool Instruction::DumpEmulation(const ArchSpec &arch) {
-  std::unique_ptr<EmulateInstruction> insn_emulator_ap(
+  std::unique_ptr<EmulateInstruction> insn_emulator_up(
       EmulateInstruction::FindPlugin(arch, eInstructionTypeAny, nullptr));
-  if (insn_emulator_ap) {
-    insn_emulator_ap->SetInstruction(GetOpcode(), GetAddress(), nullptr);
-    return insn_emulator_ap->EvaluateInstruction(0);
+  if (insn_emulator_up) {
+    insn_emulator_up->SetInstruction(GetOpcode(), GetAddress(), nullptr);
+    return insn_emulator_up->EvaluateInstruction(0);
   }
 
   return false;
@@ -903,7 +894,8 @@ OptionValueSP Instruction::ReadDictionary(FILE *in_file, Stream *out_stream) {
           option_value_sp.reset();
           return option_value_sp;
         }
-        // We've used the data_type to read an array; re-set the type to Invalid
+        // We've used the data_type to read an array; re-set the type to
+        // Invalid
         data_type = OptionValue::eTypeInvalid;
       } else if ((value[0] == '0') && (value[1] == 'x')) {
         value_sp = std::make_shared<OptionValueUInt64>(0, 0);
@@ -939,7 +931,7 @@ bool Instruction::TestEmulation(Stream *out_stream, const char *file_name) {
     out_stream->Printf("Instruction::TestEmulation:  Missing file_name.");
     return false;
   }
-  FILE *test_file = FileSystem::Fopen(file_name, "r");
+  FILE *test_file = FileSystem::Instance().Fopen(file_name, "r");
   if (!test_file) {
     out_stream->Printf(
         "Instruction::TestEmulation: Attempt to open test file failed.");
@@ -1000,11 +992,11 @@ bool Instruction::TestEmulation(Stream *out_stream, const char *file_name) {
   arch.SetTriple(llvm::Triple(value_sp->GetStringValue()));
 
   bool success = false;
-  std::unique_ptr<EmulateInstruction> insn_emulator_ap(
+  std::unique_ptr<EmulateInstruction> insn_emulator_up(
       EmulateInstruction::FindPlugin(arch, eInstructionTypeAny, nullptr));
-  if (insn_emulator_ap)
+  if (insn_emulator_up)
     success =
-        insn_emulator_ap->TestEmulation(out_stream, arch, data_dictionary);
+        insn_emulator_up->TestEmulation(out_stream, arch, data_dictionary);
 
   if (success)
     out_stream->Printf("Emulation test succeeded.");
@@ -1020,14 +1012,14 @@ bool Instruction::Emulate(
     EmulateInstruction::WriteMemoryCallback write_mem_callback,
     EmulateInstruction::ReadRegisterCallback read_reg_callback,
     EmulateInstruction::WriteRegisterCallback write_reg_callback) {
-  std::unique_ptr<EmulateInstruction> insn_emulator_ap(
+  std::unique_ptr<EmulateInstruction> insn_emulator_up(
       EmulateInstruction::FindPlugin(arch, eInstructionTypeAny, nullptr));
-  if (insn_emulator_ap) {
-    insn_emulator_ap->SetBaton(baton);
-    insn_emulator_ap->SetCallbacks(read_mem_callback, write_mem_callback,
+  if (insn_emulator_up) {
+    insn_emulator_up->SetBaton(baton);
+    insn_emulator_up->SetCallbacks(read_mem_callback, write_mem_callback,
                                    read_reg_callback, write_reg_callback);
-    insn_emulator_ap->SetInstruction(GetOpcode(), GetAddress(), nullptr);
-    return insn_emulator_ap->EvaluateInstruction(evaluate_options);
+    insn_emulator_up->SetInstruction(GetOpcode(), GetAddress(), nullptr);
+    return insn_emulator_up->EvaluateInstruction(evaluate_options);
   }
 
   return false;
@@ -1107,9 +1099,9 @@ InstructionList::GetIndexOfNextBranchInstruction(uint32_t start,
     }
   }
 
-  // Hexagon needs the first instruction of the packet with the branch.
-  // Go backwards until we find an instruction marked end-of-packet, or
-  // until we hit start.
+  // Hexagon needs the first instruction of the packet with the branch. Go
+  // backwards until we find an instruction marked end-of-packet, or until we
+  // hit start.
   if (target.GetArchitecture().GetTriple().getArch() == llvm::Triple::hexagon) {
     // If we didn't find a branch, find the last packet start.
     if (next_branch == UINT32_MAX) {
@@ -1128,8 +1120,8 @@ InstructionList::GetIndexOfNextBranchInstruction(uint32_t start,
       // If we have an error reading memory, return start
       if (!error.Success())
         return start;
-      // check if this is the last instruction in a packet
-      // bits 15:14 will be 11b or 00b for a duplex
+      // check if this is the last instruction in a packet bits 15:14 will be
+      // 11b or 00b for a duplex
       if (((inst_bytes & 0xC000) == 0xC000) ||
           ((inst_bytes & 0xC000) == 0x0000)) {
         // instruction after this should be the start of next packet
@@ -1245,9 +1237,7 @@ size_t Disassembler::ParseInstructions(const ExecutionContext *exe_ctx,
   return m_instruction_list.GetSize();
 }
 
-//----------------------------------------------------------------------
 // Disassembler copy constructor
-//----------------------------------------------------------------------
 Disassembler::Disassembler(const ArchSpec &arch, const char *flavor)
     : m_arch(arch), m_instruction_list(), m_base_addr(LLDB_INVALID_ADDRESS),
       m_flavor() {
@@ -1257,8 +1247,7 @@ Disassembler::Disassembler(const ArchSpec &arch, const char *flavor)
     m_flavor.assign(flavor);
 
   // If this is an arm variant that can only include thumb (T16, T32)
-  // instructions, force the arch triple to be "thumbv.." instead of
-  // "armv..."
+  // instructions, force the arch triple to be "thumbv.." instead of "armv..."
   if (arch.IsAlwaysThumbInstructions()) {
     std::string thumb_arch_name(arch.GetTriple().getArchName().str());
     // Replace "arm" with "thumb" so we get all thumb variants correct
@@ -1280,12 +1269,10 @@ const InstructionList &Disassembler::GetInstructionList() const {
   return m_instruction_list;
 }
 
-//----------------------------------------------------------------------
 // Class PseudoInstruction
-//----------------------------------------------------------------------
 
 PseudoInstruction::PseudoInstruction()
-    : Instruction(Address(), eAddressClassUnknown), m_description() {}
+    : Instruction(Address(), AddressClass::eUnknown), m_description() {}
 
 PseudoInstruction::~PseudoInstruction() = default;
 

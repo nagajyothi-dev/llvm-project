@@ -1,9 +1,8 @@
 //===-- asan_flags.cc -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -33,10 +32,7 @@ static const char *MaybeCallAsanDefaultOptions() {
 
 static const char *MaybeUseAsanDefaultOptionsCompileDefinition() {
 #ifdef ASAN_DEFAULT_OPTIONS
-// Stringize the macro value.
-# define ASAN_STRINGIZE(x) #x
-# define ASAN_STRINGIZE_OPTIONS(options) ASAN_STRINGIZE(options)
-  return ASAN_STRINGIZE_OPTIONS(ASAN_DEFAULT_OPTIONS);
+  return SANITIZER_STRINGIFY(ASAN_DEFAULT_OPTIONS);
 #else
   return "";
 #endif
@@ -118,6 +114,10 @@ void InitializeFlags() {
   const char *ubsan_default_options = __ubsan::MaybeCallUbsanDefaultOptions();
   ubsan_parser.ParseString(ubsan_default_options);
 #endif
+#if CAN_SANITIZE_LEAKS
+  const char *lsan_default_options = __lsan::MaybeCallLsanDefaultOptions();
+  lsan_parser.ParseString(lsan_default_options);
+#endif
 
   // Override from command line.
   asan_parser.ParseString(GetEnv("ASAN_OPTIONS"));
@@ -144,6 +144,9 @@ void InitializeFlags() {
            SanitizerToolName);
     Die();
   }
+  // Ensure that redzone is at least SHADOW_GRANULARITY.
+  if (f->redzone < (int)SHADOW_GRANULARITY)
+    f->redzone = SHADOW_GRANULARITY;
   // Make "strict_init_order" imply "check_initialization_order".
   // TODO(samsonov): Use a single runtime flag for an init-order checker.
   if (f->strict_init_order) {
@@ -156,6 +159,10 @@ void InitializeFlags() {
   CHECK_LE(f->max_redzone, 2048);
   CHECK(IsPowerOfTwo(f->redzone));
   CHECK(IsPowerOfTwo(f->max_redzone));
+  if (SANITIZER_RTEMS) {
+    CHECK(!f->unmap_shadow_on_exit);
+    CHECK(!f->protect_shadow_gap);
+  }
 
   // quarantine_size is deprecated but we still honor it.
   // quarantine_size can not be used together with quarantine_size_mb.

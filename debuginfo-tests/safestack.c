@@ -1,5 +1,6 @@
 // RUN: %clang %target_itanium_abi_host_triple -arch x86_64 %s -o %t.out -g -fsanitize=safe-stack
 // RUN: %test_debuginfo %s %t.out
+// UNSUPPORTED: system-darwin
 // REQUIRES: not_asan
 //           Zorg configures the ASAN stage2 bots to not build the
 //           safestack compiler-rt.  Only run this test on
@@ -26,10 +27,26 @@ int f(struct S s, unsigned i) {
 
 // DEBUGGER: r
 // DEBUGGER: p s
-// CHECK: a = ([0] = 0, [1] = 1, [2] = 2, [3] = 3, [4] = 4, [5] = 5, [6] = 6, [7] = 7)
+// CHECK: a =
+// DEBUGGER: p s.a[0]
+// CHECK: = 0
+// DEBUGGER: p s.a[1]
+// CHECK: = 1
+// DEBUGGER: p s.a[7]
+// CHECK: = 7
 // DEBUGGER: c
 // DEBUGGER: p s
-// CHECK: a = ([0] = 0, [1] = 1, [2] = 2, [3] = 3, [4] = 4, [5] = 5, [6] = 6, [7] = 7)
+// CHECK: a =
+// DEBUGGER: p s.a[0]
+// CHECK: = 0
+// DEBUGGER: p s.a[1]
+// CHECK: = 1
+// DEBUGGER: p s.a[7]
 // DEBUGGER: c
 // DEBUGGER: p s
-// CHECK: a = ([0] = 0, [1] = 1, [2] = 2, [3] = 3, [4] = 4, [5] = 5, [6] = 6, [7] = 7)
+// CHECK: a =
+// DEBUGGER: p s.a[0]
+// CHECK: = 0
+// DEBUGGER: p s.a[1]
+// CHECK: = 1
+// DEBUGGER: p s.a[7]

@@ -1,23 +1,22 @@
 //===-- RegisterContextWindows_x86.cpp --------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Host/windows/HostThreadWindows.h"
 #include "lldb/Host/windows/windows.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-private-types.h"
 
 #include "ProcessWindowsLog.h"
 #include "RegisterContextWindows_x86.h"
-#include "RegisterContext_x86.h"
+#include "Plugins/Process/Utility/RegisterContext_x86.h"
 #include "TargetThreadWindows.h"
-#include "lldb-x86-register-enums.h"
+#include "Plugins/Process/Utility/lldb-x86-register-enums.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -30,14 +29,11 @@ using namespace lldb_private;
 namespace {
 
 // This enum defines the layout of the global RegisterInfo array.  This is
-// necessary because
-// lldb register sets are defined in terms of indices into the register array.
-// As such, the
-// order of RegisterInfos defined in global registers array must match the order
-// defined here.
-// When defining the register set layouts, these values can appear in an
-// arbitrary order, and that
-// determines the order that register values are displayed in a dump.
+// necessary because lldb register sets are defined in terms of indices into
+// the register array. As such, the order of RegisterInfos defined in global
+// registers array must match the order defined here. When defining the
+// register set layouts, these values can appear in an arbitrary order, and
+// that determines the order that register values are displayed in a dump.
 enum RegisterIndex {
   eRegisterIndexEax,
   eRegisterIndexEbx,
@@ -146,9 +142,7 @@ RegisterSet g_register_sets[] = {
 };
 }
 
-//------------------------------------------------------------------
 // Constructors and Destructors
-//------------------------------------------------------------------
 RegisterContextWindows_x86::RegisterContextWindows_x86(
     Thread &thread, uint32_t concrete_frame_idx)
     : RegisterContextWindows(thread, concrete_frame_idx) {}
@@ -177,6 +171,9 @@ const RegisterSet *RegisterContextWindows_x86::GetRegisterSet(size_t reg_set) {
 bool RegisterContextWindows_x86::ReadRegister(const RegisterInfo *reg_info,
                                               RegisterValue &reg_value) {
   if (!CacheAllRegisterValues())
+    return false;
+
+  if (reg_info == nullptr)
     return false;
 
   uint32_t reg = reg_info->kinds[eRegisterKindLLDB];
@@ -212,11 +209,10 @@ bool RegisterContextWindows_x86::ReadRegister(const RegisterInfo *reg_info,
 
 bool RegisterContextWindows_x86::WriteRegister(const RegisterInfo *reg_info,
                                                const RegisterValue &reg_value) {
-  // Since we cannot only write a single register value to the inferior, we need
-  // to make sure
-  // our cached copy of the register values are fresh.  Otherwise when writing
-  // EAX, for example,
-  // we may also overwrite some other register with a stale value.
+  // Since we cannot only write a single register value to the inferior, we
+  // need to make sure our cached copy of the register values are fresh.
+  // Otherwise when writing EAX, for example, we may also overwrite some other
+  // register with a stale value.
   if (!CacheAllRegisterValues())
     return false;
 

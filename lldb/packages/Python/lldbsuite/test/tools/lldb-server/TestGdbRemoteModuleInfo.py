@@ -3,6 +3,7 @@ from __future__ import print_function
 
 import gdbremote_testcase
 import lldbgdbserverutils
+from lldbsuite.support import seven
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
@@ -20,8 +21,8 @@ class TestGdbRemoteModuleInfo(gdbremote_testcase.GdbRemoteTestCaseBase):
 
         self.test_sequence.add_log_lines([
             'read packet: $jModulesInfo:[{"file":"%s","triple":"%s"}]]#00' % (
-                lldbutil.append_to_process_working_directory("a.out"),
-                info["triple"].decode('hex')),
+                lldbutil.append_to_process_working_directory(self, "a.out"),
+                seven.unhexlify(info["triple"])),
             {"direction": "send",
              "regex": r'^\$\[{(.*)}\]\]#[0-9A-Fa-f]{2}',
              "capture": {1: "spec"}},

@@ -1,16 +1,15 @@
 //===- lld/ReaderWriter/YamlContext.h - object used in YAML I/O context ---===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLD_READER_WRITER_YAML_CONTEXT_H
 #define LLD_READER_WRITER_YAML_CONTEXT_H
 
-#include "lld/Core/LLVM.h"
+#include "lld/Common/LLVM.h"
 #include <functional>
 #include <memory>
 #include <vector>
@@ -18,6 +17,7 @@
 namespace lld {
 class File;
 class LinkingContext;
+class Registry;
 namespace mach_o {
 namespace normalized {
 struct NormalizedFile;

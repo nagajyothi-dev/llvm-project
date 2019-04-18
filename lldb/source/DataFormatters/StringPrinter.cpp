@@ -1,10 +1,9 @@
 //===-- StringPrinter.cpp ----------------------------------------*- C++
 //-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,14 +20,14 @@
 
 #include <ctype.h>
 #include <locale>
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
 using namespace lldb_private::formatters;
 
-// we define this for all values of type but only implement it for those we care
-// about
-// that's good because we get linker errors for any unsupported type
+// we define this for all values of type but only implement it for those we
+// care about that's good because we get linker errors for any unsupported type
 template <lldb_private::formatters::StringPrinter::StringElementType type>
 static StringPrinter::StringPrinterBufferPointer<>
 GetPrintableImpl(uint8_t *buffer, uint8_t *buffer_end, uint8_t *&next);
@@ -163,8 +162,8 @@ GetPrintableImpl<StringPrinter::StringElementType::UTF8>(uint8_t *buffer,
         (unsigned char)*(buffer + 2), (unsigned char)*(buffer + 3));
     break;
   default:
-    // this is probably some bogus non-character thing
-    // just print it as-is and hope to sync up again soon
+    // this is probably some bogus non-character thing just print it as-is and
+    // hope to sync up again soon
     retval = {buffer, 1};
     next = buffer + 1;
     return retval;
@@ -223,9 +222,9 @@ GetPrintableImpl<StringPrinter::StringElementType::UTF8>(uint8_t *buffer,
   return retval;
 }
 
-// Given a sequence of bytes, this function returns:
-// a sequence of bytes to actually print out + a length
-// the following unscanned position of the buffer is in next
+// Given a sequence of bytes, this function returns: a sequence of bytes to
+// actually print out + a length the following unscanned position of the buffer
+// is in next
 static StringPrinter::StringPrinterBufferPointer<>
 GetPrintable(StringPrinter::StringElementType type, uint8_t *buffer,
              uint8_t *buffer_end, uint8_t *&next) {
@@ -308,12 +307,13 @@ static bool DumpUTFBufferToStream(
     llvm::UTF8 *utf8_data_end_ptr = nullptr;
 
     if (ConvertFunction) {
-      utf8_data_buffer_sp.reset(new DataBufferHeap(4 * bufferSPSize, 0));
+      utf8_data_buffer_sp =
+          std::make_shared<DataBufferHeap>(4 * bufferSPSize, 0);
       utf8_data_ptr = (llvm::UTF8 *)utf8_data_buffer_sp->GetBytes();
       utf8_data_end_ptr = utf8_data_ptr + utf8_data_buffer_sp->GetByteSize();
       ConvertFunction(&data_ptr, data_end_ptr, &utf8_data_ptr,
                       utf8_data_end_ptr, llvm::lenientConversion);
-      if (false == zero_is_terminator)
+      if (!zero_is_terminator)
         utf8_data_end_ptr = utf8_data_ptr;
       // needed because the ConvertFunction will change the value of the
       // data_ptr.
@@ -321,8 +321,7 @@ static bool DumpUTFBufferToStream(
           (llvm::UTF8 *)utf8_data_buffer_sp->GetBytes();
     } else {
       // just copy the pointers - the cast is necessary to make the compiler
-      // happy
-      // but this should only happen if we are reading UTF8 data
+      // happy but this should only happen if we are reading UTF8 data
       utf8_data_ptr = const_cast<llvm::UTF8 *>(
           reinterpret_cast<const llvm::UTF8 *>(data_ptr));
       utf8_data_end_ptr = const_cast<llvm::UTF8 *>(
@@ -344,8 +343,8 @@ static bool DumpUTFBufferToStream(
     }
 
     // since we tend to accept partial data (and even partially malformed data)
-    // we might end up with no NULL terminator before the end_ptr
-    // hence we need to take a slower route and ensure we stay within boundaries
+    // we might end up with no NULL terminator before the end_ptr hence we need
+    // to take a slower route and ensure we stay within boundaries
     for (; utf8_data_ptr < utf8_data_end_ptr;) {
       if (zero_is_terminator && !*utf8_data_ptr)
         break;
@@ -472,8 +471,8 @@ bool StringPrinter::ReadStringAndDumpToStream<
   }
 
   // since we tend to accept partial data (and even partially malformed data)
-  // we might end up with no NULL terminator before the end_ptr
-  // hence we need to take a slower route and ensure we stay within boundaries
+  // we might end up with no NULL terminator before the end_ptr hence we need
+  // to take a slower route and ensure we stay within boundaries
   for (uint8_t *data = buffer_sp->GetBytes(); *data && (data < data_end);) {
     if (escape_non_printables) {
       uint8_t *next_data = nullptr;

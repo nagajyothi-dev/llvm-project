@@ -1,5 +1,5 @@
 ; RUN: llc < %s | FileCheck %s
-; RUN: llc < %s -filetype=obj | llvm-dwarfdump - -debug-dump=info | FileCheck %s --check-prefix=DWARF
+; RUN: llc < %s -filetype=obj | llvm-dwarfdump -v - --debug-info | FileCheck %s --check-prefix=DWARF
 
 ; This should use the frame index side table for allocas, not DBG_VALUE
 ; instructions. For SDAG ISel, this test would see an SDNode materializing the
@@ -8,9 +8,8 @@
 ; CHECK-LABEL: use_dbg_declare:
 ; CHECK-NOT: #DEBUG_VALUE
 
-; 	"<0x2> 91 00" means "fbreg uleb(0)", i.e. RSP+0.
 ; DWARF: DW_TAG_variable
-; DWARF-NEXT:              DW_AT_location [DW_FORM_exprloc]      (<0x2> 91 00 )
+; DWARF-NEXT:              DW_AT_location [DW_FORM_exprloc]      (DW_OP_fbreg +0)
 ; DWARF-NEXT:              DW_AT_name [DW_FORM_strp]     ( {{.*}} = "o")
 
 
@@ -49,7 +48,7 @@ attributes #1 = { nounwind readnone speculatable }
 !4 = !{i32 2, !"Debug Info Version", i32 3}
 !5 = !{i32 1, !"wchar_size", i32 4}
 !6 = !{!"clang version 6.0.0 "}
-!7 = distinct !DISubprogram(name: "use_dbg_declare", scope: !1, file: !1, line: 3, type: !8, isLocal: false, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!7 = distinct !DISubprogram(name: "use_dbg_declare", scope: !1, file: !1, line: 3, type: !8, isLocal: false, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: false, unit: !0, retainedNodes: !2)
 !8 = !DISubroutineType(types: !9)
 !9 = !{null}
 !10 = !DILocalVariable(name: "o", scope: !7, file: !1, line: 4, type: !11)

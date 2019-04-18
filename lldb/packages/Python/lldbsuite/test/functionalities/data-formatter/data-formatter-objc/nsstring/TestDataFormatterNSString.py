@@ -21,7 +21,7 @@ class NSStringDataFormatterTestCase(TestBase):
 
     def appkit_tester_impl(self, commands):
         self.build()
-        self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
+        self.runCmd("file " + self.getBuildArtifact("a.out"), CURRENT_EXECUTABLE_SET)
 
         lldbutil.run_break_set_by_file_and_line(
             self, "main.m", self.line, num_expected_locations=1, loc_exact=True)
@@ -45,16 +45,19 @@ class NSStringDataFormatterTestCase(TestBase):
         commands()
 
     @skipUnlessDarwin
+    @no_debug_info_test
     def test_nsstring_with_run_command(self):
         """Test formatters for NSString."""
         self.appkit_tester_impl(self.nsstring_data_formatter_commands)
 
     @skipUnlessDarwin
+    @no_debug_info_test
     def test_rdar11106605_with_run_command(self):
         """Check that Unicode characters come out of CFString summary correctly."""
         self.appkit_tester_impl(self.rdar11106605_commands)
 
     @skipUnlessDarwin
+    @no_debug_info_test
     def test_nsstring_withNULS_with_run_command(self):
         """Test formatters for NSString."""
         self.appkit_tester_impl(self.nsstring_withNULs_commands)

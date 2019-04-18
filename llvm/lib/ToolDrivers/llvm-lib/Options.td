@@ -10,9 +10,16 @@ class P<string name, string help> :
       Joined<["/", "-", "-?"], name#":">, HelpText<help>;
 
 def libpath: P<"libpath", "Object file search path">;
+
+// Can't be called "list" since that's a keyword.
+def lst    : F<"list">, HelpText<"List contents of .lib file on stdout">;
 def out    : P<"out", "Path to file to write output">;
 
-def llvmlibthin : F<"llvmlibthin">;
+def llvmlibthin : F<"llvmlibthin">,
+    HelpText<"Make .lib point to .obj files instead of copying their contents">;
+
+def help : F<"help">;
+def help_q : Flag<["/?", "-?"], "">, Alias<help>;
 
 //==============================================================================
 // The flags below do nothing. They are defined only for lib.exe compatibility.

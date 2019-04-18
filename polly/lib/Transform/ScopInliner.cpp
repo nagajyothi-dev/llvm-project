@@ -1,9 +1,8 @@
 //===---- ScopInliner.cpp - Polyhedral based inliner ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-/// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,10 +14,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/LinkAllPasses.h"
-#include "polly/RegisterPasses.h"
 #include "polly/ScopDetection.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
-#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -30,6 +27,8 @@ extern bool polly::PollyAllowFullFunction;
 
 namespace {
 class ScopInliner : public CallGraphSCCPass {
+  using llvm::Pass::doInitialization;
+
 public:
   static char ID;
 
@@ -60,8 +59,8 @@ public:
     if (!F)
       return false;
     if (F->isDeclaration()) {
-      DEBUG(dbgs() << "Skipping " << F->getName()
-                   << "because it is a declaration.\n");
+      LLVM_DEBUG(dbgs() << "Skipping " << F->getName()
+                        << "because it is a declaration.\n");
       return false;
     }
 
@@ -77,8 +76,8 @@ public:
         SD.ValidRegions.count(RI.getTopLevelRegion()) > 0;
 
     if (HasScopAsTopLevelRegion) {
-      DEBUG(dbgs() << "Skipping " << F->getName()
-                   << " has scop as top level region");
+      LLVM_DEBUG(dbgs() << "Skipping " << F->getName()
+                        << " has scop as top level region");
       F->addFnAttr(llvm::Attribute::AlwaysInline);
 
       ModuleAnalysisManager MAM;
@@ -89,8 +88,8 @@ public:
       assert(M && "Function has illegal module");
       MPM.run(*M, MAM);
     } else {
-      DEBUG(dbgs() << F->getName()
-                   << " does NOT have scop as top level region\n");
+      LLVM_DEBUG(dbgs() << F->getName()
+                        << " does NOT have scop as top level region\n");
     }
 
     return false;
@@ -100,7 +99,6 @@ public:
     CallGraphSCCPass::getAnalysisUsage(AU);
   }
 };
-
 } // namespace
 char ScopInliner::ID;
 

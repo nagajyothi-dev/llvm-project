@@ -1,9 +1,8 @@
 //===-- RegisterContextPOSIX_mips64.cpp -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,20 +10,20 @@
 #include <errno.h>
 #include <stdint.h>
 
-#include "lldb/Core/RegisterValue.h"
-#include "lldb/Core/Scalar.h"
+#include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Endian.h"
+#include "lldb/Utility/RegisterValue.h"
+#include "lldb/Utility/Scalar.h"
 #include "llvm/Support/Compiler.h"
 
-#include "Plugins/Process/elf-core/ProcessElfCore.h"
 #include "RegisterContextPOSIX_mips64.h"
 #include "RegisterContextFreeBSD_mips64.h"
 #include "RegisterContextLinux_mips64.h"
-#include "RegisterContextLinux_mips.h" 
+#include "RegisterContextLinux_mips.h"
 
 using namespace lldb_private;
 using namespace lldb;
@@ -45,7 +44,7 @@ RegisterContextPOSIX_mips64::RegisterContextPOSIX_mips64(
     Thread &thread, uint32_t concrete_frame_idx,
     RegisterInfoInterface *register_info)
     : RegisterContext(thread, concrete_frame_idx) {
-  m_register_info_ap.reset(register_info);
+  m_register_info_up.reset(register_info);
   m_num_registers = GetRegisterCount();
   int set = GetRegisterSetCount();
 
@@ -59,11 +58,6 @@ RegisterContextPOSIX_mips64::RegisterContextPOSIX_mips64(
          static_cast<uint32_t>(m_registers_count[gpr_registers_count] +
                                m_registers_count[fpr_registers_count] +
                                m_registers_count[msa_registers_count]));
-
-  // elf-core yet to support ReadFPR()
-  ProcessSP base = CalculateProcess();
-  if (base.get()->GetPluginName() == ProcessElfCore::GetPluginNameStatic())
-    return;
 }
 
 RegisterContextPOSIX_mips64::~RegisterContextPOSIX_mips64() {}
@@ -83,18 +77,18 @@ unsigned RegisterContextPOSIX_mips64::GetRegisterSize(unsigned reg) {
 }
 
 size_t RegisterContextPOSIX_mips64::GetRegisterCount() {
-  return m_register_info_ap->GetRegisterCount();
+  return m_register_info_up->GetRegisterCount();
 }
 
 size_t RegisterContextPOSIX_mips64::GetGPRSize() {
-  return m_register_info_ap->GetGPRSize();
+  return m_register_info_up->GetGPRSize();
 }
 
 const RegisterInfo *RegisterContextPOSIX_mips64::GetRegisterInfo() {
   // Commonly, this method is overridden and g_register_infos is copied and
-  // specialized.
-  // So, use GetRegisterInfo() rather than g_register_infos in this scope.
-  return m_register_info_ap->GetRegisterInfo();
+  // specialized. So, use GetRegisterInfo() rather than g_register_infos in
+  // this scope.
+  return m_register_info_up->GetRegisterInfo();
 }
 
 const RegisterInfo *
@@ -106,22 +100,22 @@ RegisterContextPOSIX_mips64::GetRegisterInfoAtIndex(size_t reg) {
 }
 
 size_t RegisterContextPOSIX_mips64::GetRegisterSetCount() {
-  ArchSpec target_arch = m_register_info_ap->GetTargetArchitecture();
+  ArchSpec target_arch = m_register_info_up->GetTargetArchitecture();
   switch (target_arch.GetTriple().getOS()) {
   case llvm::Triple::Linux: {
     if ((target_arch.GetMachine() == llvm::Triple::mipsel) ||
          (target_arch.GetMachine() == llvm::Triple::mips)) {
-      const auto *context = static_cast<const RegisterContextLinux_mips *>
-                                        (m_register_info_ap.get());
+      const auto *context = static_cast<const RegisterContextLinux_mips *>(
+          m_register_info_up.get());
       return context->GetRegisterSetCount();
     }
-    const auto *context = static_cast<const RegisterContextLinux_mips64 *>
-                                      (m_register_info_ap.get());
+    const auto *context = static_cast<const RegisterContextLinux_mips64 *>(
+        m_register_info_up.get());
     return context->GetRegisterSetCount();
   }
   default: {
-    const auto *context = static_cast<const RegisterContextFreeBSD_mips64 *>
-                                      (m_register_info_ap.get());
+    const auto *context = static_cast<const RegisterContextFreeBSD_mips64 *>(
+        m_register_info_up.get());
     return context->GetRegisterSetCount();
   }
                        
@@ -129,22 +123,22 @@ size_t RegisterContextPOSIX_mips64::GetRegisterSetCount() {
 }
 
 const RegisterSet *RegisterContextPOSIX_mips64::GetRegisterSet(size_t set) {
-  ArchSpec target_arch = m_register_info_ap->GetTargetArchitecture();
+  ArchSpec target_arch = m_register_info_up->GetTargetArchitecture();
   switch (target_arch.GetTriple().getOS()) {
   case llvm::Triple::Linux: {
     if ((target_arch.GetMachine() == llvm::Triple::mipsel) ||
          (target_arch.GetMachine() == llvm::Triple::mips)) {
-      const auto *context = static_cast<const RegisterContextLinux_mips *>
-                                        (m_register_info_ap.get());
+      const auto *context = static_cast<const RegisterContextLinux_mips *>(
+          m_register_info_up.get());
       return context->GetRegisterSet(set);
     }
-    const auto *context = static_cast<const RegisterContextLinux_mips64 *>
-                                      (m_register_info_ap.get());
+    const auto *context = static_cast<const RegisterContextLinux_mips64 *>(
+        m_register_info_up.get());
     return context->GetRegisterSet(set);
   }
   default: {
-    const auto *context = static_cast<const RegisterContextFreeBSD_mips64 *>
-                                       (m_register_info_ap.get());
+    const auto *context = static_cast<const RegisterContextFreeBSD_mips64 *>(
+        m_register_info_up.get());
     return context->GetRegisterSet(set);
   }
   }
@@ -172,8 +166,8 @@ bool RegisterContextPOSIX_mips64::IsRegisterSetAvailable(size_t set_index) {
   return (set_index < num_sets);
 }
 
-// Used when parsing DWARF and EH frame information and any other
-// object file sections that contain register numbers in them.
+// Used when parsing DWARF and EH frame information and any other object file
+// sections that contain register numbers in them.
 uint32_t RegisterContextPOSIX_mips64::ConvertRegisterKindToRegisterNumber(
     lldb::RegisterKind kind, uint32_t num) {
   const uint32_t num_regs = m_num_registers;

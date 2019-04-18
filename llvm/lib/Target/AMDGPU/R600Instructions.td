@@ -1,9 +1,8 @@
 //===-- R600Instructions.td - R600 Instruction defs  -------*- tablegen -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,13 +11,19 @@
 //
 //===----------------------------------------------------------------------===//
 
-include "R600Intrinsics.td"
 include "R600InstrFormats.td"
+
+// FIXME: Should not be arbitrarily split from other R600 inst classes.
+class R600WrapperInst <dag outs, dag ins, string asm = "", list<dag> pattern = []> :
+  AMDGPUInst<outs, ins, asm, pattern>, PredicateControl {
+  let SubtargetPredicate = isR600toCayman;
+  let Namespace = "R600";
+}
+
 
 class InstR600ISA <dag outs, dag ins, string asm, list<dag> pattern = []> :
     InstR600 <outs, ins, asm, pattern, NullALU> {
 
-  let Namespace = "AMDGPU";
 }
 
 def MEMxi : Operand<iPTR> {
@@ -74,11 +79,18 @@ def ADDRDWord : ComplexPattern<i32, 1, "SelectADDRDWord", [], []>;
 def ADDRVTX_READ : ComplexPattern<i32, 2, "SelectADDRVTX_READ", [], []>;
 def ADDRGA_CONST_OFFSET : ComplexPattern<i32, 1, "SelectGlobalValueConstantOffset", [], []>;
 def ADDRGA_VAR_OFFSET : ComplexPattern<i32, 2, "SelectGlobalValueVariableOffset", [], []>;
+def ADDRIndirect : ComplexPattern<iPTR, 2, "SelectADDRIndirect", [], []>;
 
 
 def R600_Pred : PredicateOperand<i32, (ops R600_Predicate),
                                      (ops PRED_SEL_OFF)>;
 
+let isTerminator = 1, isReturn = 1, hasCtrlDep = 1,
+    usesCustomInserter = 1, Namespace = "R600" in {
+  def RETURN : ILFormat<(outs), (ins variable_ops),
+    "RETURN", [(AMDGPUendpgm)]
+  >;
+}
 
 let mayLoad = 0, mayStore = 0, hasSideEffects = 0 in {
 
@@ -212,34 +224,6 @@ class R600_REDUCTION <bits<11> inst, dag ins, string asm, list<dag> pattern,
 
 } // End mayLoad = 1, mayStore = 0, hasSideEffects = 0
 
-def TEX_SHADOW : PatLeaf<
-  (imm),
-  [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return (TType >= 6 && TType <= 8) || TType == 13;
-  }]
->;
-
-def TEX_RECT : PatLeaf<
-  (imm),
-  [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return TType == 5;
-  }]
->;
-
-def TEX_ARRAY : PatLeaf<
-  (imm),
-  [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return TType == 9 || TType == 10 || TType == 16;
-  }]
->;
-
-def TEX_SHADOW_ARRAY : PatLeaf<
-  (imm),
-  [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return TType == 11 || TType == 12 || TType == 17;
-  }]
->;
-
 class EG_CF_RAT <bits <8> cfinst, bits <6> ratinst, bits<4> ratid, bits<4> mask,
                  dag outs, dag ins, string asm, list<dag> pattern> :
     InstR600ISA <outs, ins, asm, pattern>,
@@ -314,7 +298,7 @@ class VTX_READ <string name, dag outs, list<dag> pattern>
 class LoadParamFrag <PatFrag load_type> : PatFrag <
   (ops node:$ptr), (load_type node:$ptr),
   [{ return isConstantLoad(cast<LoadSDNode>(N), 0) ||
-            (cast<LoadSDNode>(N)->getAddressSpace() == AMDGPUASI.PARAM_I_ADDRESS); }]
+            (cast<LoadSDNode>(N)->getAddressSpace() == AMDGPUAS::PARAM_I_ADDRESS); }]
 >;
 
 def vtx_id3_az_extloadi8 : LoadParamFrag<az_extloadi8>;
@@ -324,8 +308,8 @@ def vtx_id3_load : LoadParamFrag<load>;
 class LoadVtxId1 <PatFrag load> : PatFrag <
   (ops node:$ptr), (load node:$ptr), [{
   const MemSDNode *LD = cast<MemSDNode>(N);
-  return LD->getAddressSpace() == AMDGPUASI.GLOBAL_ADDRESS ||
-         (LD->getAddressSpace() == AMDGPUASI.CONSTANT_ADDRESS &&
+  return LD->getAddressSpace() == AMDGPUAS::GLOBAL_ADDRESS ||
+         (LD->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS &&
            !isa<GlobalValue>(GetUnderlyingObject(
            LD->getMemOperand()->getValue(), CurDAG->getDataLayout())));
 }]>;
@@ -337,7 +321,7 @@ def vtx_id1_load : LoadVtxId1 <load>;
 class LoadVtxId2 <PatFrag load> : PatFrag <
   (ops node:$ptr), (load node:$ptr), [{
   const MemSDNode *LD = cast<MemSDNode>(N);
-  return LD->getAddressSpace() == AMDGPUASI.CONSTANT_ADDRESS &&
+  return LD->getAddressSpace() == AMDGPUAS::CONSTANT_ADDRESS &&
          isa<GlobalValue>(GetUnderlyingObject(
          LD->getMemOperand()->getValue(), CurDAG->getDataLayout()));
 }]>;
@@ -346,15 +330,11 @@ def vtx_id2_az_extloadi8 : LoadVtxId2 <az_extloadi8>;
 def vtx_id2_az_extloadi16 : LoadVtxId2 <az_extloadi16>;
 def vtx_id2_load : LoadVtxId2 <load>;
 
-def isR600 : Predicate<"Subtarget->getGeneration() <= R600Subtarget::R700">;
-
-def isR600toCayman
-    : Predicate<
-          "Subtarget->getGeneration() <= R600Subtarget::NORTHERN_ISLANDS">;
-
 //===----------------------------------------------------------------------===//
 // R600 SDNodes
 //===----------------------------------------------------------------------===//
+
+let Namespace = "R600" in {
 
 def INTERP_PAIR_XY :  AMDGPUShaderInst <
   (outs R600_TReg32_X:$dst0, R600_TReg32_Y:$dst1),
@@ -367,6 +347,8 @@ def INTERP_PAIR_ZW :  AMDGPUShaderInst <
   (ins i32imm:$src0, R600_TReg32_Y:$src1, R600_TReg32_X:$src2),
   "INTERP_PAIR_ZW $src0 $src1 $src2 : $dst0 dst1",
   []>;
+
+}
 
 def CONST_ADDRESS: SDNode<"AMDGPUISD::CONST_ADDRESS",
   SDTypeProfile<1, -1, [SDTCisInt<0>, SDTCisPtrTy<1>]>,
@@ -393,7 +375,7 @@ def TEXTURE_FETCH_Type : SDTypeProfile<1, 19, [SDTCisFP<0>]>;
 def TEXTURE_FETCH: SDNode<"AMDGPUISD::TEXTURE_FETCH", TEXTURE_FETCH_Type, []>;
 
 multiclass TexPattern<bits<32> TextureOp, Instruction inst, ValueType vt = v4f32> {
-def : Pat<(TEXTURE_FETCH (i32 TextureOp), vt:$SRC_GPR,
+def : R600Pat<(TEXTURE_FETCH (i32 TextureOp), vt:$SRC_GPR,
           (i32 imm:$srcx), (i32 imm:$srcy), (i32 imm:$srcz), (i32 imm:$srcw),
           (i32 imm:$offsetx), (i32 imm:$offsety), (i32 imm:$offsetz),
           (i32 imm:$DST_SEL_X), (i32 imm:$DST_SEL_Y), (i32 imm:$DST_SEL_Z),
@@ -415,10 +397,14 @@ def : Pat<(TEXTURE_FETCH (i32 TextureOp), vt:$SRC_GPR,
 // Interpolation Instructions
 //===----------------------------------------------------------------------===//
 
+let Namespace = "R600" in {
+
 def INTERP_VEC_LOAD :  AMDGPUShaderInst <
   (outs R600_Reg128:$dst),
   (ins i32imm:$src0),
   "INTERP_LOAD $src0 : $dst">;
+
+}
 
 def INTERP_XY : R600_2OP <0xD6, "INTERP_XY", []> {
   let bank_swizzle = 5;
@@ -479,7 +465,7 @@ class ExportBufWord1 {
 }
 
 multiclass ExportPattern<Instruction ExportInst, bits<8> cf_inst> {
-  def : Pat<(R600_EXPORT (v4f32 R600_Reg128:$src), (i32 imm:$base), (i32 imm:$type),
+  def : R600Pat<(R600_EXPORT (v4f32 R600_Reg128:$src), (i32 imm:$base), (i32 imm:$type),
     (i32 imm:$swz_x), (i32 imm:$swz_y), (i32 imm:$swz_z), (i32 imm:$swz_w)),
         (ExportInst R600_Reg128:$src, imm:$type, imm:$base,
         imm:$swz_x, imm:$swz_y, imm:$swz_z, imm:$swz_w, cf_inst, 0)
@@ -490,22 +476,22 @@ multiclass ExportPattern<Instruction ExportInst, bits<8> cf_inst> {
 multiclass SteamOutputExportPattern<Instruction ExportInst,
     bits<8> buf0inst, bits<8> buf1inst, bits<8> buf2inst, bits<8> buf3inst> {
 // Stream0
-  def : Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
+  def : R600Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 0), (i32 imm:$mask)),
       (ExportInst R600_Reg128:$src, 0, imm:$arraybase,
       4095, imm:$mask, buf0inst, 0)>;
 // Stream1
-  def : Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
+  def : R600Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 1), (i32 imm:$mask)),
       (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf1inst, 0)>;
 // Stream2
-  def : Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
+  def : R600Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 2), (i32 imm:$mask)),
       (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf2inst, 0)>;
 // Stream3
-  def : Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
+  def : R600Pat<(int_r600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 3), (i32 imm:$mask)),
       (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf3inst, 0)>;
@@ -549,7 +535,7 @@ class ExportBufInst : InstR600ISA<(
 
 def KCACHE : InstFlag<"printKCache">;
 
-class ALU_CLAUSE<bits<4> inst, string OpName> : AMDGPUInst <(outs),
+class ALU_CLAUSE<bits<4> inst, string OpName> : R600WrapperInst <(outs),
 (ins i32imm:$ADDR, i32imm:$KCACHE_BANK0, i32imm:$KCACHE_BANK1,
 KCACHE:$KCACHE_MODE0, KCACHE:$KCACHE_MODE1,
 i32imm:$KCACHE_ADDR0, i32imm:$KCACHE_ADDR1,
@@ -578,7 +564,7 @@ class CF_WORD0_R600 {
   let Word0 = ADDR;
 }
 
-class CF_CLAUSE_R600 <bits<7> inst, dag ins, string AsmPrint> : AMDGPUInst <(outs),
+class CF_CLAUSE_R600 <bits<7> inst, dag ins, string AsmPrint> : R600WrapperInst <(outs),
 ins, AsmPrint, [] >, CF_WORD0_R600, CF_WORD1_R600 {
   field bits<64> Inst;
   bits<4> CNT;
@@ -598,7 +584,7 @@ ins, AsmPrint, [] >, CF_WORD0_R600, CF_WORD1_R600 {
   let Inst{63-32} = Word1;
 }
 
-class CF_CLAUSE_EG <bits<8> inst, dag ins, string AsmPrint> : AMDGPUInst <(outs),
+class CF_CLAUSE_EG <bits<8> inst, dag ins, string AsmPrint> : R600WrapperInst <(outs),
 ins, AsmPrint, [] >, CF_WORD0_EG, CF_WORD1_EG {
   field bits<64> Inst;
 
@@ -621,7 +607,7 @@ def CF_ALU_CONTINUE : ALU_CLAUSE<13, "ALU_CONTINUE">;
 def CF_ALU_BREAK : ALU_CLAUSE<14, "ALU_BREAK">;
 def CF_ALU_ELSE_AFTER : ALU_CLAUSE<15, "ALU_ELSE_AFTER">;
 
-def FETCH_CLAUSE : AMDGPUInst <(outs),
+def FETCH_CLAUSE : R600WrapperInst <(outs),
 (ins i32imm:$addr), "Fetch clause starting at $addr:", [] > {
   field bits<8> Inst;
   bits<8> num;
@@ -629,7 +615,7 @@ def FETCH_CLAUSE : AMDGPUInst <(outs),
   let isCodeGenOnly = 1;
 }
 
-def ALU_CLAUSE : AMDGPUInst <(outs),
+def ALU_CLAUSE : R600WrapperInst <(outs),
 (ins i32imm:$addr), "ALU clause starting at $addr:", [] > {
   field bits<8> Inst;
   bits<8> num;
@@ -637,7 +623,7 @@ def ALU_CLAUSE : AMDGPUInst <(outs),
   let isCodeGenOnly = 1;
 }
 
-def LITERALS : AMDGPUInst <(outs),
+def LITERALS : R600WrapperInst <(outs),
 (ins LITERAL:$literal1, LITERAL:$literal2), "$literal1, $literal2", [] > {
   let isCodeGenOnly = 1;
 
@@ -649,15 +635,60 @@ def LITERALS : AMDGPUInst <(outs),
   let Inst{63-32} = literal2;
 }
 
-def PAD : AMDGPUInst <(outs), (ins), "PAD", [] > {
+def PAD : R600WrapperInst <(outs), (ins), "PAD", [] > {
   field bits<64> Inst;
 }
-
-let Predicates = [isR600toCayman] in {
 
 //===----------------------------------------------------------------------===//
 // Common Instructions R600, R700, Evergreen, Cayman
 //===----------------------------------------------------------------------===//
+
+let isCodeGenOnly = 1, isPseudo = 1 in {
+
+let Namespace = "R600", usesCustomInserter = 1  in {
+
+class FABS <RegisterClass rc> : AMDGPUShaderInst <
+  (outs rc:$dst),
+  (ins rc:$src0),
+  "FABS $dst, $src0",
+  [(set f32:$dst, (fabs f32:$src0))]
+>;
+
+class FNEG <RegisterClass rc> : AMDGPUShaderInst <
+  (outs rc:$dst),
+  (ins rc:$src0),
+  "FNEG $dst, $src0",
+  [(set f32:$dst, (fneg f32:$src0))]
+>;
+
+} // usesCustomInserter = 1
+
+multiclass RegisterLoadStore <RegisterClass dstClass, Operand addrClass,
+                    ComplexPattern addrPat> {
+let UseNamedOperandTable = 1 in {
+
+  def RegisterLoad : AMDGPUShaderInst <
+    (outs dstClass:$dst),
+    (ins addrClass:$addr, i32imm:$chan),
+    "RegisterLoad $dst, $addr",
+    [(set i32:$dst, (AMDGPUregister_load addrPat:$addr, (i32 timm:$chan)))]
+  > {
+    let isRegisterLoad = 1;
+  }
+
+  def RegisterStore : AMDGPUShaderInst <
+    (outs),
+    (ins dstClass:$val, addrClass:$addr, i32imm:$chan),
+    "RegisterStore $val, $addr",
+    [(AMDGPUregister_store i32:$val, addrPat:$addr, (i32 timm:$chan))]
+  > {
+    let isRegisterStore = 1;
+  }
+}
+}
+
+} // End isCodeGenOnly = 1, isPseudo = 1
+
 
 def ADD : R600_2OP_Helper <0x0, "ADD", fadd>;
 // Non-IEEE MUL: 0 * anything = 0
@@ -730,7 +761,7 @@ def MOV : R600_1OP <0x19, "MOV", []>;
 // Most DUMMY_CHAINs should be eliminated during legalization, but undef
 // values can sneak in some to selection.
 let isPseudo = 1, isCodeGenOnly = 1 in {
-def DUMMY_CHAIN : AMDGPUInst <
+def DUMMY_CHAIN : R600WrapperInst <
   (outs),
   (ins),
   "DUMMY_CHAIN",
@@ -741,30 +772,32 @@ def DUMMY_CHAIN : AMDGPUInst <
 
 let isPseudo = 1, isCodeGenOnly = 1, usesCustomInserter = 1 in {
 
-class MOV_IMM <ValueType vt, Operand immType> : AMDGPUInst <
+class MOV_IMM <ValueType vt, Operand immType> : R600WrapperInst <
   (outs R600_Reg32:$dst),
   (ins immType:$imm),
   "",
   []
->;
+> {
+  let Namespace = "R600";
+}
 
 } // end let isPseudo = 1, isCodeGenOnly = 1, usesCustomInserter = 1
 
 def MOV_IMM_I32 : MOV_IMM<i32, i32imm>;
-def : Pat <
+def : R600Pat <
   (imm:$val),
   (MOV_IMM_I32 imm:$val)
 >;
 
 def MOV_IMM_GLOBAL_ADDR : MOV_IMM<iPTR, i32imm>;
-def : Pat <
+def : R600Pat <
   (AMDGPUconstdata_ptr tglobaladdr:$addr),
   (MOV_IMM_GLOBAL_ADDR tglobaladdr:$addr)
 >;
 
 
 def MOV_IMM_F32 : MOV_IMM<f32, f32imm>;
-def : Pat <
+def : R600Pat <
   (fpimm:$val),
   (MOV_IMM_F32  fpimm:$val)
 >;
@@ -936,7 +969,10 @@ class MULADD_IEEE_Common <bits<5> inst> : R600_3OP <
 class FMA_Common <bits<5> inst> : R600_3OP <
   inst, "FMA",
   [(set f32:$dst, (fma f32:$src0, f32:$src1, f32:$src2))], VecALU
->;
+>
+{
+  let OtherPredicates = [FMA];
+}
 
 class CNDE_Common <bits<5> inst> : R600_3OP <
   inst, "CNDE",
@@ -958,7 +994,7 @@ class CNDGE_Common <bits<5> inst> : R600_3OP <
 }
 
 
-let isCodeGenOnly = 1, isPseudo = 1, Namespace = "AMDGPU"  in {
+let isCodeGenOnly = 1, isPseudo = 1, Namespace = "R600"  in {
 class R600_VEC2OP<list<dag> pattern> : InstR600 <(outs R600_Reg32:$dst), (ins
 // Slot X
    UEM:$update_exec_mask_X, UP:$update_pred_X, WRITE:$write_X,
@@ -1137,7 +1173,6 @@ class COS_Common <bits<11> inst> : R600_1OP <
   let Itinerary = TransALU;
 }
 
-def CLAMP_R600 :  CLAMP <R600_Reg32>;
 def FABS_R600 : FABS<R600_Reg32>;
 def FNEG_R600 : FNEG<R600_Reg32>;
 
@@ -1147,7 +1182,7 @@ def FNEG_R600 : FNEG<R600_Reg32>;
 
 // FIXME: Should be predicated on unsafe fp math.
 multiclass DIV_Common <InstR600 recip_ieee> {
-def : Pat<
+def : R600Pat<
   (fdiv f32:$src0, f32:$src1),
   (MUL_IEEE $src0, (recip_ieee $src1))
 >;
@@ -1194,7 +1229,7 @@ let Predicates = [isR600] in {
   defm DIV_r600 : DIV_Common<RECIP_IEEE_r600>;
   def : POW_Common <LOG_IEEE_r600, EXP_IEEE_r600, MUL>;
 
-  def : Pat<(fsqrt f32:$src), (MUL $src, (RECIPSQRT_CLAMPED_r600 $src))>;
+  def : R600Pat<(fsqrt f32:$src), (MUL $src, (RECIPSQRT_CLAMPED_r600 $src))>;
   def : RsqPat<RECIPSQRT_IEEE_r600, f32>;
 
   def R600_ExportSwz : ExportSwzInst {
@@ -1278,15 +1313,17 @@ let Predicates = [isR600] in {
 // Regist loads and stores - for indirect addressing
 //===----------------------------------------------------------------------===//
 
+let Namespace = "R600" in {
 defm R600_ : RegisterLoadStore <R600_Reg32, FRAMEri, ADDRIndirect>;
+}
 
 // Hardcode channel to 0
 // NOTE: LSHR is not available here. LSHR is per family instruction
-def : Pat <
+def : R600Pat <
   (i32 (load_private ADDRIndirect:$addr) ),
   (R600_RegisterLoad FRAMEri:$addr, (i32 0))
 >;
-def : Pat <
+def : R600Pat <
   (store_private i32:$val, ADDRIndirect:$addr),
   (R600_RegisterStore i32:$val, FRAMEri:$addr, (i32 0))
 >;
@@ -1330,11 +1367,12 @@ let usesCustomInserter = 1 in {
 
 let mayLoad = 0, mayStore = 0, hasSideEffects = 1 in {
 
-def MASK_WRITE : AMDGPUShaderInst <
+def MASK_WRITE : InstR600 <
     (outs),
     (ins R600_Reg32:$src),
     "MASK_WRITE $src",
-    []
+    [],
+    NullALU
 >;
 
 } // End mayLoad = 0, mayStore = 0, hasSideEffects = 1
@@ -1365,7 +1403,7 @@ def TXD_SHADOW: InstR600 <
 // Constant Buffer Addressing Support
 //===----------------------------------------------------------------------===//
 
-let usesCustomInserter = 1, isCodeGenOnly = 1, isPseudo = 1, Namespace = "AMDGPU"  in {
+let usesCustomInserter = 1, isCodeGenOnly = 1, isPseudo = 1, Namespace = "R600"  in {
 def CONST_COPY : Instruction {
   let OutOperandList = (outs R600_Reg32:$dst);
   let InOperandList = (ins i32imm:$src);
@@ -1488,23 +1526,6 @@ let Inst{63-32} = Word1;
 //===---------------------------------------------------------------------===//
 // Flow and Program control Instructions
 //===---------------------------------------------------------------------===//
-class ILFormat<dag outs, dag ins, string asmstr, list<dag> pattern>
-: Instruction {
-
-     let Namespace = "AMDGPU";
-     dag OutOperandList = outs;
-     dag InOperandList = ins;
-     let Pattern = pattern;
-     let AsmString = !strconcat(asmstr, "\n");
-     let isPseudo = 1;
-     let Itinerary = NullALU;
-     bit hasIEEEFlag = 0;
-     bit hasZeroOpFlag = 0;
-     let mayLoad = 0;
-     let mayStore = 0;
-     let hasSideEffects = 0;
-     let isCodeGenOnly = 1;
-}
 
 multiclass BranchConditional<SDNode Op, RegisterClass rci, RegisterClass rcf> {
     def _i32 : ILFormat<(outs),
@@ -1536,21 +1557,12 @@ multiclass BranchInstr2<string name> {
 // Custom Inserter for Branches and returns, this eventually will be a
 // separate pass
 //===---------------------------------------------------------------------===//
-let isTerminator = 1, usesCustomInserter = 1, isBranch = 1, isBarrier = 1 in {
+let isTerminator = 1, usesCustomInserter = 1, isBranch = 1, isBarrier = 1,
+    Namespace = "R600" in {
   def BRANCH : ILFormat<(outs), (ins brtarget:$target),
       "; Pseudo unconditional branch instruction",
       [(br bb:$target)]>;
   defm BRANCH_COND : BranchConditional<IL_brcond, R600_Reg32, R600_Reg32>;
-}
-
-//===---------------------------------------------------------------------===//
-// Return instruction
-//===---------------------------------------------------------------------===//
-let isTerminator = 1, isReturn = 1, hasCtrlDep = 1,
-    usesCustomInserter = 1 in {
-  def RETURN : ILFormat<(outs), (ins variable_ops),
-    "RETURN", [(AMDGPUendpgm)]
-  >;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1637,7 +1649,7 @@ def R600_INSERT_ELT_V2 : InsertVertical <R600_Reg64Vertical>;
 def R600_INSERT_ELT_V4 : InsertVertical <R600_Reg128Vertical>;
 
 class ExtractVerticalPat <Instruction inst, ValueType vec_ty,
-                          ValueType scalar_ty> : Pat <
+                          ValueType scalar_ty> : R600Pat <
   (scalar_ty (extractelt vec_ty:$vec, i32:$index)),
   (inst $vec, $index)
 >;
@@ -1648,7 +1660,7 @@ def : ExtractVerticalPat <R600_EXTRACT_ELT_V4, v4i32, i32>;
 def : ExtractVerticalPat <R600_EXTRACT_ELT_V4, v4f32, f32>;
 
 class InsertVerticalPat <Instruction inst, ValueType vec_ty,
-                         ValueType scalar_ty> : Pat <
+                         ValueType scalar_ty> : R600Pat <
   (vec_ty (insertelt vec_ty:$vec, scalar_ty:$value, i32:$index)),
   (inst $vec, $value, $index)
 >;
@@ -1662,9 +1674,11 @@ def : InsertVerticalPat <R600_INSERT_ELT_V4, v4f32, f32>;
 // ISel Patterns
 //===----------------------------------------------------------------------===//
 
+let SubtargetPredicate = isR600toCayman in {
+
 // CND*_INT Patterns for f32 True / False values
 
-class CND_INT_f32 <InstR600 cnd, CondCode cc> : Pat <
+class CND_INT_f32 <InstR600 cnd, CondCode cc> : R600Pat <
   (selectcc i32:$src0, 0, f32:$src1, f32:$src2, cc),
   (cnd $src0, $src1, $src2)
 >;
@@ -1674,19 +1688,14 @@ def : CND_INT_f32 <CNDGT_INT, SETGT>;
 def : CND_INT_f32 <CNDGE_INT, SETGE>;
 
 //CNDGE_INT extra pattern
-def : Pat <
+def : R600Pat <
   (selectcc i32:$src0, -1, i32:$src1, i32:$src2, COND_SGT),
   (CNDGE_INT $src0, $src1, $src2)
 >;
 
 // KIL Patterns
-def KILP : Pat <
-  (int_AMDGPU_kilp),
-  (MASK_WRITE (KILLGT (f32 ONE), (f32 ZERO)))
->;
-
-def KIL : Pat <
-  (int_AMDGPU_kill f32:$src0),
+def KIL : R600Pat <
+  (int_r600_kill f32:$src0),
   (MASK_WRITE (KILLGT (f32 ZERO), $src0))
 >;
 
@@ -1734,7 +1743,7 @@ def : BitConvert <v4i32, v4f32, R600_Reg128>;
 // DWORDADDR pattern
 def : DwordAddrPat  <i32, R600_Reg32>;
 
-} // End isR600toCayman Predicate
+} // End SubtargetPredicate = isR600toCayman
 
 def getLDSNoRetOp : InstrMapping {
   let FilterClass = "R600_LDS_1A1D";

@@ -1,15 +1,14 @@
 //===-- StringExtractorGDBRemote.cpp ----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "Utility/StringExtractorGDBRemote.h"
+#include "lldb/Utility/StringExtractorGDBRemote.h"
 
-#include <ctype.h> // for isxdigit
+#include <ctype.h>
 #include <string.h>
 
 StringExtractorGDBRemote::ResponseType
@@ -482,10 +481,9 @@ lldb_private::Status StringExtractorGDBRemote::GetStatus() {
 
 size_t StringExtractorGDBRemote::GetEscapedBinaryData(std::string &str) {
   // Just get the data bytes in the string as
-  // GDBRemoteCommunication::CheckForPacket()
-  // already removes any 0x7d escaped characters. If any 0x7d characters are
-  // left in
-  // the packet, then they are supposed to be there...
+  // GDBRemoteCommunication::CheckForPacket() already removes any 0x7d escaped
+  // characters. If any 0x7d characters are left in the packet, then they are
+  // supposed to be there...
   str.clear();
   const size_t bytes_left = GetBytesLeft();
   if (bytes_left > 0) {
@@ -526,9 +524,9 @@ static bool JSONResponseValidator(void *,
 
   case StringExtractorGDBRemote::eResponse:
     // JSON that is returned in from JSON query packets is currently always
-    // either a dictionary which starts with a '{', or an array which
-    // starts with a '['. This is a quick validator to just make sure the
-    // response could be valid JSON without having to validate all of the
+    // either a dictionary which starts with a '{', or an array which starts
+    // with a '['. This is a quick validator to just make sure the response
+    // could be valid JSON without having to validate all of the
     // JSON content.
     switch (response.GetStringRef()[0]) {
     case '{':

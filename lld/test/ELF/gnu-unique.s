@@ -3,6 +3,8 @@
 //
 // RUN: ld.lld %t -shared -o %tout.so
 // RUN: llvm-readobj -dyn-symbols %tout.so | FileCheck -check-prefix=GNU %s
+// RUN: ld.lld %t -shared -o %tout.so --gnu-unique
+// RUN: llvm-readobj -dyn-symbols %tout.so | FileCheck -check-prefix=GNU %s
 //
 // RUN: ld.lld %t -shared -o %tout.so --no-gnu-unique
 // RUN: llvm-readobj -dyn-symbols %tout.so | FileCheck -check-prefix=NO %s
@@ -18,7 +20,7 @@ _start:
 .type symb, @gnu_unique_object
 symb:
 
-# GNU:        Name: symb@
+# GNU:        Name: symb
 # GNU-NEXT:   Value:
 # GNU-NEXT:   Size: 0
 # GNU-NEXT:   Binding: Unique
@@ -27,7 +29,7 @@ symb:
 # GNU-NEXT:   Section: .data
 # GNU-NEXT: }
 
-# NO:        Name: symb@
+# NO:        Name: symb
 # NO-NEXT:   Value:
 # NO-NEXT:   Size: 0
 # NO-NEXT:   Binding: Global

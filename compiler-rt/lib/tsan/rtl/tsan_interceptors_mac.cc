@@ -1,9 +1,8 @@
 //===-- tsan_interceptors_mac.cc ------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -19,8 +18,10 @@
 #include "tsan_interceptors.h"
 #include "tsan_interface.h"
 #include "tsan_interface_ann.h"
+#include "sanitizer_common/sanitizer_addrhashmap.h"
 
 #include <libkern/OSAtomic.h>
+#include <objc/objc-sync.h>
 
 #if defined(__has_include) && __has_include(<xpc/xpc.h>)
 #include <xpc/xpc.h>
@@ -100,7 +101,7 @@ OSATOMIC_INTERCEPTORS_BITWISE(OSAtomicXor, fetch_xor,
   TSAN_INTERCEPTOR(bool, f, t old_value, t new_value, t volatile *ptr) {    \
     SCOPED_TSAN_INTERCEPTOR(f, old_value, new_value, ptr);                  \
     return tsan_atomic_f##_compare_exchange_strong(                         \
-        (tsan_t *)ptr, (tsan_t *)&old_value, (tsan_t)new_value,             \
+        (volatile tsan_t *)ptr, (tsan_t *)&old_value, (tsan_t)new_value,    \
         kMacOrderNonBarrier, kMacOrderNonBarrier);                          \
   }                                                                         \
                                                                             \
@@ -108,7 +109,7 @@ OSATOMIC_INTERCEPTORS_BITWISE(OSAtomicXor, fetch_xor,
                    t volatile *ptr) {                                       \
     SCOPED_TSAN_INTERCEPTOR(f##Barrier, old_value, new_value, ptr);         \
     return tsan_atomic_f##_compare_exchange_strong(                         \
-        (tsan_t *)ptr, (tsan_t *)&old_value, (tsan_t)new_value,             \
+        (volatile tsan_t *)ptr, (tsan_t *)&old_value, (tsan_t)new_value,    \
         kMacOrderBarrier, kMacOrderNonBarrier);                             \
   }
 
@@ -122,14 +123,14 @@ OSATOMIC_INTERCEPTORS_CAS(OSAtomicCompareAndSwap32, __tsan_atomic32, a32,
 OSATOMIC_INTERCEPTORS_CAS(OSAtomicCompareAndSwap64, __tsan_atomic64, a64,
                           int64_t)
 
-#define OSATOMIC_INTERCEPTOR_BITOP(f, op, clear, mo)          \
-  TSAN_INTERCEPTOR(bool, f, uint32_t n, volatile void *ptr) { \
-    SCOPED_TSAN_INTERCEPTOR(f, n, ptr);                       \
-    char *byte_ptr = ((char *)ptr) + (n >> 3);                \
-    char bit = 0x80u >> (n & 7);                              \
-    char mask = clear ? ~bit : bit;                           \
-    char orig_byte = op((a8 *)byte_ptr, mask, mo);            \
-    return orig_byte & bit;                                   \
+#define OSATOMIC_INTERCEPTOR_BITOP(f, op, clear, mo)             \
+  TSAN_INTERCEPTOR(bool, f, uint32_t n, volatile void *ptr) {    \
+    SCOPED_TSAN_INTERCEPTOR(f, n, ptr);                          \
+    volatile char *byte_ptr = ((volatile char *)ptr) + (n >> 3); \
+    char bit = 0x80u >> (n & 7);                                 \
+    char mask = clear ? ~bit : bit;                              \
+    char orig_byte = op((volatile a8 *)byte_ptr, mask, mo);      \
+    return orig_byte & bit;                                      \
   }
 
 #define OSATOMIC_INTERCEPTORS_BITOP(f, op, clear)               \
@@ -293,6 +294,64 @@ TSAN_INTERCEPTOR(void, xpc_connection_cancel, xpc_connection_t connection) {
 }
 
 #endif  // #if defined(__has_include) && __has_include(<xpc/xpc.h>)
+
+// Determines whether the Obj-C object pointer is a tagged pointer. Tagged
+// pointers encode the object data directly in their pointer bits and do not
+// have an associated memory allocation. The Obj-C runtime uses tagged pointers
+// to transparently optimize small objects.
+static bool IsTaggedObjCPointer(id obj) {
+  const uptr kPossibleTaggedBits = 0x8000000000000001ull;
+  return ((uptr)obj & kPossibleTaggedBits) != 0;
+}
+
+// Returns an address which can be used to inform TSan about synchronization
+// points (MutexLock/Unlock). The TSan infrastructure expects this to be a valid
+// address in the process space. We do a small allocation here to obtain a
+// stable address (the array backing the hash map can change). The memory is
+// never free'd (leaked) and allocation and locking are slow, but this code only
+// runs for @synchronized with tagged pointers, which is very rare.
+static uptr GetOrCreateSyncAddress(uptr addr, ThreadState *thr, uptr pc) {
+  typedef AddrHashMap<uptr, 5> Map;
+  static Map Addresses;
+  Map::Handle h(&Addresses, addr);
+  if (h.created()) {
+    ThreadIgnoreBegin(thr, pc);
+    *h = (uptr) user_alloc(thr, pc, /*size=*/1);
+    ThreadIgnoreEnd(thr, pc);
+  }
+  return *h;
+}
+
+// Returns an address on which we can synchronize given an Obj-C object pointer.
+// For normal object pointers, this is just the address of the object in memory.
+// Tagged pointers are not backed by an actual memory allocation, so we need to
+// synthesize a valid address.
+static uptr SyncAddressForObjCObject(id obj, ThreadState *thr, uptr pc) {
+  if (IsTaggedObjCPointer(obj))
+    return GetOrCreateSyncAddress((uptr)obj, thr, pc);
+  return (uptr)obj;
+}
+
+TSAN_INTERCEPTOR(int, objc_sync_enter, id obj) {
+  SCOPED_TSAN_INTERCEPTOR(objc_sync_enter, obj);
+  if (!obj) return REAL(objc_sync_enter)(obj);
+  uptr addr = SyncAddressForObjCObject(obj, thr, pc);
+  MutexPreLock(thr, pc, addr, MutexFlagWriteReentrant);
+  int result = REAL(objc_sync_enter)(obj);
+  CHECK_EQ(result, OBJC_SYNC_SUCCESS);
+  MutexPostLock(thr, pc, addr, MutexFlagWriteReentrant);
+  return result;
+}
+
+TSAN_INTERCEPTOR(int, objc_sync_exit, id obj) {
+  SCOPED_TSAN_INTERCEPTOR(objc_sync_exit, obj);
+  if (!obj) return REAL(objc_sync_exit)(obj);
+  uptr addr = SyncAddressForObjCObject(obj, thr, pc);
+  MutexUnlock(thr, pc, addr);
+  int result = REAL(objc_sync_exit)(obj);
+  if (result != OBJC_SYNC_SUCCESS) MutexInvalidAccess(thr, pc, addr);
+  return result;
+}
 
 // On macOS, libc++ is always linked dynamically, so intercepting works the
 // usual way.

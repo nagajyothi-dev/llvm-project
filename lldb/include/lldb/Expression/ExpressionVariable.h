@@ -1,24 +1,19 @@
 //===-- ExpressionVariable.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_ExpressionVariable_h_
 #define liblldb_ExpressionVariable_h_
 
-// C Includes
-// C++ Includes
 #include <memory>
 #include <vector>
 
-// Other libraries and framework includes
 #include "llvm/ADT/DenseMap.h"
 
-// Project includes
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/lldb-public.h"
@@ -30,9 +25,7 @@ class ClangExpressionVariable;
 class ExpressionVariable
     : public std::enable_shared_from_this<ExpressionVariable> {
 public:
-  //----------------------------------------------------------------------
   // See TypeSystem.h for how to add subclasses to this.
-  //----------------------------------------------------------------------
   enum LLVMCastKind { eKindClang, eKindSwift, eKindGo, kNumKinds };
 
   LLVMCastKind getKind() const { return m_kind; }
@@ -43,7 +36,7 @@ public:
 
   size_t GetByteSize() { return m_frozen_sp->GetByteSize(); }
 
-  const ConstString &GetName() { return m_frozen_sp->GetName(); }
+  ConstString GetName() { return m_frozen_sp->GetName(); }
 
   lldb::ValueObjectSP GetValueObject() { return m_frozen_sp; }
 
@@ -66,18 +59,15 @@ public:
     m_frozen_sp->GetValue().SetCompilerType(compiler_type);
   }
 
-  void SetName(const ConstString &name) { m_frozen_sp->SetName(name); }
+  void SetName(ConstString name) { m_frozen_sp->SetName(name); }
 
   // this function is used to copy the address-of m_live_sp into m_frozen_sp
-  // this is necessary because the results of certain cast and
-  // pointer-arithmetic
-  // operations (such as those described in bugzilla issues 11588 and 11618)
-  // generate
-  // frozen objects that do not have a valid address-of, which can be
-  // troublesome when
-  // using synthetic children providers. Transferring the address-of the live
-  // object
-  // solves these issues and provides the expected user-level behavior
+  // this is necessary because the results of certain cast and pointer-
+  // arithmetic operations (such as those described in bugzilla issues 11588
+  // and 11618) generate frozen objects that do not have a valid address-of,
+  // which can be troublesome when using synthetic children providers.
+  // Transferring the address-of the live object solves these issues and
+  // provides the expected user-level behavior
   void TransferAddress(bool force = false) {
     if (m_live_sp.get() == nullptr)
       return;
@@ -126,18 +116,14 @@ public:
   LLVMCastKind m_kind;
 };
 
-//----------------------------------------------------------------------
-/// @class ExpressionVariableList ExpressionVariable.h
+/// \class ExpressionVariableList ExpressionVariable.h
 /// "lldb/Expression/ExpressionVariable.h"
-/// @brief A list of variable references.
+/// A list of variable references.
 ///
 /// This class stores variables internally, acting as the permanent store.
-//----------------------------------------------------------------------
 class ExpressionVariableList {
 public:
-  //----------------------------------------------------------------------
   /// Implementation of methods in ExpressionVariableListBase
-  //----------------------------------------------------------------------
   size_t GetSize() { return m_variables.size(); }
 
   lldb::ExpressionVariableSP GetVariableAtIndex(size_t index) {
@@ -168,17 +154,15 @@ public:
     return false;
   }
 
-  //----------------------------------------------------------------------
   /// Finds a variable by name in the list.
   ///
-  /// @param[in] name
+  /// \param[in] name
   ///     The name of the requested variable.
   ///
-  /// @return
+  /// \return
   ///     The variable requested, or nullptr if that variable is not in the
   ///     list.
-  //----------------------------------------------------------------------
-  lldb::ExpressionVariableSP GetVariable(const ConstString &name) {
+  lldb::ExpressionVariableSP GetVariable(ConstString name) {
     lldb::ExpressionVariableSP var_sp;
     for (size_t index = 0, size = GetSize(); index < size; ++index) {
       var_sp = GetVariableAtIndex(index);
@@ -222,9 +206,7 @@ private:
 
 class PersistentExpressionState : public ExpressionVariableList {
 public:
-  //----------------------------------------------------------------------
   // See TypeSystem.h for how to add subclasses to this.
-  //----------------------------------------------------------------------
   enum LLVMCastKind { eKindClang, eKindSwift, eKindGo, kNumKinds };
 
   LLVMCastKind getKind() const { return m_kind; }
@@ -238,16 +220,21 @@ public:
 
   virtual lldb::ExpressionVariableSP
   CreatePersistentVariable(ExecutionContextScope *exe_scope,
-                           const ConstString &name, const CompilerType &type,
+                           ConstString name, const CompilerType &type,
                            lldb::ByteOrder byte_order,
                            uint32_t addr_byte_size) = 0;
 
-  virtual ConstString GetNextPersistentVariableName() = 0;
+  /// Return a new persistent variable name with the specified prefix.
+  ConstString GetNextPersistentVariableName(Target &target,
+                                            llvm::StringRef prefix);
+
+  virtual llvm::StringRef
+  GetPersistentVariablePrefix(bool is_error = false) const = 0;
 
   virtual void
   RemovePersistentVariable(lldb::ExpressionVariableSP variable) = 0;
 
-  virtual lldb::addr_t LookupSymbol(const ConstString &name);
+  virtual lldb::addr_t LookupSymbol(ConstString name);
 
   void RegisterExecutionUnit(lldb::IRExecutionUnitSP &execution_unit_sp);
 

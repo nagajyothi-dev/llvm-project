@@ -1,25 +1,24 @@
 //===-- Variable.h -----------------------------------------------*- C++-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_Variable_h_
 #define liblldb_Variable_h_
 
-#include <memory>
-#include <vector>
-
 #include "lldb/Core/Mangled.h"
-#include "lldb/Core/RangeMap.h"
 #include "lldb/Expression/DWARFExpression.h"
 #include "lldb/Symbol/Declaration.h"
+#include "lldb/Utility/CompletionRequest.h"
+#include "lldb/Utility/RangeMap.h"
 #include "lldb/Utility/UserID.h"
 #include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-private.h"
+#include <memory>
+#include <vector>
 
 namespace lldb_private {
 
@@ -27,9 +26,7 @@ class Variable : public UserID, public std::enable_shared_from_this<Variable> {
 public:
   typedef RangeVector<lldb::addr_t, lldb::addr_t> RangeList;
 
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   Variable(lldb::user_id_t uid, const char *name,
            const char
                *mangled, // The mangled or fully qualified name of the variable.
@@ -53,12 +50,12 @@ public:
 
   SymbolContextScope *GetSymbolContextScope() const { return m_owner_scope; }
 
-  // Since a variable can have a basename "i" and also a mangled
-  // named "_ZN12_GLOBAL__N_11iE" and a demangled mangled name
-  // "(anonymous namespace)::i", this function will allow a generic match
-  // function that can be called by commands and expression parsers to make
-  // sure we match anything we come across.
-  bool NameMatches(const ConstString &name) const;
+  // Since a variable can have a basename "i" and also a mangled named
+  // "_ZN12_GLOBAL__N_11iE" and a demangled mangled name "(anonymous
+  // namespace)::i", this function will allow a generic match function that can
+  // be called by commands and expression parsers to make sure we match
+  // anything we come across.
+  bool NameMatches(ConstString name) const;
 
   bool NameMatches(const RegularExpression &regex) const;
 
@@ -103,8 +100,7 @@ public:
       ValueObjectList &valobj_list);
 
   static size_t AutoComplete(const ExecutionContext &exe_ctx,
-                             llvm::StringRef name, StringList &matches,
-                             bool &word_complete);
+                             CompletionRequest &request);
 
   CompilerDeclContext GetDeclContext();
 

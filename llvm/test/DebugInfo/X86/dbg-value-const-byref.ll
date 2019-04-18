@@ -1,4 +1,4 @@
-; RUN: llc -O1 -filetype=obj -o - %s | llvm-dwarfdump -debug-dump=all - | FileCheck %s
+; RUN: llc -O1 -filetype=obj -o - %s | llvm-dwarfdump -all - | FileCheck %s
 ; Generated with -O1 from:
 ; int f1();
 ; void f2(int*);
@@ -21,29 +21,14 @@
 ; CHECK: .debug_info contents:
 ; CHECK: DW_TAG_variable
 ; CHECK-NOT: DW_TAG
-; CHECK:     DW_AT_location [DW_FORM_data4]	([[LOC:.*]])
+; CHECK:     DW_AT_location {{.*}}({{.*}}
+; CHECK-NEXT:  [0x{{0*.*}}, 0x[[C1:.*]]): DW_OP_consts +3
+; CHECK-NEXT:      [0x[[C1]], 0x[[C2:.*]]): DW_OP_consts +7
+; CHECK-NEXT:      [0x[[C2]], 0x[[R1:.*]]): DW_OP_reg0 RAX
+; CHECK-NEXT:      [0x[[R1]], 0x[[R2:.*]]): DW_OP_breg7 RSP+4)
 ; CHECK-NOT: DW_TAG
 ; CHECK: DW_AT_name{{.*}}"i"
-; CHECK: .debug_loc contents:
-; CHECK: [[LOC]]:
-;        consts 0x00000003
-; CHECK: Beginning address offset: 0x0000000000000{{.*}}
-; CHECK:    Ending address offset: [[C1:.*]]
-; CHECK:     Location description: 11 03
-;        consts 0x00000007
-; CHECK: Beginning address offset: [[C1]]
-; CHECK:    Ending address offset: [[C2:.*]]
-; CHECK:     Location description: 11 07
-;        rax
-; CHECK: Beginning address offset: [[C2]]
-; CHECK:    Ending address offset: [[R1:.*]]
-; CHECK:     Location description: 50
-;         rdi+0
-; CHECK: Beginning address offset: [[R1]]
-; CHECK:    Ending address offset: [[R2:.*]]
-; CHECK:     Location description: 77 04
-;         rsp+4
-;
+
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-apple-macosx10.9.0"
 
@@ -82,7 +67,7 @@ attributes #3 = { nounwind }
 !0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.5.0 ", isOptimized: true, emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, globals: !2, imports: !2)
 !1 = !DIFile(filename: "dbg-value-const-byref.c", directory: "")
 !2 = !{}
-!4 = distinct !DISubprogram(name: "foo", line: 5, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: true, unit: !0, scopeLine: 5, file: !1, scope: !5, type: !6, variables: !9)
+!4 = distinct !DISubprogram(name: "foo", line: 5, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: true, unit: !0, scopeLine: 5, file: !1, scope: !5, type: !6, retainedNodes: !9)
 !5 = !DIFile(filename: "dbg-value-const-byref.c", directory: "")
 !6 = !DISubroutineType(types: !7)
 !7 = !{!8}

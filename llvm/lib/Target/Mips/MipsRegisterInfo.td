@@ -1,9 +1,8 @@
 //===-- MipsRegisterInfo.td - Mips Register defs -----------*- tablegen -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,7 +37,7 @@ class MipsRegWithSubRegs<bits<16> Enc, string n, list<Register> subregs>
   let Namespace = "Mips";
 }
 
-// Mips CPU Registers
+// Mips CPU Registers.
 class MipsGPRReg<bits<16> Enc, string n> : MipsReg<Enc, n>;
 
 // Mips 64-bit CPU Registers
@@ -335,6 +334,16 @@ def GPRMM16MoveP : RegisterClass<"Mips", [i32], 32, (add
   // Callee save
   S0, S2, S3, S4)>;
 
+def GPRMM16MovePPairFirst : RegisterClass<"Mips", [i32], 32, (add
+  // Arguments
+  A0, A1, A2)>;
+
+def GPRMM16MovePPairSecond : RegisterClass<"Mips", [i32], 32, (add
+  // Arguments
+  A1, A2, A3,
+  // Callee save
+  S5, S6)>;
+
 def GPR64 : RegisterClass<"Mips", [i64], 64, (add
   // Reserved
   ZERO_64, AT_64,
@@ -348,12 +357,6 @@ def GPR64 : RegisterClass<"Mips", [i64], 64, (add
   T8_64, T9_64,
   // Reserved
   K0_64, K1_64, GP_64, SP_64, FP_64, RA_64)>;
-
-def GPRMM16_64 : RegisterClass<"Mips", [i64], 64, (add
-  // Callee save
-  S0_64, S1_64,
-  // Return Values and Arguments
-  V0_64, V1_64, A0_64, A1_64, A2_64, A3_64)>;
 
 def CPU16Regs : RegisterClass<"Mips", [i32], 32, (add
   // Return Values and Arguments
@@ -379,10 +382,14 @@ def CPUSPReg : RegisterClass<"Mips", [i32], 32, (add SP)>, Unallocatable;
 // 32bit fp:
 // * FGR32 - 16 32-bit even registers
 // * FGR32 - 32 32-bit registers (single float only mode)
-def FGR32 : RegisterClass<"Mips", [f32], 32, (sequence "F%u", 0, 31)>;
-
-def FGRH32 : RegisterClass<"Mips", [f32], 32, (sequence "F_HI%u", 0, 31)>,
-             Unallocatable;
+def FGR32 : RegisterClass<"Mips", [f32], 32, (sequence "F%u", 0, 31)> {
+  // Do not allocate odd registers when given -mattr=+nooddspreg.
+  let AltOrders = [(decimate FGR32, 2)];
+  let AltOrderSelect = [{
+    const auto & S = MF.getSubtarget<MipsSubtarget>();
+    return S.isABI_O32() && !S.useOddSPReg();
+  }];
+}
 
 def AFGR64 : RegisterClass<"Mips", [f64], 64, (add
   // Return Values and Arguments
@@ -396,16 +403,14 @@ def AFGR64 : RegisterClass<"Mips", [f64], 64, (add
   // Callee save
   D10, D11, D12, D13, D14, D15)>;
 
-def FGR64 : RegisterClass<"Mips", [f64], 64, (sequence "D%u_64", 0, 31)>;
-
-// Used to reserve odd registers when given -mattr=+nooddspreg
-// FIXME: Remove double precision registers from this set.
-def OddSP : RegisterClass<"Mips", [f32], 32,
-                          (add (decimate (sequence "F%u", 1, 31), 2),
-                               (decimate (sequence "F_HI%u", 1, 31), 2),
-                               (decimate (sequence "D%u", 1, 15), 2),
-                               (decimate (sequence "D%u_64", 1, 31), 2))>,
-            Unallocatable;
+def FGR64 : RegisterClass<"Mips", [f64], 64, (sequence "D%u_64", 0, 31)> {
+  // Do not allocate odd registers when given -mattr=+nooddspreg.
+  let AltOrders = [(decimate FGR64, 2)];
+  let AltOrderSelect = [{
+    const auto & S = MF.getSubtarget<MipsSubtarget>();
+    return S.isABI_O32() && !S.useOddSPReg();
+  }];
+}
 
 // FP control registers.
 def CCR : RegisterClass<"Mips", [i32], 32, (sequence "FCR%u", 0, 31)>,
@@ -528,6 +533,16 @@ def GPRMM16AsmOperandMoveP : MipsAsmRegOperand {
   let PredicateMethod = "isMM16AsmRegMoveP";
 }
 
+def GPRMM16AsmOperandMovePPairFirst : MipsAsmRegOperand {
+  let Name = "GPRMM16AsmRegMovePPairFirst";
+  let PredicateMethod = "isMM16AsmRegMovePPairFirst";
+}
+
+def GPRMM16AsmOperandMovePPairSecond : MipsAsmRegOperand {
+  let Name = "GPRMM16AsmRegMovePPairSecond";
+  let PredicateMethod = "isMM16AsmRegMovePPairSecond";
+}
+
 def ACC64DSPAsmOperand : MipsAsmRegOperand {
   let Name = "ACC64DSPAsmReg";
   let PredicateMethod = "isACCAsmReg";
@@ -577,11 +592,6 @@ def StrictlyFGR32AsmOperand : MipsAsmRegOperand {
   let PredicateMethod = "isStrictlyFGRAsmReg";
 }
 
-def FGRH32AsmOperand : MipsAsmRegOperand {
-  let Name = "FGRH32AsmReg";
-  let PredicateMethod = "isFGRAsmReg";
-}
-
 def FCCRegsAsmOperand : MipsAsmRegOperand {
   let Name = "FCCAsmReg";
 }
@@ -616,6 +626,15 @@ def GPRMM16OpndZero : RegisterOperand<GPRMM16Zero> {
 
 def GPRMM16OpndMoveP : RegisterOperand<GPRMM16MoveP> {
   let ParserMatchClass = GPRMM16AsmOperandMoveP;
+  let EncoderMethod = "getMovePRegSingleOpValue";
+}
+
+def GPRMM16OpndMovePPairFirst : RegisterOperand<GPRMM16MovePPairFirst> {
+  let ParserMatchClass = GPRMM16AsmOperandMovePPairFirst;
+}
+
+def GPRMM16OpndMovePPairSecond : RegisterOperand<GPRMM16MovePPairSecond> {
+  let ParserMatchClass = GPRMM16AsmOperandMovePPairSecond;
 }
 
 def GPR64Opnd : RegisterOperand<GPR64> {
@@ -678,10 +697,6 @@ def FGRCCOpnd : RegisterOperand<FGRCC> {
   // The assembler doesn't use register classes so we can re-use
   // FGR32AsmOperand.
   let ParserMatchClass = FGR32AsmOperand;
-}
-
-def FGRH32Opnd : RegisterOperand<FGRH32> {
-  let ParserMatchClass = FGRH32AsmOperand;
 }
 
 def FCCRegsOpnd : RegisterOperand<FCC> {

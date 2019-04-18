@@ -1,9 +1,8 @@
 //===-- HashedNameToDIE.h ---------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,10 +19,6 @@
 #include "DWARFDefines.h"
 #include "DWARFFormValue.h"
 #include "NameToDIE.h"
-
-class SymbolFileDWARF;
-class DWARFCompileUnit;
-class DWARFDebugInfoEntry;
 
 class DWARFMappedHash {
 public:
@@ -109,8 +104,6 @@ public:
 
     bool Read(const lldb_private::DWARFDataExtractor &data,
               lldb::offset_t *offset_ptr, DIEInfo &hash_data) const;
-
-    void Dump(lldb_private::Stream &strm, const DIEInfo &hash_data) const;
   };
 
   // A class for reading and using a saved hash table from a block of data
@@ -136,17 +129,17 @@ public:
                                 const uint32_t die_offset_end,
                                 DIEInfoArray &die_info_array) const;
 
-    size_t FindByName(const char *name, DIEArray &die_offsets);
+    size_t FindByName(llvm::StringRef name, DIEArray &die_offsets);
 
-    size_t FindByNameAndTag(const char *name, const dw_tag_t tag,
+    size_t FindByNameAndTag(llvm::StringRef name, const dw_tag_t tag,
                             DIEArray &die_offsets);
 
-    size_t
-    FindByNameAndTagAndQualifiedNameHash(const char *name, const dw_tag_t tag,
-                                         const uint32_t qualified_name_hash,
-                                         DIEArray &die_offsets);
+    size_t FindByNameAndTagAndQualifiedNameHash(
+        llvm::StringRef name, const dw_tag_t tag,
+        const uint32_t qualified_name_hash, DIEArray &die_offsets);
 
-    size_t FindCompleteObjCClassByName(const char *name, DIEArray &die_offsets,
+    size_t FindCompleteObjCClassByName(llvm::StringRef name,
+                                       DIEArray &die_offsets,
                                        bool must_be_implementation);
 
   protected:
@@ -154,14 +147,14 @@ public:
         const lldb_private::RegularExpression &regex,
         lldb::offset_t *hash_data_offset_ptr, Pair &pair) const;
 
-    size_t FindByName(const char *name, DIEInfoArray &die_info_array);
+    size_t FindByName(llvm::StringRef name, DIEInfoArray &die_info_array);
 
-    Result GetHashDataForName(const char *name,
+    Result GetHashDataForName(llvm::StringRef name,
                               lldb::offset_t *hash_data_offset_ptr,
                               Pair &pair) const override;
 
-    const lldb_private::DWARFDataExtractor &m_data;
-    const lldb_private::DWARFDataExtractor &m_string_table;
+    lldb_private::DWARFDataExtractor m_data;
+    lldb_private::DWARFDataExtractor m_string_table;
     std::string m_name;
   };
 

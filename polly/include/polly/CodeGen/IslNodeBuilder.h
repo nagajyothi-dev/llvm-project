@@ -1,40 +1,35 @@
-//===------ IslNodeBuilder.cpp - Translate an isl AST into a LLVM-IR AST---===//
+//=- IslNodeBuilder.cpp - Translate an isl AST into a LLVM-IR AST -*- C++ -*-=//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
 // This file contains the IslNodeBuilder, a class to translate an isl AST into
 // a LLVM-IR AST.
+//
 //===----------------------------------------------------------------------===//
 
-#ifndef POLLY_ISL_NODE_BUILDER_H
-#define POLLY_ISL_NODE_BUILDER_H
+#ifndef POLLY_ISLNODEBUILDER_H
+#define POLLY_ISLNODEBUILDER_H
 
 #include "polly/CodeGen/BlockGenerators.h"
 #include "polly/CodeGen/IslExprBuilder.h"
-#include "polly/CodeGen/LoopGenerators.h"
-#include "polly/ScopInfo.h"
+#include "polly/ScopDetectionDiagnostic.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/InstrTypes.h"
 #include "isl/ctx.h"
-#include "isl/union_map.h"
+#include "isl/isl-noexceptions.h"
 
-#include "isl-noexceptions.h"
-
-#include <utility>
-#include <vector>
-
-using namespace polly;
 using namespace llvm;
+using namespace polly;
 
-struct isl_ast_node;
-struct isl_ast_build;
-struct isl_union_map;
+namespace polly {
+
+struct InvariantEquivClassTy;
+} // namespace polly
 
 struct SubtreeReferences {
   LoopInfo &LI;
@@ -65,8 +60,8 @@ struct SubtreeReferences {
 ///                         SubtreeReferences structure.
 /// @param CreateScalarRefs Should the result include allocas of scalar
 ///                         references?
-isl_stat addReferencesFromStmt(const ScopStmt *Stmt, void *UserPtr,
-                               bool CreateScalarRefs = true);
+void addReferencesFromStmt(const ScopStmt *Stmt, void *UserPtr,
+                           bool CreateScalarRefs = true);
 
 class IslNodeBuilder {
 public:
@@ -182,7 +177,7 @@ protected:
   /// points to and the resulting value is returned.
   ///
   /// @param Expr The expression to code generate.
-  llvm::Value *generateSCEV(const SCEV *Expr);
+  Value *generateSCEV(const SCEV *Expr);
 
   /// A set of Value -> Value remappings to apply when generating new code.
   ///
@@ -224,8 +219,7 @@ protected:
   //    of loop iterations.
   //
   // 3. With the existing code, upper bounds have been easier to implement.
-  __isl_give isl_ast_expr *getUpperBound(__isl_keep isl_ast_node *For,
-                                         CmpInst::Predicate &Predicate);
+  isl::ast_expr getUpperBound(isl::ast_node For, CmpInst::Predicate &Predicate);
 
   /// Return non-negative number of iterations in case of the following form
   /// of a loop and -1 otherwise.
@@ -236,7 +230,7 @@ protected:
   ///
   /// NumIter is a non-negative integer value. Condition can have
   /// isl_ast_op_lt type.
-  int getNumberOfIterations(__isl_keep isl_ast_node *For);
+  int getNumberOfIterations(isl::ast_node For);
 
   /// Compute the values and loops referenced in this subtree.
   ///
@@ -288,6 +282,7 @@ protected:
   ///
   /// @param Mark The node we generate code for.
   virtual void createMark(__isl_take isl_ast_node *Marker);
+
   virtual void createFor(__isl_take isl_ast_node *For);
 
   /// Set to remember materialized invariant loads.
@@ -324,7 +319,7 @@ protected:
   bool preloadInvariantEquivClass(InvariantEquivClassTy &IAClass);
 
   void createForVector(__isl_take isl_ast_node *For, int VectorWidth);
-  void createForSequential(__isl_take isl_ast_node *For, bool KnownParallel);
+  void createForSequential(isl::ast_node For, bool MarkParallel);
 
   /// Create LLVM-IR that executes a for node thread parallel.
   ///
@@ -434,4 +429,4 @@ private:
   Value *materializeNonScopLoopInductionVariable(const Loop *L);
 };
 
-#endif // POLLY_ISL_NODE_BUILDER_H
+#endif // POLLY_ISLNODEBUILDER_H

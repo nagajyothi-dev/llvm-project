@@ -1,3 +1,4 @@
+# REQUIRES: mips
 # Check R_MIPS_HI16 / LO16 relocations calculation against _gp_disp.
 
 # RUN: llvm-mc -filetype=obj -triple=mips-unknown-linux %s -o %t1.o
@@ -7,8 +8,6 @@
 # RUN: llvm-objdump -d -t %t.exe | FileCheck -check-prefix=EXE %s
 # RUN: ld.lld %t1.o %t2.o -shared -o %t.so
 # RUN: llvm-objdump -d -t %t.so | FileCheck -check-prefix=SO %s
-
-# REQUIRES: mips
 
   .text
   .globl  __start
@@ -34,7 +33,7 @@ bar:
 
 # EXE: SYMBOL TABLE:
 # EXE: 0002000c     .text   00000000 bar
-# EXE: 00038000     *ABS*   00000000 .hidden _gp
+# EXE: 00038000     .got    00000000 .hidden _gp
 # EXE: 00020000     .text   00000000 __start
 
 # SO:      Disassembly of section .text:
@@ -51,5 +50,5 @@ bar:
 
 # SO: SYMBOL TABLE:
 # SO: 0001000c     .text   00000000 bar
-# SO: 00028000     *ABS*   00000000 .hidden _gp
+# SO: 00028000     .got    00000000 .hidden _gp
 # SO: 00010000     .text   00000000 __start

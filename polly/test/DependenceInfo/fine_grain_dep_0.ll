@@ -1,6 +1,6 @@
-; RUN: opt %loadPolly -polly-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=reference-wise -analyze < %s | FileCheck %s --check-prefix=REF
-; RUN: opt %loadPolly -polly-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=access-wise -analyze < %s | FileCheck %s --check-prefix=ACC
-; RUN: opt %loadPolly -polly-function-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=access-wise -analyze < %s | FileCheck %s --check-prefix=ACC
+; RUN: opt %loadPolly -polly-stmt-granularity=bb -polly-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=reference-wise -analyze < %s | FileCheck %s --check-prefix=REF
+; RUN: opt %loadPolly -polly-stmt-granularity=bb -polly-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=access-wise -analyze < %s | FileCheck %s --check-prefix=ACC
+; RUN: opt %loadPolly -polly-stmt-granularity=bb -polly-function-dependences -polly-dependences-analysis-type=value-based -polly-dependences-analysis-level=access-wise -analyze < %s | FileCheck %s --check-prefix=ACC
 ;
 ; REF:      RAW dependences:
 ; REF-NEXT:     [N] -> { Stmt_for_body[i0] -> Stmt_for_body[6 + i0] : 0 <= i0 <= -13 + N; Stmt_for_body[i0] -> Stmt_for_body[4 + i0] : 0 <= i0 <= -11 + N; [Stmt_for_body[i0] -> MemRef_a[]] -> [Stmt_for_body[4 + i0] -> MemRef_a[]] : 0 <= i0 <= -11 + N; [Stmt_for_body[i0] -> MemRef_b[]] -> [Stmt_for_body[6 + i0] -> MemRef_b[]] : 0 <= i0 <= -13 + N }
@@ -72,4 +72,4 @@ attributes #0 = { nounwind uwtable "disable-tail-calls"="false" "less-precise-fp
 
 !llvm.ident = !{!0}
 
-!0 = !{!"clang version 3.9.0 (http://llvm.org/git/clang.git 3d5d4c39659f11dfbe8e11c857cadf5c449b559b) (http://llvm.org/git/llvm.git 801561e2bba12f2aa0285feb1105e110df443761)"}
+!0 = !{!"clang version 3.9.0"}

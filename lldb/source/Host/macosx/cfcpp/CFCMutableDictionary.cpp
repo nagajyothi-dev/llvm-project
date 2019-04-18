@@ -1,29 +1,22 @@
 //===-- CFCMutableDictionary.cpp --------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "CFCMutableDictionary.h"
 #include "CFCString.h"
-//----------------------------------------------------------------------
 // CFCString constructor
-//----------------------------------------------------------------------
 CFCMutableDictionary::CFCMutableDictionary(CFMutableDictionaryRef s)
     : CFCReleaser<CFMutableDictionaryRef>(s) {}
 
-//----------------------------------------------------------------------
 // CFCMutableDictionary copy constructor
-//----------------------------------------------------------------------
 CFCMutableDictionary::CFCMutableDictionary(const CFCMutableDictionary &rhs)
     : CFCReleaser<CFMutableDictionaryRef>(rhs) {}
 
-//----------------------------------------------------------------------
 // CFCMutableDictionary copy constructor
-//----------------------------------------------------------------------
 const CFCMutableDictionary &CFCMutableDictionary::
 operator=(const CFCMutableDictionary &rhs) {
   if (this != &rhs)
@@ -31,9 +24,7 @@ operator=(const CFCMutableDictionary &rhs) {
   return *this;
 }
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 CFCMutableDictionary::~CFCMutableDictionary() {}
 
 CFIndex CFCMutableDictionary::GetCount() const {
@@ -352,9 +343,8 @@ bool CFCMutableDictionary::AddValueUInt64(CFStringRef key, uint64_t value,
   CFMutableDictionaryRef dict = Dictionary(can_create);
   if (dict != NULL) {
     // The number may appear negative if the MSBit is set in "value". Due to a
-    // limitation of
-    // CFNumber, there isn't a way to have it show up otherwise as of this
-    // writing.
+    // limitation of CFNumber, there isn't a way to have it show up otherwise
+    // as of this writing.
     CFCReleaser<CFNumberRef> cf_number(
         ::CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &value));
     if (cf_number.get()) {
@@ -371,9 +361,8 @@ bool CFCMutableDictionary::SetValueUInt64(CFStringRef key, uint64_t value,
   CFMutableDictionaryRef dict = Dictionary(can_create);
   if (dict != NULL) {
     // The number may appear negative if the MSBit is set in "value". Due to a
-    // limitation of
-    // CFNumber, there isn't a way to have it show up otherwise as of this
-    // writing.
+    // limitation of CFNumber, there isn't a way to have it show up otherwise
+    // as of this writing.
     CFCReleaser<CFNumberRef> cf_number(
         ::CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt64Type, &value));
     if (cf_number.get()) {
@@ -390,9 +379,8 @@ bool CFCMutableDictionary::AddValueDouble(CFStringRef key, double value,
   CFMutableDictionaryRef dict = Dictionary(can_create);
   if (dict != NULL) {
     // The number may appear negative if the MSBit is set in "value". Due to a
-    // limitation of
-    // CFNumber, there isn't a way to have it show up otherwise as of this
-    // writing.
+    // limitation of CFNumber, there isn't a way to have it show up otherwise
+    // as of this writing.
     CFCReleaser<CFNumberRef> cf_number(
         ::CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &value));
     if (cf_number.get()) {
@@ -409,9 +397,8 @@ bool CFCMutableDictionary::SetValueDouble(CFStringRef key, double value,
   CFMutableDictionaryRef dict = Dictionary(can_create);
   if (dict != NULL) {
     // The number may appear negative if the MSBit is set in "value". Due to a
-    // limitation of
-    // CFNumber, there isn't a way to have it show up otherwise as of this
-    // writing.
+    // limitation of CFNumber, there isn't a way to have it show up otherwise
+    // as of this writing.
     CFCReleaser<CFNumberRef> cf_number(
         ::CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &value));
     if (cf_number.get()) {

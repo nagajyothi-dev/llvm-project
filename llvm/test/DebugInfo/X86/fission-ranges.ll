@@ -1,45 +1,41 @@
 ; RUN: llc -split-dwarf-file=foo.dwo -O0 %s -mtriple=x86_64-unknown-linux-gnu -filetype=obj -o %t
-; RUN: llvm-dwarfdump %t | FileCheck %s
+; RUN: llvm-dwarfdump -v %t | FileCheck %s
 ; RUN: llvm-objdump -h %t | FileCheck --check-prefix=HDR %s
+
+; RUN: llc -dwarf-version=5 -O0 %s -mtriple=x86_64-unknown-linux-gnu -filetype=obj -o %t
+; RUN: llvm-dwarfdump -v %t | FileCheck --check-prefix=V5RNGLISTS %s
 
 ; CHECK: .debug_info contents:
 ; CHECK: DW_TAG_compile_unit
 ; CHECK-NEXT: DW_AT_stmt_list
-; CHECK-NEXT: DW_AT_GNU_dwo_name
 ; CHECK-NEXT: DW_AT_comp_dir
+; CHECK-NEXT: DW_AT_GNU_dwo_name
 ; CHECK-NEXT: DW_AT_GNU_dwo_id
+; CHECK-NEXT: DW_AT_GNU_ranges_base
 ; CHECK-NEXT: DW_AT_GNU_addr_base [DW_FORM_sec_offset]                   (0x00000000)
 
-
 ; CHECK: .debug_info.dwo contents:
-; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[A:0x[0-9a-z]*]])
-; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[E:0x[0-9a-z]*]])
-; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[B:0x[0-9a-z]*]])
-; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[D:0x[0-9a-z]*]])
+; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[A:0x[0-9a-z]*]]
+; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[E:0x[0-9a-z]*]]
+; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[B:0x[0-9a-z]*]]
+; CHECK: DW_AT_location [DW_FORM_sec_offset]   ([[D:0x[0-9a-z]*]]
 ; CHECK: DW_AT_ranges [DW_FORM_sec_offset]   (0x00000000
-; CHECK: .debug_loc contents:
+; CHECK-NOT: .debug_loc contents:
 ; CHECK-NOT: Beginning address offset
 ; CHECK: .debug_loc.dwo contents:
 
 ; Don't assume these locations are entirely correct - feel free to update them
 ; if they've changed due to a bugfix, change in register allocation, etc.
 
-; CHECK: [[A]]: Beginning address index: 2
-; CHECK-NEXT:                    Length: 169
-; CHECK-NEXT:      Location description: 11 00
-; CHECK-NEXT: {{^$}}
-; CHECK-NEXT:   Beginning address index: 3
-; CHECK-NEXT:                    Length: 25
-; CHECK-NEXT:      Location description: 50
-; CHECK: [[E]]: Beginning address index: 4
-; CHECK-NEXT:                    Length: 19
-; CHECK-NEXT:      Location description: 50
-; CHECK: [[B]]: Beginning address index: 5
-; CHECK-NEXT:                    Length: 17
-; CHECK-NEXT:      Location description: 50
-; CHECK: [[D]]: Beginning address index: 6
-; CHECK-NEXT:                    Length: 17
-; CHECK-NEXT:      Location description: 50
+; CHECK:      [[A]]:
+; CHECK-NEXT:   Addr idx 2 (w/ length 169): DW_OP_consts +0, DW_OP_stack_value
+; CHECK-NEXT:   Addr idx 3 (w/ length 25): DW_OP_reg0 RAX
+; CHECK:      [[E]]:
+; CHECK-NEXT:   Addr idx 4 (w/ length 19): DW_OP_reg0 RAX
+; CHECK:      [[B]]:
+; CHECK-NEXT:   Addr idx 5 (w/ length 17): DW_OP_reg0 RAX
+; CHECK:      [[D]]:
+; CHECK-NEXT:   Addr idx 6 (w/ length 17): DW_OP_reg0 RAX
 
 ; Make sure we don't produce any relocations in any .dwo section (though in particular, debug_info.dwo)
 ; HDR-NOT: .rela.{{.*}}.dwo
@@ -50,6 +46,25 @@
 
 ; HDR: .debug_addr 00000038
 ; HDR-NOT: .rela.{{.*}}.dwo
+
+; Check for the existence of a DWARF v5-style range list table in the .debug_rnglists
+; section and that the compile unit has a DW_AT_rnglists_base attribute.
+; The table should contain at least one rangelist with at least 2 individual ranges.
+
+; V5RNGLISTS:      .debug_info contents:
+; V5RNGLISTS:      DW_TAG_compile_unit
+; V5RNGLISTS-NOT:  DW_TAG
+; V5RNGLISTS:      DW_AT_rnglists_base [DW_FORM_sec_offset]  (0x0000000c)
+; V5RNGLISTS:      .debug_rnglists contents:
+; V5RNGLISTS-NEXT: 0x00000000: range list header: length = 0x00000019, version = 0x0005,
+; V5RNGLISTS-SAME: addr_size = 0x08, seg_size = 0x00, offset_entry_count = 0x00000001
+; V5RNGLISTS-NEXT: offsets: [
+; V5RNGLISTS-NEXT: => 0x00000010
+; V5RNGLISTS-NEXT: ]
+; V5RNGLISTS-NEXT: ranges:
+; V5RNGLISTS-NEXT: 0x00000010: [DW_RLE_offset_pair]:
+; V5RNGLISTS-NEXT: 0x00000013: [DW_RLE_offset_pair]:
+; V5RNGLISTS:      0x{{[0-9a-f]+}}: [DW_RLE_end_of_list]
 
 ; From the code:
 
@@ -156,11 +171,11 @@ attributes #1 = { nounwind readnone }
 !0 = distinct !DICompileUnit(language: DW_LANG_C99, producer: "clang version 3.4 (trunk 191700) (llvm/trunk 191710)", isOptimized: true, splitDebugFilename: "small.dwo", emissionKind: FullDebug, file: !1, enums: !2, retainedTypes: !2, globals: !2, imports: !2)
 !1 = !DIFile(filename: "small.c", directory: "/usr/local/google/home/echristo/tmp")
 !2 = !{}
-!4 = distinct !DISubprogram(name: "bar", line: 18, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: true, unit: !0, scopeLine: 19, file: !1, scope: !5, type: !6, variables: !2)
+!4 = distinct !DISubprogram(name: "bar", line: 18, isLocal: false, isDefinition: true, virtualIndex: 6, isOptimized: true, unit: !0, scopeLine: 19, file: !1, scope: !5, type: !6, retainedNodes: !2)
 !5 = !DIFile(filename: "small.c", directory: "/usr/local/google/home/echristo/tmp")
 !6 = !DISubroutineType(types: !7)
 !7 = !{null}
-!8 = distinct !DISubprogram(name: "foo", line: 2, isLocal: true, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !0, scopeLine: 3, file: !1, scope: !5, type: !9, variables: !12)
+!8 = distinct !DISubprogram(name: "foo", line: 2, isLocal: true, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !0, scopeLine: 3, file: !1, scope: !5, type: !9, retainedNodes: !12)
 !9 = !DISubroutineType(types: !10)
 !10 = !{null, !11}
 !11 = !DIBasicType(tag: DW_TAG_base_type, name: "int", size: 32, align: 32, encoding: DW_ATE_signed)

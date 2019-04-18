@@ -1,9 +1,8 @@
 //= unittests/ASTMatchers/ASTMatchersTraversalTest.cpp - matchers unit tests =//
 //
-//                     The LLVM Compiler Infrastructure
-//`
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -403,16 +402,163 @@ TEST(Matcher, Argument) {
 }
 
 TEST(Matcher, AnyArgument) {
-  StatementMatcher CallArgumentY = callExpr(
-    hasAnyArgument(
-      ignoringParenImpCasts(declRefExpr(to(varDecl(hasName("y")))))));
+  auto HasArgumentY = hasAnyArgument(
+      ignoringParenImpCasts(declRefExpr(to(varDecl(hasName("y"))))));
+  StatementMatcher CallArgumentY = callExpr(HasArgumentY);
+  StatementMatcher CtorArgumentY = cxxConstructExpr(HasArgumentY);
+  StatementMatcher UnresolvedCtorArgumentY =
+      cxxUnresolvedConstructExpr(HasArgumentY);
+  StatementMatcher ObjCCallArgumentY = objcMessageExpr(HasArgumentY);
   EXPECT_TRUE(matches("void x(int, int) { int y; x(1, y); }", CallArgumentY));
   EXPECT_TRUE(matches("void x(int, int) { int y; x(y, 42); }", CallArgumentY));
+  EXPECT_TRUE(matches("struct Y { Y(int, int); };"
+                      "void x() { int y; (void)Y(1, y); }",
+                      CtorArgumentY));
+  EXPECT_TRUE(matches("struct Y { Y(int, int); };"
+                      "void x() { int y; (void)Y(y, 42); }",
+                      CtorArgumentY));
+  EXPECT_TRUE(matches("template <class Y> void x() { int y; (void)Y(1, y); }",
+                      UnresolvedCtorArgumentY));
+  EXPECT_TRUE(matches("template <class Y> void x() { int y; (void)Y(y, 42); }",
+                      UnresolvedCtorArgumentY));
+  EXPECT_TRUE(matchesObjC("@interface I -(void)f:(int) y; @end "
+                          "void x(I* i) { int y; [i f:y]; }",
+                          ObjCCallArgumentY));
+  EXPECT_FALSE(matchesObjC("@interface I -(void)f:(int) z; @end "
+                           "void x(I* i) { int z; [i f:z]; }",
+                           ObjCCallArgumentY));
   EXPECT_TRUE(notMatches("void x(int, int) { x(1, 2); }", CallArgumentY));
+  EXPECT_TRUE(notMatches("struct Y { Y(int, int); };"
+                         "void x() { int y; (void)Y(1, 2); }",
+                         CtorArgumentY));
+  EXPECT_TRUE(notMatches("template <class Y>"
+                         "void x() { int y; (void)Y(1, 2); }",
+                         UnresolvedCtorArgumentY));
 
   StatementMatcher ImplicitCastedArgument = callExpr(
     hasAnyArgument(implicitCastExpr()));
   EXPECT_TRUE(matches("void x(long) { int y; x(y); }", ImplicitCastedArgument));
+}
+
+TEST(Matcher, HasReceiver) {
+  EXPECT_TRUE(matchesObjC(
+      "@interface NSString @end "
+      "void f(NSString *x) {"
+      "[x containsString];"
+      "}",
+      objcMessageExpr(hasReceiver(declRefExpr(to(varDecl(hasName("x"))))))));
+
+  EXPECT_FALSE(matchesObjC(
+      "@interface NSString +(NSString *) stringWithFormat; @end "
+      "void f() { [NSString stringWithFormat]; }",
+      objcMessageExpr(hasReceiver(declRefExpr(to(varDecl(hasName("x"))))))));
+}
+
+TEST(Matcher, isInstanceMessage) {
+  EXPECT_TRUE(matchesObjC(
+      "@interface NSString @end "
+      "void f(NSString *x) {"
+      "[x containsString];"
+      "}",
+      objcMessageExpr(isInstanceMessage())));
+
+  EXPECT_FALSE(matchesObjC(
+      "@interface NSString +(NSString *) stringWithFormat; @end "
+      "void f() { [NSString stringWithFormat]; }",
+      objcMessageExpr(isInstanceMessage())));
+
+}
+
+TEST(MatcherCXXMemberCallExpr, On) {
+  auto Snippet1 = R"cc(
+        struct Y {
+          void m();
+        };
+        void z(Y y) { y.m(); }
+      )cc";
+  auto Snippet2 = R"cc(
+        struct Y {
+          void m();
+        };
+        struct X : public Y {};
+        void z(X x) { x.m(); }
+      )cc";
+  auto MatchesY = cxxMemberCallExpr(on(hasType(cxxRecordDecl(hasName("Y")))));
+  EXPECT_TRUE(matches(Snippet1, MatchesY));
+  EXPECT_TRUE(notMatches(Snippet2, MatchesY));
+
+  auto MatchesX = cxxMemberCallExpr(on(hasType(cxxRecordDecl(hasName("X")))));
+  EXPECT_TRUE(matches(Snippet2, MatchesX));
+
+  // Parens are ignored.
+  auto Snippet3 = R"cc(
+    struct Y {
+      void m();
+    };
+    Y g();
+    void z(Y y) { (g()).m(); }
+  )cc";
+  auto MatchesCall = cxxMemberCallExpr(on(callExpr()));
+  EXPECT_TRUE(matches(Snippet3, MatchesCall));
+}
+
+TEST(MatcherCXXMemberCallExpr, OnImplicitObjectArgument) {
+  auto Snippet1 = R"cc(
+    struct Y {
+      void m();
+    };
+    void z(Y y) { y.m(); }
+  )cc";
+  auto Snippet2 = R"cc(
+    struct Y {
+      void m();
+    };
+    struct X : public Y {};
+    void z(X x) { x.m(); }
+  )cc";
+  auto MatchesY = cxxMemberCallExpr(
+      onImplicitObjectArgument(hasType(cxxRecordDecl(hasName("Y")))));
+  EXPECT_TRUE(matches(Snippet1, MatchesY));
+  EXPECT_TRUE(matches(Snippet2, MatchesY));
+
+  auto MatchesX = cxxMemberCallExpr(
+      onImplicitObjectArgument(hasType(cxxRecordDecl(hasName("X")))));
+  EXPECT_TRUE(notMatches(Snippet2, MatchesX));
+
+  // Parens are not ignored.
+  auto Snippet3 = R"cc(
+    struct Y {
+      void m();
+    };
+    Y g();
+    void z(Y y) { (g()).m(); }
+  )cc";
+  auto MatchesCall = cxxMemberCallExpr(onImplicitObjectArgument(callExpr()));
+  EXPECT_TRUE(notMatches(Snippet3, MatchesCall));
+}
+
+TEST(Matcher, HasObjectExpr) {
+  auto Snippet1 = R"cc(
+        struct X {
+          int m;
+          int f(X x) { return x.m; }
+        };
+      )cc";
+  auto Snippet2 = R"cc(
+        struct X {
+          int m;
+          int f(X x) { return m; }
+        };
+      )cc";
+  auto MatchesX =
+      memberExpr(hasObjectExpression(hasType(cxxRecordDecl(hasName("X")))));
+  EXPECT_TRUE(matches(Snippet1, MatchesX));
+  EXPECT_TRUE(notMatches(Snippet2, MatchesX));
+
+  auto MatchesXPointer = memberExpr(
+      hasObjectExpression(hasType(pointsTo(cxxRecordDecl(hasName("X"))))));
+  EXPECT_TRUE(notMatches(Snippet1, MatchesXPointer));
+  EXPECT_TRUE(matches(Snippet2, MatchesXPointer));
 }
 
 TEST(ForEachArgumentWithParam, ReportsNoFalsePositives) {
@@ -532,6 +678,10 @@ TEST(HasParameter, CallsInnerMatcher) {
                       cxxMethodDecl(hasParameter(0, varDecl()))));
   EXPECT_TRUE(notMatches("class X { void x(int) {} };",
                          cxxMethodDecl(hasParameter(0, hasName("x")))));
+  EXPECT_TRUE(matchesObjC("@interface I -(void)f:(int) x; @end",
+                          objcMethodDecl(hasParameter(0, hasName("x")))));
+  EXPECT_TRUE(matchesObjC("int main() { void (^b)(int) = ^(int p) {}; }",
+                          blockDecl(hasParameter(0, hasName("p")))));
 }
 
 TEST(HasParameter, DoesNotMatchIfIndexOutOfBounds) {
@@ -561,6 +711,10 @@ TEST(HasAnyParameter, MatchesIndependentlyOfPosition) {
   EXPECT_TRUE(matches(
     "class Y {}; class X { void x(Y y, X x) {} };",
     cxxMethodDecl(hasAnyParameter(hasType(recordDecl(hasName("X")))))));
+  EXPECT_TRUE(matchesObjC("@interface I -(void)f:(int) x; @end",
+                          objcMethodDecl(hasAnyParameter(hasName("x")))));
+  EXPECT_TRUE(matchesObjC("int main() { void (^b)(int) = ^(int p) {}; }",
+                          blockDecl(hasAnyParameter(hasName("p")))));
 }
 
 TEST(Returns, MatchesReturnTypes) {
@@ -1258,6 +1412,45 @@ TEST(IgnoringImplicit, MatchesImplicit) {
                       varDecl(has(ignoringImplicit(cxxConstructExpr())))));
 }
 
+TEST(IgnoringImplicit, MatchesNestedImplicit) {
+  StringRef Code = R"(
+
+struct OtherType;
+
+struct SomeType
+{
+    SomeType() {}
+    SomeType(const OtherType&) {}
+    SomeType& operator=(OtherType const&) { return *this; }
+};
+
+struct OtherType
+{
+    OtherType() {}
+    ~OtherType() {}
+};
+
+OtherType something()
+{
+    return {};
+}
+
+int main()
+{
+    SomeType i = something();
+}
+)";
+  EXPECT_TRUE(matches(Code, varDecl(
+      hasName("i"),
+      hasInitializer(exprWithCleanups(has(
+        cxxConstructExpr(has(expr(ignoringImplicit(cxxConstructExpr(
+          has(expr(ignoringImplicit(callExpr())))
+          )))))
+        )))
+      )
+  ));
+}
+
 TEST(IgnoringImplicit, DoesNotMatchIncorrectly) {
   EXPECT_TRUE(
       notMatches("class C {}; C a = C();", varDecl(has(cxxConstructExpr()))));
@@ -1472,13 +1665,16 @@ TEST(SwitchCase, MatchesEachCase) {
     ifStmt(has(switchStmt(forEachSwitchCase(defaultStmt()))))));
   EXPECT_TRUE(matches("void x() { switch(42) { case 1+1: case 4:; } }",
                       switchStmt(forEachSwitchCase(
-                        caseStmt(hasCaseConstant(integerLiteral()))))));
+                        caseStmt(hasCaseConstant(
+                            constantExpr(has(integerLiteral()))))))));
   EXPECT_TRUE(notMatches("void x() { switch(42) { case 1+1: case 2+2:; } }",
                          switchStmt(forEachSwitchCase(
-                           caseStmt(hasCaseConstant(integerLiteral()))))));
+                           caseStmt(hasCaseConstant(
+                               constantExpr(has(integerLiteral()))))))));
   EXPECT_TRUE(notMatches("void x() { switch(42) { case 1 ... 2:; } }",
                          switchStmt(forEachSwitchCase(
-                           caseStmt(hasCaseConstant(integerLiteral()))))));
+                           caseStmt(hasCaseConstant(
+                               constantExpr(has(integerLiteral()))))))));
   EXPECT_TRUE(matchAndVerifyResultTrue(
     "void x() { switch (42) { case 1: case 2: case 3: default:; } }",
     switchStmt(forEachSwitchCase(caseStmt().bind("x"))),

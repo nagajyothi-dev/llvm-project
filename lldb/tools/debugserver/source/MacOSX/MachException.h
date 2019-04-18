@@ -1,9 +1,8 @@
 //===-- MachException.h -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -70,6 +69,15 @@ public:
     bool IsBreakpoint() const {
       return (exc_type == EXC_BREAKPOINT ||
               ((exc_type == EXC_SOFTWARE) && exc_data[0] == 1));
+    }
+    void AppendExceptionData(mach_exception_data_t Data,
+                             mach_msg_type_number_t Count) {
+      mach_exception_data_type_t Buf;
+      for (mach_msg_type_number_t i = 0; i < Count; ++i) {
+        // Perform an unaligned copy.
+        memcpy(&Buf, Data + i, sizeof(mach_exception_data_type_t));
+        exc_data.push_back(Buf);
+      }
     }
     void Dump() const;
     void DumpStopReason() const;

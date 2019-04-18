@@ -1,9 +1,8 @@
 //===- llvm/unittest/Linker/LinkModulesTest.cpp - IRBuilder tests ---------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,7 +83,7 @@ TEST_F(LinkModuleTest, BlockAddress) {
   GEPIndices.push_back(&*F->arg_begin());
 
   Value *GEP = Builder.CreateGEP(AT, GV, GEPIndices, "switch.gep");
-  Value *Load = Builder.CreateLoad(GEP, "switch.load");
+  Value *Load = Builder.CreateLoad(AT->getElementType(), GEP, "switch.load");
 
   Builder.CreateRet(Load);
 
@@ -98,7 +97,7 @@ TEST_F(LinkModuleTest, BlockAddress) {
   Builder.CreateRet(ConstantPointerNull::get(Type::getInt8PtrTy(Ctx)));
 
   Module *LinkedModule = new Module("MyModuleLinked", Ctx);
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   Linker::linkModules(*LinkedModule, std::move(M));
 
   // Check that the global "@switch.bas" is well-formed.
@@ -172,14 +171,14 @@ static Module *getInternal(LLVMContext &Ctx) {
 TEST_F(LinkModuleTest, EmptyModule) {
   std::unique_ptr<Module> InternalM(getInternal(Ctx));
   std::unique_ptr<Module> EmptyM(new Module("EmptyModule1", Ctx));
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   Linker::linkModules(*EmptyM, std::move(InternalM));
 }
 
 TEST_F(LinkModuleTest, EmptyModule2) {
   std::unique_ptr<Module> InternalM(getInternal(Ctx));
   std::unique_ptr<Module> EmptyM(new Module("EmptyModule1", Ctx));
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   Linker::linkModules(*InternalM, std::move(EmptyM));
 }
 
@@ -195,7 +194,7 @@ TEST_F(LinkModuleTest, TypeMerge) {
                       "@t2 = weak global %t zeroinitializer\n";
   std::unique_ptr<Module> M2 = parseAssemblyString(M2Str, Err, C);
 
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   Linker::linkModules(*M1, std::move(M2));
 
   EXPECT_EQ(M1->getNamedGlobal("t1")->getType(),
@@ -280,7 +279,7 @@ TEST_F(LinkModuleTest, MoveDistinctMDs) {
   // Link into destination module.
   auto Dst = llvm::make_unique<Module>("Linked", C);
   ASSERT_TRUE(Dst.get());
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   Linker::linkModules(*Dst, std::move(Src));
 
   // Check that distinct metadata was moved, not cloned.  Even !4, the uniqued
@@ -349,7 +348,7 @@ TEST_F(LinkModuleTest, RemangleIntrinsics) {
   // Link two modules together.
   auto Dst = llvm::make_unique<Module>("Linked", C);
   ASSERT_TRUE(Dst.get());
-  Ctx.setDiagnosticHandler(expectNoDiags);
+  Ctx.setDiagnosticHandlerCallBack(expectNoDiags);
   bool Failed = Linker::linkModules(*Foo, std::move(Bar));
   ASSERT_FALSE(Failed);
 

@@ -1,9 +1,8 @@
 //===-- X86ELFObjectWriter.cpp - X86 ELF Writer ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +14,7 @@
 #include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixup.h"
+#include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cassert>
@@ -74,6 +74,9 @@ static X86_64RelType getType64(unsigned Kind,
   case X86::reloc_riprel_4byte_relax_rex:
   case X86::reloc_riprel_4byte_movq_load:
     return RT64_32;
+  case X86::reloc_branch_4byte_pcrel:
+    Modifier = MCSymbolRefExpr::VK_PLT;
+    return RT64_32;
   case FK_PCRel_2:
   case FK_Data_2:
     return RT64_16;
@@ -110,6 +113,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case RT64_8:
       return IsPCRel ? ELF::R_X86_64_PC8 : ELF::R_X86_64_8;
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_GOT:
     switch (Type) {
     case RT64_64:
@@ -121,6 +125,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case RT64_8:
       llvm_unreachable("Unimplemented");
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_GOTOFF:
     assert(Type == RT64_64);
     assert(!IsPCRel);
@@ -137,6 +142,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case RT64_8:
       llvm_unreachable("Unimplemented");
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_DTPOFF:
     assert(!IsPCRel);
     switch (Type) {
@@ -149,6 +155,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case RT64_8:
       llvm_unreachable("Unimplemented");
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_SIZE:
     assert(!IsPCRel);
     switch (Type) {
@@ -161,6 +168,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case RT64_8:
       llvm_unreachable("Unimplemented");
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_TLSCALL:
     return ELF::R_X86_64_TLSDESC_CALL;
   case MCSymbolRefExpr::VK_TLSDESC:
@@ -193,6 +201,7 @@ static unsigned getRelocType64(MCContext &Ctx, SMLoc Loc,
     case X86::reloc_riprel_4byte_movq_load:
       return ELF::R_X86_64_REX_GOTPCRELX;
     }
+    llvm_unreachable("unexpected relocation type!");
   }
 }
 
@@ -230,6 +239,7 @@ static unsigned getRelocType32(MCContext &Ctx,
     case RT32_8:
       return IsPCRel ? ELF::R_386_PC8 : ELF::R_386_8;
     }
+    llvm_unreachable("unexpected relocation type!");
   case MCSymbolRefExpr::VK_GOT:
     assert(Type == RT32_32);
     if (IsPCRel)
@@ -297,10 +307,7 @@ unsigned X86ELFObjectWriter::getRelocType(MCContext &Ctx, const MCValue &Target,
   return getRelocType32(Ctx, Modifier, getType32(Type), IsPCRel, Kind);
 }
 
-MCObjectWriter *llvm::createX86ELFObjectWriter(raw_pwrite_stream &OS,
-                                               bool IsELF64, uint8_t OSABI,
-                                               uint16_t EMachine) {
-  MCELFObjectTargetWriter *MOTW =
-    new X86ELFObjectWriter(IsELF64, OSABI, EMachine);
-  return createELFObjectWriter(MOTW, OS,  /*IsLittleEndian=*/true);
+std::unique_ptr<MCObjectTargetWriter>
+llvm::createX86ELFObjectWriter(bool IsELF64, uint8_t OSABI, uint16_t EMachine) {
+  return llvm::make_unique<X86ELFObjectWriter>(IsELF64, OSABI, EMachine);
 }

@@ -1,9 +1,8 @@
 //===- Writer.h -------------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,10 +19,7 @@ namespace elf {
 class InputFile;
 class OutputSection;
 class InputSectionBase;
-template <class ELFT> class ObjFile;
-class SymbolTable;
 template <class ELFT> void writeResult();
-template <class ELFT> void markLive();
 
 // This describes a program header entry.
 // Each contains type, access flags and range of output sections that will be
@@ -41,19 +37,24 @@ struct PhdrEntry {
   uint32_t p_type = 0;
   uint32_t p_flags = 0;
 
-  OutputSection *First = nullptr;
-  OutputSection *Last = nullptr;
+  OutputSection *FirstSec = nullptr;
+  OutputSection *LastSec = nullptr;
   bool HasLMA = false;
+
+  uint64_t LMAOffset = 0;
 };
 
-llvm::StringRef getOutputSectionName(llvm::StringRef Name);
+void addReservedSymbols();
+llvm::StringRef getOutputSectionName(const InputSectionBase *S);
 
-template <class ELFT> uint32_t getMipsEFlags();
+template <class ELFT> uint32_t calcMipsEFlags();
 
 uint8_t getMipsFpAbiFlag(uint8_t OldFlag, uint8_t NewFlag,
                          llvm::StringRef FileName);
 
 bool isMipsN32Abi(const InputFile *F);
+bool isMicroMips();
+bool isMipsR6();
 } // namespace elf
 } // namespace lld
 

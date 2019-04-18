@@ -1,10 +1,9 @@
 //===-- RegisterContextPOSIX_powerpc.cpp -------------------------*- C++
 //-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,16 +11,16 @@
 #include <errno.h>
 #include <stdint.h>
 
-#include "lldb/Core/RegisterValue.h"
-#include "lldb/Core/Scalar.h"
+#include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Endian.h"
+#include "lldb/Utility/RegisterValue.h"
+#include "lldb/Utility/Scalar.h"
 #include "llvm/Support/Compiler.h"
 
-#include "Plugins/Process/elf-core/ProcessElfCore.h"
 #include "RegisterContextPOSIX_powerpc.h"
 
 using namespace lldb_private;
@@ -94,12 +93,7 @@ RegisterContextPOSIX_powerpc::RegisterContextPOSIX_powerpc(
     Thread &thread, uint32_t concrete_frame_idx,
     RegisterInfoInterface *register_info)
     : RegisterContext(thread, concrete_frame_idx) {
-  m_register_info_ap.reset(register_info);
-
-  // elf-core yet to support ReadFPR()
-  ProcessSP base = CalculateProcess();
-  if (base.get()->GetPluginName() == ProcessElfCore::GetPluginNameStatic())
-    return;
+  m_register_info_up.reset(register_info);
 }
 
 RegisterContextPOSIX_powerpc::~RegisterContextPOSIX_powerpc() {}
@@ -124,14 +118,14 @@ size_t RegisterContextPOSIX_powerpc::GetRegisterCount() {
 }
 
 size_t RegisterContextPOSIX_powerpc::GetGPRSize() {
-  return m_register_info_ap->GetGPRSize();
+  return m_register_info_up->GetGPRSize();
 }
 
 const RegisterInfo *RegisterContextPOSIX_powerpc::GetRegisterInfo() {
   // Commonly, this method is overridden and g_register_infos is copied and
-  // specialized.
-  // So, use GetRegisterInfo() rather than g_register_infos in this scope.
-  return m_register_info_ap->GetRegisterInfo();
+  // specialized. So, use GetRegisterInfo() rather than g_register_infos in
+  // this scope.
+  return m_register_info_up->GetRegisterInfo();
 }
 
 const RegisterInfo *
@@ -181,8 +175,8 @@ bool RegisterContextPOSIX_powerpc::IsRegisterSetAvailable(size_t set_index) {
   return (set_index < num_sets);
 }
 
-// Used when parsing DWARF and EH frame information and any other
-// object file sections that contain register numbers in them.
+// Used when parsing DWARF and EH frame information and any other object file
+// sections that contain register numbers in them.
 uint32_t RegisterContextPOSIX_powerpc::ConvertRegisterKindToRegisterNumber(
     lldb::RegisterKind kind, uint32_t num) {
   const uint32_t num_regs = GetRegisterCount();

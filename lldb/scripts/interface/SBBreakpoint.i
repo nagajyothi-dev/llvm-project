@@ -1,12 +1,10 @@
 //===-- SWIG Interface for SBBreakpoint -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-
 namespace lldb {
 
 %feature("docstring",
@@ -81,22 +79,23 @@ class SBBreakpoint
 {
 public:
 
-    typedef bool (*BreakpointHitCallback) (void *baton, 
-                                           SBProcess &process,
-                                           SBThread &thread, 
-                                           lldb::SBBreakpointLocation &location);
-
     SBBreakpoint ();
 
     SBBreakpoint (const lldb::SBBreakpoint& rhs);
 
     ~SBBreakpoint();
 
+    bool operator==(const lldb::SBBreakpoint &rhs);
+
+    bool operator!=(const lldb::SBBreakpoint &rhs);
+
     break_id_t
     GetID () const;
 
     bool
     IsValid() const;
+
+    explicit operator bool() const;
 
     void
     ClearAllBreakpointSites ();
@@ -232,6 +231,10 @@ public:
     bool 
     GetDescription(lldb::SBStream &description, bool include_locations);
 
+    // Can only be called from a ScriptedBreakpointResolver...
+    SBError
+    AddLocation(SBAddress &address);
+
     bool
     operator == (const lldb::SBBreakpoint& rhs);
            
@@ -253,6 +256,9 @@ public:
     static uint32_t
     GetNumBreakpointLocationsFromEvent (const lldb::SBEvent &event_sp);
     
+    bool
+    IsHardware ();
+
     %pythoncode %{
         
         class locations_access(object):
@@ -281,7 +287,17 @@ public:
             for idx in range(len(accessor)):
                 locations.append(accessor[idx])
             return locations
-        
+
+        def __iter__(self):
+            '''Iterate over all breakpoint locations in a lldb.SBBreakpoint
+            object.'''
+            return lldb_iter(self, 'GetNumLocations', 'GetLocationAtIndex')
+
+        def __len__(self):
+            '''Return the number of breakpoint locations in a lldb.SBBreakpoint
+            object.'''
+            return self.GetNumLocations()
+
         __swig_getmethods__["locations"] = get_breakpoint_location_list
         if _newclass: locations = property(get_breakpoint_location_list, None, doc='''A read only property that returns a list() of lldb.SBBreakpointLocation objects for this breakpoint.''')
         

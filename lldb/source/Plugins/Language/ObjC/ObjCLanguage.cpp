@@ -1,18 +1,13 @@
 //===-- ObjCLanguage.cpp ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
 #include <mutex>
 
-// Other libraries and framework includes
-// Project includes
 #include "ObjCLanguage.h"
 
 #include "lldb/Core/PluginManager.h"
@@ -53,9 +48,7 @@ lldb_private::ConstString ObjCLanguage::GetPluginNameStatic() {
   return g_name;
 }
 
-//------------------------------------------------------------------
 // PluginInterface protocol
-//------------------------------------------------------------------
 
 lldb_private::ConstString ObjCLanguage::GetPluginName() {
   return GetPluginNameStatic();
@@ -63,9 +56,7 @@ lldb_private::ConstString ObjCLanguage::GetPluginName() {
 
 uint32_t ObjCLanguage::GetPluginVersion() { return 1; }
 
-//------------------------------------------------------------------
 // Static Functions
-//------------------------------------------------------------------
 
 Language *ObjCLanguage::CreateInstance(lldb::LanguageType language) {
   switch (language) {
@@ -90,9 +81,8 @@ bool ObjCLanguage::MethodName::SetName(llvm::StringRef name, bool strict) {
   if (name.empty())
     return IsValid(strict);
 
-  // If "strict" is true. then the method must be specified with a
-  // '+' or '-' at the beginning. If "strict" is false, then the '+'
-  // or '-' can be omitted
+  // If "strict" is true. then the method must be specified with a '+' or '-'
+  // at the beginning. If "strict" is false, then the '+' or '-' can be omitted
   bool valid_prefix = false;
 
   if (name.size() > 1 && (name[0] == '+' || name[0] == '-')) {
@@ -108,7 +98,7 @@ bool ObjCLanguage::MethodName::SetName(llvm::StringRef name, bool strict) {
 
   if (valid_prefix) {
     int name_len = name.size();
-    // Objective C methods must have at least:
+    // Objective-C methods must have at least:
     //      "-[" or "+[" prefix
     //      One character for a class name
     //      One character for the space between the class name
@@ -125,7 +115,7 @@ bool ObjCLanguage::MethodName::SetName(const char *name, bool strict) {
   return SetName(llvm::StringRef(name), strict);
 }
 
-const ConstString &ObjCLanguage::MethodName::GetClassName() {
+ConstString ObjCLanguage::MethodName::GetClassName() {
   if (!m_class) {
     if (IsValid(false)) {
       const char *full = m_full.GetCString();
@@ -134,8 +124,8 @@ const ConstString &ObjCLanguage::MethodName::GetClassName() {
       if (paren_pos) {
         m_class.SetCStringWithLength(class_start, paren_pos - class_start);
       } else {
-        // No '(' was found in the full name, we can definitively say
-        // that our category was valid (and empty).
+        // No '(' was found in the full name, we can definitively say that our
+        // category was valid (and empty).
         m_category_is_valid = true;
         const char *space_pos = strchr(full, ' ');
         if (space_pos) {
@@ -151,7 +141,7 @@ const ConstString &ObjCLanguage::MethodName::GetClassName() {
   return m_class;
 }
 
-const ConstString &ObjCLanguage::MethodName::GetClassNameWithCategory() {
+ConstString ObjCLanguage::MethodName::GetClassNameWithCategory() {
   if (!m_class_category) {
     if (IsValid(false)) {
       const char *full = m_full.GetCString();
@@ -164,8 +154,8 @@ const ConstString &ObjCLanguage::MethodName::GetClassNameWithCategory() {
         // contain a '(', then we can also fill in the m_class
         if (!m_class && strchr(m_class_category.GetCString(), '(') == nullptr) {
           m_class = m_class_category;
-          // No '(' was found in the full name, we can definitively say
-          // that our category was valid (and empty).
+          // No '(' was found in the full name, we can definitively say that
+          // our category was valid (and empty).
           m_category_is_valid = true;
         }
       }
@@ -174,7 +164,7 @@ const ConstString &ObjCLanguage::MethodName::GetClassNameWithCategory() {
   return m_class_category;
 }
 
-const ConstString &ObjCLanguage::MethodName::GetSelector() {
+ConstString ObjCLanguage::MethodName::GetSelector() {
   if (!m_selector) {
     if (IsValid(false)) {
       const char *full = m_full.GetCString();
@@ -189,7 +179,7 @@ const ConstString &ObjCLanguage::MethodName::GetSelector() {
   return m_selector;
 }
 
-const ConstString &ObjCLanguage::MethodName::GetCategory() {
+ConstString ObjCLanguage::MethodName::GetCategory() {
   if (!m_category_is_valid && !m_category) {
     if (IsValid(false)) {
       m_category_is_valid = true;
@@ -238,7 +228,7 @@ size_t ObjCLanguage::MethodName::GetFullNames(std::vector<ConstString> &names,
     StreamString strm;
     const bool is_class_method = m_type == eTypeClassMethod;
     const bool is_instance_method = m_type == eTypeInstanceMethod;
-    const ConstString &category = GetCategory();
+    ConstString category = GetCategory();
     if (is_class_method || is_instance_method) {
       names.push_back(m_full);
       if (category) {
@@ -247,8 +237,8 @@ size_t ObjCLanguage::MethodName::GetFullNames(std::vector<ConstString> &names,
         names.emplace_back(strm.GetString());
       }
     } else {
-      const ConstString &class_name = GetClassName();
-      const ConstString &selector = GetSelector();
+      ConstString class_name = GetClassName();
+      ConstString selector = GetSelector();
       strm.Printf("+[%s %s]", class_name.GetCString(), selector.GetCString());
       names.emplace_back(strm.GetString());
       strm.Clear();
@@ -291,7 +281,6 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
   objc_category_sp->GetTypeSummariesContainer()->Add(ConstString("BOOL *"),
                                                      ObjC_BOOL_summary);
 
-#ifndef LLDB_DISABLE_PYTHON
   // we need to skip pointers here since we are special casing a SEL* when
   // retrieving its value
   objc_flags.SetSkipPointers(true);
@@ -323,7 +312,6 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
                   lldb_private::formatters::ObjCClassSyntheticFrontEndCreator,
                   "Class synthetic children", ConstString("Class"),
                   class_synth_flags);
-#endif // LLDB_DISABLE_PYTHON
 
   objc_flags.SetSkipPointers(false);
   objc_flags.SetCascades(true);
@@ -389,7 +377,6 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
 
   appkit_flags.SetDontShowChildren(false);
 
-#ifndef LLDB_DISABLE_PYTHON
   AddCXXSummary(
       objc_category_sp, lldb_private::formatters::NSArraySummaryProvider,
       "NSArray summary provider", ConstString("NSArray"), appkit_flags);
@@ -412,6 +399,9 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
   AddCXXSummary(
       objc_category_sp, lldb_private::formatters::NSArraySummaryProvider,
       "NSArray summary provider", ConstString("__NSCFArray"), appkit_flags);
+  AddCXXSummary(
+      objc_category_sp, lldb_private::formatters::NSArraySummaryProvider,
+      "NSArray summary provider", ConstString("_NSCallStackArray"), appkit_flags);
   AddCXXSummary(
       objc_category_sp, lldb_private::formatters::NSArraySummaryProvider,
       "NSArray summary provider", ConstString("CFArrayRef"), appkit_flags);
@@ -530,6 +520,10 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
   AddCXXSynthetic(objc_category_sp,
                   lldb_private::formatters::NSArraySyntheticFrontEndCreator,
                   "NSArray synthetic children", ConstString("__NSCFArray"),
+                  ScriptedSyntheticChildren::Flags());
+  AddCXXSynthetic(objc_category_sp,
+                  lldb_private::formatters::NSArraySyntheticFrontEndCreator,
+                  "NSArray synthetic children", ConstString("_NSCallStackArray"),
                   ScriptedSyntheticChildren::Flags());
   AddCXXSynthetic(objc_category_sp,
                   lldb_private::formatters::NSArraySyntheticFrontEndCreator,
@@ -764,6 +758,10 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
   AddCXXSummary(
       objc_category_sp, lldb_private::formatters::NSNumberSummaryProvider,
       "NSNumber summary provider", ConstString("NSCFNumber"), appkit_flags);
+  AddCXXSummary(objc_category_sp,
+                lldb_private::formatters::NSNumberSummaryProvider,
+                "NSDecimalNumber summary provider",
+                ConstString("NSDecimalNumber"), appkit_flags);
 
   AddCXXSummary(objc_category_sp,
                 lldb_private::formatters::NSURLSummaryProvider,
@@ -796,8 +794,8 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
       objc_category_sp, lldb_private::formatters::NSTimeZoneSummaryProvider,
       "NSTimeZone summary provider", ConstString("__NSTimeZone"), appkit_flags);
 
-  // CFAbsoluteTime is actually a double rather than a pointer to an object
-  // we do not care about the numeric value, since it is probably meaningless to
+  // CFAbsoluteTime is actually a double rather than a pointer to an object we
+  // do not care about the numeric value, since it is probably meaningless to
   // users
   appkit_flags.SetDontShowValue(true);
   AddCXXSummary(objc_category_sp,
@@ -835,7 +833,6 @@ static void LoadObjCFormatters(TypeCategoryImplSP objc_category_sp) {
                 lldb_private::formatters::CFBitVectorSummaryProvider,
                 "CFBitVector summary provider",
                 ConstString("__CFMutableBitVector"), appkit_flags);
-#endif // LLDB_DISABLE_PYTHON
 }
 
 static void LoadCoreMediaFormatters(TypeCategoryImplSP objc_category_sp) {
@@ -851,11 +848,9 @@ static void LoadCoreMediaFormatters(TypeCategoryImplSP objc_category_sp) {
       .SetSkipPointers(false)
       .SetSkipReferences(false);
 
-#ifndef LLDB_DISABLE_PYTHON
   AddCXXSummary(objc_category_sp,
                 lldb_private::formatters::CMTimeSummaryProvider,
                 "CMTime summary provider", ConstString("CMTime"), cm_flags);
-#endif // LLDB_DISABLE_PYTHON
 }
 
 lldb::TypeCategoryImplSP ObjCLanguage::GetFormatters() {
@@ -1098,4 +1093,13 @@ bool ObjCLanguage::IsNilReference(ValueObject &valobj) {
   bool canReadValue = true;
   bool isZero = valobj.GetValueAsUnsigned(0, &canReadValue) == 0;
   return canReadValue && isZero;
+}
+
+bool ObjCLanguage::IsSourceFile(llvm::StringRef file_path) const {
+  const auto suffixes = {".h", ".m", ".M"};
+  for (auto suffix : suffixes) {
+    if (file_path.endswith_lower(suffix))
+      return true;
+  }
+  return false;
 }

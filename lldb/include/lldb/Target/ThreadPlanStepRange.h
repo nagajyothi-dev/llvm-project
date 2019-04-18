@@ -1,19 +1,14 @@
 //===-- ThreadPlanStepRange.h -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_ThreadPlanStepRange_h_
 #define liblldb_ThreadPlanStepRange_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/AddressRange.h"
 #include "lldb/Target/StackID.h"
 #include "lldb/Target/Thread.h"
@@ -58,10 +53,9 @@ protected:
                                              size_t &insn_offset);
 
   // Pushes a plan to proceed through the next section of instructions in the
-  // range - usually just a RunToAddress
-  // plan to run to the next branch.  Returns true if it pushed such a plan.  If
-  // there was no available 'quick run'
-  // plan, then just single step.
+  // range - usually just a RunToAddress plan to run to the next branch.
+  // Returns true if it pushed such a plan.  If there was no available 'quick
+  // run' plan, then just single step.
   bool SetNextBranchBreakpoint();
 
   void ClearNextBranchBreakpoint();

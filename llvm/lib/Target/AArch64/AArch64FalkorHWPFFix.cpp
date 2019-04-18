@@ -1,16 +1,15 @@
 //===- AArch64FalkorHWPFFix.cpp - Avoid HW prefetcher pitfalls on Falkor --===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 /// \file For Falkor, we want to avoid HW prefetcher instruction tag collisions
 /// that may inhibit the HW prefetching.  This is done in two steps.  Before
 /// ISel, we mark strided loads (i.e. those that will likely benefit from
 /// prefetching) with metadata.  Then, after opcodes have been finalized, we
-/// insert MOVs and re-write loads to prevent unintnentional tag collisions.
+/// insert MOVs and re-write loads to prevent unintentional tag collisions.
 // ===---------------------------------------------------------------------===//
 
 #include "AArch64.h"
@@ -36,6 +35,7 @@
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -45,8 +45,8 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/DebugCounter.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetRegisterInfo.h"
 #include <cassert>
 #include <iterator>
 #include <utility>
@@ -59,7 +59,9 @@ STATISTIC(NumStridedLoadsMarked, "Number of strided loads marked");
 STATISTIC(NumCollisionsAvoided,
           "Number of HW prefetch tag collisions avoided");
 STATISTIC(NumCollisionsNotAvoided,
-          "Number of HW prefetch tag collisions not avoided due to lack of regsiters");
+          "Number of HW prefetch tag collisions not avoided due to lack of registers");
+DEBUG_COUNTER(FixCounter, "falkor-hwpf",
+              "Controls which tag collisions are avoided");
 
 namespace {
 
@@ -166,7 +168,7 @@ bool FalkorMarkStridedAccesses::runOnLoop(Loop &L) {
       LoadI->setMetadata(FALKOR_STRIDED_ACCESS_MD,
                          MDNode::get(LoadI->getContext(), {}));
       ++NumStridedLoadsMarked;
-      DEBUG(dbgs() << "Load: " << I << " marked as strided\n");
+      LLVM_DEBUG(dbgs() << "Load: " << I << " marked as strided\n");
       MadeChange = true;
     }
   }
@@ -187,6 +189,7 @@ public:
   bool runOnMachineFunction(MachineFunction &Fn) override;
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.setPreservesCFG();
     AU.addRequired<MachineLoopInfo>();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
@@ -240,27 +243,27 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
   default:
     return None;
 
-  case AArch64::LD1i8:
-  case AArch64::LD1i16:
-  case AArch64::LD1i32:
   case AArch64::LD1i64:
-  case AArch64::LD2i8:
-  case AArch64::LD2i16:
-  case AArch64::LD2i32:
   case AArch64::LD2i64:
-  case AArch64::LD3i8:
-  case AArch64::LD3i16:
-  case AArch64::LD3i32:
-  case AArch64::LD4i8:
-  case AArch64::LD4i16:
-  case AArch64::LD4i32:
     DestRegIdx = 0;
     BaseRegIdx = 3;
     OffsetIdx = -1;
     IsPrePost = false;
     break;
 
+  case AArch64::LD1i8:
+  case AArch64::LD1i16:
+  case AArch64::LD1i32:
+  case AArch64::LD2i8:
+  case AArch64::LD2i16:
+  case AArch64::LD2i32:
+  case AArch64::LD3i8:
+  case AArch64::LD3i16:
+  case AArch64::LD3i32:
   case AArch64::LD3i64:
+  case AArch64::LD4i8:
+  case AArch64::LD4i16:
+  case AArch64::LD4i32:
   case AArch64::LD4i64:
     DestRegIdx = -1;
     BaseRegIdx = 3;
@@ -284,23 +287,16 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
   case AArch64::LD1Rv4s:
   case AArch64::LD1Rv8h:
   case AArch64::LD1Rv16b:
-  case AArch64::LD1Twov1d:
-  case AArch64::LD1Twov2s:
-  case AArch64::LD1Twov4h:
-  case AArch64::LD1Twov8b:
-  case AArch64::LD2Twov2s:
-  case AArch64::LD2Twov4s:
-  case AArch64::LD2Twov8b:
-  case AArch64::LD2Rv1d:
-  case AArch64::LD2Rv2s:
-  case AArch64::LD2Rv4s:
-  case AArch64::LD2Rv8b:
     DestRegIdx = 0;
     BaseRegIdx = 1;
     OffsetIdx = -1;
     IsPrePost = false;
     break;
 
+  case AArch64::LD1Twov1d:
+  case AArch64::LD1Twov2s:
+  case AArch64::LD1Twov4h:
+  case AArch64::LD1Twov8b:
   case AArch64::LD1Twov2d:
   case AArch64::LD1Twov4s:
   case AArch64::LD1Twov8h:
@@ -321,10 +317,17 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
   case AArch64::LD1Fourv4s:
   case AArch64::LD1Fourv8h:
   case AArch64::LD1Fourv16b:
+  case AArch64::LD2Twov2s:
+  case AArch64::LD2Twov4s:
+  case AArch64::LD2Twov8b:
   case AArch64::LD2Twov2d:
   case AArch64::LD2Twov4h:
   case AArch64::LD2Twov8h:
   case AArch64::LD2Twov16b:
+  case AArch64::LD2Rv1d:
+  case AArch64::LD2Rv2s:
+  case AArch64::LD2Rv4s:
+  case AArch64::LD2Rv8b:
   case AArch64::LD2Rv2d:
   case AArch64::LD2Rv4h:
   case AArch64::LD2Rv8h:
@@ -365,32 +368,32 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
     IsPrePost = false;
     break;
 
-  case AArch64::LD1i8_POST:
-  case AArch64::LD1i16_POST:
-  case AArch64::LD1i32_POST:
   case AArch64::LD1i64_POST:
-  case AArch64::LD2i8_POST:
-  case AArch64::LD2i16_POST:
-  case AArch64::LD2i32_POST:
   case AArch64::LD2i64_POST:
-  case AArch64::LD3i8_POST:
-  case AArch64::LD3i16_POST:
-  case AArch64::LD3i32_POST:
-  case AArch64::LD4i8_POST:
-  case AArch64::LD4i16_POST:
-  case AArch64::LD4i32_POST:
     DestRegIdx = 1;
     BaseRegIdx = 4;
     OffsetIdx = 5;
-    IsPrePost = false;
+    IsPrePost = true;
     break;
 
+  case AArch64::LD1i8_POST:
+  case AArch64::LD1i16_POST:
+  case AArch64::LD1i32_POST:
+  case AArch64::LD2i8_POST:
+  case AArch64::LD2i16_POST:
+  case AArch64::LD2i32_POST:
+  case AArch64::LD3i8_POST:
+  case AArch64::LD3i16_POST:
+  case AArch64::LD3i32_POST:
   case AArch64::LD3i64_POST:
+  case AArch64::LD4i8_POST:
+  case AArch64::LD4i16_POST:
+  case AArch64::LD4i32_POST:
   case AArch64::LD4i64_POST:
     DestRegIdx = -1;
     BaseRegIdx = 4;
     OffsetIdx = 5;
-    IsPrePost = false;
+    IsPrePost = true;
     break;
 
   case AArch64::LD1Onev1d_POST:
@@ -409,23 +412,16 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
   case AArch64::LD1Rv4s_POST:
   case AArch64::LD1Rv8h_POST:
   case AArch64::LD1Rv16b_POST:
+    DestRegIdx = 1;
+    BaseRegIdx = 2;
+    OffsetIdx = 3;
+    IsPrePost = true;
+    break;
+
   case AArch64::LD1Twov1d_POST:
   case AArch64::LD1Twov2s_POST:
   case AArch64::LD1Twov4h_POST:
   case AArch64::LD1Twov8b_POST:
-  case AArch64::LD2Twov2s_POST:
-  case AArch64::LD2Twov4s_POST:
-  case AArch64::LD2Twov8b_POST:
-  case AArch64::LD2Rv1d_POST:
-  case AArch64::LD2Rv2s_POST:
-  case AArch64::LD2Rv4s_POST:
-  case AArch64::LD2Rv8b_POST:
-    DestRegIdx = 1;
-    BaseRegIdx = 2;
-    OffsetIdx = 3;
-    IsPrePost = false;
-    break;
-
   case AArch64::LD1Twov2d_POST:
   case AArch64::LD1Twov4s_POST:
   case AArch64::LD1Twov8h_POST:
@@ -446,10 +442,17 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
   case AArch64::LD1Fourv4s_POST:
   case AArch64::LD1Fourv8h_POST:
   case AArch64::LD1Fourv16b_POST:
+  case AArch64::LD2Twov2s_POST:
+  case AArch64::LD2Twov4s_POST:
+  case AArch64::LD2Twov8b_POST:
   case AArch64::LD2Twov2d_POST:
   case AArch64::LD2Twov4h_POST:
   case AArch64::LD2Twov8h_POST:
   case AArch64::LD2Twov16b_POST:
+  case AArch64::LD2Rv1d_POST:
+  case AArch64::LD2Rv2s_POST:
+  case AArch64::LD2Rv4s_POST:
+  case AArch64::LD2Rv8b_POST:
   case AArch64::LD2Rv2d_POST:
   case AArch64::LD2Rv4h_POST:
   case AArch64::LD2Rv8h_POST:
@@ -487,7 +490,7 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
     DestRegIdx = -1;
     BaseRegIdx = 2;
     OffsetIdx = 3;
-    IsPrePost = false;
+    IsPrePost = true;
     break;
 
   case AArch64::LDRBBroW:
@@ -592,8 +595,12 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
     IsPrePost = true;
     break;
 
-  case AArch64::LDPDi:
+  case AArch64::LDNPDi:
+  case AArch64::LDNPQi:
+  case AArch64::LDNPSi:
   case AArch64::LDPQi:
+  case AArch64::LDPDi:
+  case AArch64::LDPSi:
     DestRegIdx = -1;
     BaseRegIdx = 2;
     OffsetIdx = 3;
@@ -601,7 +608,6 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
     break;
 
   case AArch64::LDPSWi:
-  case AArch64::LDPSi:
   case AArch64::LDPWi:
   case AArch64::LDPXi:
     DestRegIdx = 0;
@@ -612,18 +618,18 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
 
   case AArch64::LDPQpost:
   case AArch64::LDPQpre:
+  case AArch64::LDPDpost:
+  case AArch64::LDPDpre:
+  case AArch64::LDPSpost:
+  case AArch64::LDPSpre:
     DestRegIdx = -1;
     BaseRegIdx = 3;
     OffsetIdx = 4;
     IsPrePost = true;
     break;
 
-  case AArch64::LDPDpost:
-  case AArch64::LDPDpre:
   case AArch64::LDPSWpost:
   case AArch64::LDPSWpre:
-  case AArch64::LDPSpost:
-  case AArch64::LDPSpre:
   case AArch64::LDPWpost:
   case AArch64::LDPWpre:
   case AArch64::LDPXpost:
@@ -635,9 +641,14 @@ static Optional<LoadInfo> getLoadInfo(const MachineInstr &MI) {
     break;
   }
 
+  // Loads from the stack pointer don't get prefetched.
+  unsigned BaseReg = MI.getOperand(BaseRegIdx).getReg();
+  if (BaseReg == AArch64::SP || BaseReg == AArch64::WSP)
+    return None;
+
   LoadInfo LI;
   LI.DestReg = DestRegIdx == -1 ? 0 : MI.getOperand(DestRegIdx).getReg();
-  LI.BaseReg = MI.getOperand(BaseRegIdx).getReg();
+  LI.BaseReg = BaseReg;
   LI.BaseRegIdx = BaseRegIdx;
   LI.OffsetOpnd = OffsetIdx == -1 ? nullptr : &MI.getOperand(OffsetIdx);
   LI.IsPrePost = IsPrePost;
@@ -707,14 +718,34 @@ void FalkorHWPFFix::runOnLoop(MachineLoop &L, MachineFunction &Fn) {
       if (!TII->isStridedAccess(MI))
         continue;
 
-      LoadInfo LdI = *getLoadInfo(MI);
-      unsigned OldTag = *getTag(TRI, MI, LdI);
-      auto &OldCollisions = TagMap[OldTag];
+      Optional<LoadInfo> OptLdI = getLoadInfo(MI);
+      if (!OptLdI)
+        continue;
+      LoadInfo LdI = *OptLdI;
+      Optional<unsigned> OptOldTag = getTag(TRI, MI, LdI);
+      if (!OptOldTag)
+        continue;
+      auto &OldCollisions = TagMap[*OptOldTag];
       if (OldCollisions.size() <= 1)
         continue;
 
       bool Fixed = false;
-      DEBUG(dbgs() << "Attempting to fix tag collision: " << MI);
+      LLVM_DEBUG(dbgs() << "Attempting to fix tag collision: " << MI);
+
+      if (!DebugCounter::shouldExecute(FixCounter)) {
+        LLVM_DEBUG(dbgs() << "Skipping fix due to debug counter:\n  " << MI);
+        continue;
+      }
+
+      // Add the non-base registers of MI as live so we don't use them as
+      // scratch registers.
+      for (unsigned OpI = 0, OpE = MI.getNumOperands(); OpI < OpE; ++OpI) {
+        if (OpI == static_cast<unsigned>(LdI.BaseRegIdx))
+          continue;
+        MachineOperand &MO = MI.getOperand(OpI);
+        if (MO.isReg() && MO.readsReg())
+          LR.addReg(MO.getReg());
+      }
 
       for (unsigned ScratchReg : AArch64::GPR64RegClass) {
         if (!LR.available(ScratchReg) || MRI.isReserved(ScratchReg))
@@ -727,8 +758,8 @@ void FalkorHWPFFix::runOnLoop(MachineLoop &L, MachineFunction &Fn) {
         if (TagMap.count(NewTag))
           continue;
 
-        DEBUG(dbgs() << "Changing base reg to: " << PrintReg(ScratchReg, TRI)
-                     << '\n');
+        LLVM_DEBUG(dbgs() << "Changing base reg to: "
+                          << printReg(ScratchReg, TRI) << '\n');
 
         // Rewrite:
         //   Xd = LOAD Xb, off
@@ -746,8 +777,8 @@ void FalkorHWPFFix::runOnLoop(MachineLoop &L, MachineFunction &Fn) {
         // If the load does a pre/post increment, then insert a MOV after as
         // well to update the real base register.
         if (LdI.IsPrePost) {
-          DEBUG(dbgs() << "Doing post MOV of incremented reg: "
-                       << PrintReg(ScratchReg, TRI) << '\n');
+          LLVM_DEBUG(dbgs() << "Doing post MOV of incremented reg: "
+                            << printReg(ScratchReg, TRI) << '\n');
           MI.getOperand(0).setReg(
               ScratchReg); // Change tied operand pre/post update dest.
           BuildMI(*MBB, std::next(MachineBasicBlock::iterator(MI)), DL,
@@ -785,7 +816,7 @@ bool FalkorHWPFFix::runOnMachineFunction(MachineFunction &Fn) {
   if (ST.getProcFamily() != AArch64Subtarget::Falkor)
     return false;
 
-  if (skipFunction(*Fn.getFunction()))
+  if (skipFunction(Fn.getFunction()))
     return false;
 
   TII = static_cast<const AArch64InstrInfo *>(ST.getInstrInfo());

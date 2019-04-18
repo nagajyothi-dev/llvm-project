@@ -1,9 +1,8 @@
 //===-- main.cpp ------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -90,7 +89,7 @@ public:
         B(ai, bi),
         m_c_int(ci)
     {
-        printf("Within C::ctor() m_c_int=%d\n", m_c_int); // Set break point at this line.
+      std::printf("Within C::ctor() m_c_int=%d\n", m_c_int); // Set break point at this line.
     }
 
     //virtual

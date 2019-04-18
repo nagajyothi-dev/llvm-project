@@ -1,9 +1,8 @@
 //===- unittests/Analysis/CloneDetectionTest.cpp - Clone detection tests --===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -69,8 +68,9 @@ TEST(CloneDetector, FilterFunctionsByName) {
   // all statements from functions which names start with "bar".
   std::vector<CloneDetector::CloneGroup> CloneGroups;
   Detector.findClones(CloneGroups, NoBarFunctionConstraint(),
-                      RecursiveCloneTypeIIConstraint(),
+                      RecursiveCloneTypeIIHashConstraint(),
                       MinComplexityConstraint(2), MinGroupSizeConstraint(2),
+                      RecursiveCloneTypeIIVerifyConstraint(),
                       OnlyLargestCloneConstraint());
 
   ASSERT_EQ(CloneGroups.size(), 1u);
@@ -86,8 +86,9 @@ TEST(CloneDetector, FilterFunctionsByName) {
   // Retry above's example without the filter...
   CloneGroups.clear();
 
-  Detector.findClones(CloneGroups, RecursiveCloneTypeIIConstraint(),
+  Detector.findClones(CloneGroups, RecursiveCloneTypeIIHashConstraint(),
                       MinComplexityConstraint(2), MinGroupSizeConstraint(2),
+                      RecursiveCloneTypeIIVerifyConstraint(),
                       OnlyLargestCloneConstraint());
   ASSERT_EQ(CloneGroups.size(), 1u);
   ASSERT_EQ(CloneGroups.front().size(), 4u);

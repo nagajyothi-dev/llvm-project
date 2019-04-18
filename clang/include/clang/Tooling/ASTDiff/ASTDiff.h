@@ -1,10 +1,9 @@
 //===- ASTDiff.h - AST differencing API -----------------------*- C++ -*- -===//
 //
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -45,6 +44,8 @@ struct Node {
   ast_type_traits::ASTNodeKind getType() const;
   StringRef getTypeLabel() const;
   bool isLeaf() const { return Children.empty(); }
+  llvm::Optional<StringRef> getIdentifier() const;
+  llvm::Optional<std::string> getQualifiedIdentifier() const;
 };
 
 class ASTDiff {
@@ -66,10 +67,10 @@ private:
 class SyntaxTree {
 public:
   /// Constructs a tree from a translation unit.
-  SyntaxTree(const ASTContext &AST);
+  SyntaxTree(ASTContext &AST);
   /// Constructs a tree from any AST node.
   template <class T>
-  SyntaxTree(T *Node, const ASTContext &AST)
+  SyntaxTree(T *Node, ASTContext &AST)
       : TreeImpl(llvm::make_unique<Impl>(this, Node, AST)) {}
   SyntaxTree(SyntaxTree &&Other) = default;
   ~SyntaxTree();
@@ -105,11 +106,13 @@ struct ComparisonOptions {
 
   /// During bottom-up matching, match only nodes with at least this value as
   /// the ratio of their common descendants.
-  double MinSimilarity = 0.2;
+  double MinSimilarity = 0.5;
 
   /// Whenever two subtrees are matched in the bottom-up phase, the optimal
   /// mapping is computed, unless the size of either subtrees exceeds this.
   int MaxSize = 100;
+
+  bool StopAfterTopDown = false;
 
   /// Returns false if the nodes should never be matched.
   bool isMatchingAllowed(const Node &N1, const Node &N2) const {

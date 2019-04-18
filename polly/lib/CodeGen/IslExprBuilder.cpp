@@ -1,9 +1,8 @@
 //===------ IslExprBuilder.cpp ----- Code generate isl AST expressions ----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,8 +13,6 @@
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "polly/Support/GICHelper.h"
-#include "polly/Support/ScopHelper.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 using namespace llvm;
@@ -71,6 +68,32 @@ Value *IslExprBuilder::getOverflowState() const {
   if (OTMode == OT_NEVER)
     return Builder.getFalse();
   return OverflowState;
+}
+
+bool IslExprBuilder::hasLargeInts(isl::ast_expr Expr) {
+  enum isl_ast_expr_type Type = isl_ast_expr_get_type(Expr.get());
+
+  if (Type == isl_ast_expr_id)
+    return false;
+
+  if (Type == isl_ast_expr_int) {
+    isl::val Val = Expr.get_val();
+    APInt APValue = APIntFromVal(Val);
+    auto BitWidth = APValue.getBitWidth();
+    return BitWidth >= 64;
+  }
+
+  assert(Type == isl_ast_expr_op && "Expected isl_ast_expr of type operation");
+
+  int NumArgs = isl_ast_expr_get_op_n_arg(Expr.get());
+
+  for (int i = 0; i < NumArgs; i++) {
+    isl::ast_expr Operand = Expr.get_op_arg(i);
+    if (hasLargeInts(Operand))
+      return true;
+  }
+
+  return false;
 }
 
 Value *IslExprBuilder::createBinOp(BinaryOperator::BinaryOps Opc, Value *LHS,

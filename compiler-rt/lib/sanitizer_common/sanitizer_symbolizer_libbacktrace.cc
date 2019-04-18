@@ -1,9 +1,8 @@
 //===-- sanitizer_symbolizer_libbacktrace.cc ------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -95,7 +94,8 @@ struct SymbolizeCodeCallbackArg {
     if (frames_symbolized > 0) {
       SymbolizedStack *cur = SymbolizedStack::New(addr);
       AddressInfo *info = &cur->info;
-      info->FillModuleInfo(first->info.module, first->info.module_offset);
+      info->FillModuleInfo(first->info.module, first->info.module_offset,
+                           first->info.module_arch);
       last->next = cur;
       last = cur;
     }

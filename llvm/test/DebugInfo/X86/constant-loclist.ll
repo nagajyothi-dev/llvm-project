@@ -1,24 +1,22 @@
-; RUN: %llc_dwarf -filetype=obj %s -o - | llvm-dwarfdump - | FileCheck %s
+; RUN: %llc_dwarf -filetype=obj %s -o - | llvm-dwarfdump -v -debug-info - | FileCheck %s
 
 ; A hand-written testcase to check 64-bit constant handling in location lists.
 
 ; CHECK: .debug_info contents:
 ; CHECK: DW_TAG_variable
-; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(0x[[D:.*]])
+; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(
+; CHECK-NEXT:   [0x{{.*}}, 0x{{.*}}): DW_OP_constu 0x4000000000000000)
 ; CHECK-NEXT: DW_AT_name {{.*}}"d"
 ; CHECK: DW_TAG_variable
-; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(0x[[I:.*]])
+; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(
+; CHECK-NEXT:   [0x{{.*}}, 0x{{.*}}): DW_OP_consts +0
+; CHECK-NEXT:   [0x{{.*}}, 0x{{.*}}): DW_OP_consts +4611686018427387904)
 ; CHECK-NEXT: DW_AT_name {{.*}}"i"
 ; CHECK: DW_TAG_variable
-; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(0x[[U:.*]])
+; CHECK-NEXT: DW_AT_location [DW_FORM_data4]	(
+; CHECK-NEXT:   [0x{{.*}}, 0x{{.*}}): DW_OP_lit0
+; CHECK-NEXT:   [0x{{.*}}, 0x{{.*}}): DW_OP_constu 0x4000000000000000)
 ; CHECK-NEXT: DW_AT_name {{.*}}"u"
-; CHECK: .debug_loc contents:
-; CHECK: [[D]]:
-; CHECK: Location description: 10 80 80 80 80 80 80 80 80 40
-; CHECK: [[I]]:
-; CHECK: Location description: 11 80 80 80 80 80 80 80 80 c0 00
-; CHECK: [[U]]:
-; CHECK: Location description: 10 80 80 80 80 80 80 80 80 40 
 
 source_filename = "test.c"
 target datalayout = "e-m:o-i64:64-f80:128-n8:16:32:64-S128"
@@ -59,7 +57,7 @@ attributes #1 = { nounwind readnone }
 !4 = !{i32 2, !"Debug Info Version", i32 00000003}
 !5 = !{i32 1, !"PIC Level", i32 2}
 !6 = !{!"clang"}
-!7 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 1, type: !8, isLocal: false, isDefinition: true, scopeLine: 1, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!7 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 1, type: !8, isLocal: false, isDefinition: true, scopeLine: 1, flags: DIFlagPrototyped, isOptimized: false, unit: !0, retainedNodes: !2)
 !8 = !DISubroutineType(types: !{})
 !15 = !DIExpression()
 !16 = !DILocation(line: 1, column: 14, scope: !7)

@@ -1,9 +1,8 @@
 //===- ScriptParser.cpp ---------------------------------------------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,13 +16,14 @@
 #include "Driver.h"
 #include "InputSection.h"
 #include "LinkerScript.h"
-#include "Memory.h"
 #include "OutputSections.h"
 #include "ScriptLexer.h"
 #include "Symbols.h"
 #include "Target.h"
+#include "lld/Common/Memory.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/Casting.h"
@@ -52,32 +52,38 @@ public:
   void readLinkerScript();
   void readVersionScript();
   void readDynamicList();
+  void readDefsym(StringRef Name);
 
 private:
   void addFile(StringRef Path);
-  OutputSection *checkSection(OutputSection *Cmd, StringRef Loccation);
 
   void readAsNeeded();
   void readEntry();
   void readExtern();
   void readGroup();
   void readInclude();
+  void readInput();
   void readMemory();
   void readOutput();
   void readOutputArch();
   void readOutputFormat();
   void readPhdrs();
+  void readRegionAlias();
   void readSearchDir();
   void readSections();
+  void readTarget();
   void readVersion();
   void readVersionScriptCommand();
 
-  SymbolAssignment *readAssignment(StringRef Name);
-  BytesDataCommand *readBytesDataCommand(StringRef Tok);
-  uint32_t readFill();
-  uint32_t parseFill(StringRef Tok);
+  SymbolAssignment *readSymbolAssignment(StringRef Name);
+  ByteCommand *readByteCommand(StringRef Tok);
+  std::array<uint8_t, 4> readFill();
+  std::array<uint8_t, 4> parseFill(StringRef Tok);
+  bool readSectionDirective(OutputSection *Cmd, StringRef Tok1, StringRef Tok2);
   void readSectionAddressType(OutputSection *Cmd);
+  OutputSection *readOverlaySectionDescription();
   OutputSection *readOutputSectionDescription(StringRef OutSec);
+  std::vector<BaseCommand *> readOverlay();
   std::vector<StringRef> readOutputSectionPhdrs();
   InputSectionDescription *readInputSectionDescription(StringRef Tok);
   StringMatcher readFilePatterns();
@@ -86,16 +92,16 @@ private:
   unsigned readPhdrType();
   SortSectionPolicy readSortKind();
   SymbolAssignment *readProvideHidden(bool Provide, bool Hidden);
-  SymbolAssignment *readProvideOrAssignment(StringRef Tok);
+  SymbolAssignment *readAssignment(StringRef Tok);
   void readSort();
-  AssertCommand *readAssert();
-  Expr readAssertExpr();
+  Expr readAssert();
   Expr readConstant();
   Expr getPageSize();
 
   uint64_t readMemoryAssignment(StringRef, StringRef, StringRef);
   std::pair<uint32_t, uint32_t> readMemoryAttributes();
 
+  Expr combine(StringRef Op, Expr L, Expr R);
   Expr readExpr();
   Expr readExpr1(Expr Lhs, int MinPrec);
   StringRef readParenLiteral();
@@ -111,7 +117,11 @@ private:
   std::pair<std::vector<SymbolVersion>, std::vector<SymbolVersion>>
   readSymbols();
 
+  // True if a script being read is in a subdirectory specified by -sysroot.
   bool IsUnderSysroot;
+
+  // A set to detect an INCLUDE() cycle.
+  StringSet<> Seen;
 };
 } // namespace
 
@@ -133,7 +143,7 @@ static bool isUnderSysroot(StringRef Path) {
 // Some operations only support one non absolute value. Move the
 // absolute one to the right hand side for convenience.
 static void moveAbsRight(ExprValue &A, ExprValue &B) {
-  if (A.isAbsolute())
+  if (A.Sec == nullptr || (A.ForceAbsolute && !B.isAbsolute()))
     std::swap(A, B);
   if (!B.isAbsolute())
     error(A.Loc + ": at least one side of the expression must be absolute");
@@ -141,24 +151,14 @@ static void moveAbsRight(ExprValue &A, ExprValue &B) {
 
 static ExprValue add(ExprValue A, ExprValue B) {
   moveAbsRight(A, B);
-  uint64_t Val = alignTo(A.Val, A.Alignment) + B.getValue();
-  return {A.Sec, A.ForceAbsolute, Val, A.Loc};
+  return {A.Sec, A.ForceAbsolute, A.getSectionOffset() + B.getValue(), A.Loc};
 }
 
 static ExprValue sub(ExprValue A, ExprValue B) {
-  uint64_t Val = alignTo(A.Val, A.Alignment) - B.getValue();
-  return {A.Sec, Val, A.Loc};
-}
-
-static ExprValue mul(ExprValue A, ExprValue B) {
-  return A.getValue() * B.getValue();
-}
-
-static ExprValue div(ExprValue A, ExprValue B) {
-  if (uint64_t BV = B.getValue())
-    return A.getValue() / BV;
-  error("division by zero");
-  return 0;
+  // The distance between two symbols in sections is absolute.
+  if (!A.isAbsolute() && !B.isAbsolute())
+    return A.getValue() - B.getValue();
+  return {A.Sec, false, A.getSectionOffset() - B.getValue(), A.Loc};
 }
 
 static ExprValue bitAnd(ExprValue A, ExprValue B) {
@@ -174,10 +174,24 @@ static ExprValue bitOr(ExprValue A, ExprValue B) {
 }
 
 void ScriptParser::readDynamicList() {
+  Config->HasDynamicList = true;
   expect("{");
-  readAnonymousDeclaration();
-  if (!atEOF())
+  std::vector<SymbolVersion> Locals;
+  std::vector<SymbolVersion> Globals;
+  std::tie(Locals, Globals) = readSymbols();
+  expect(";");
+
+  if (!atEOF()) {
     setError("EOF expected, but got " + next());
+    return;
+  }
+  if (!Locals.empty()) {
+    setError("\"local:\" scope not supported in --dynamic-list");
+    return;
+  }
+
+  for (SymbolVersion V : Globals)
+    Config->DynamicList.push_back(V);
 }
 
 void ScriptParser::readVersionScript() {
@@ -192,7 +206,7 @@ void ScriptParser::readVersionScriptCommand() {
     return;
   }
 
-  while (!atEOF() && !ErrorCount && peek() != "}") {
+  while (!atEOF() && !errorCount() && peek() != "}") {
     StringRef VerStr = next();
     if (VerStr == "{") {
       setError("anonymous version definition is used in "
@@ -216,16 +230,16 @@ void ScriptParser::readLinkerScript() {
     if (Tok == ";")
       continue;
 
-    if (Tok == "ASSERT") {
-      Script->Opt.Commands.push_back(readAssert());
-    } else if (Tok == "ENTRY") {
+    if (Tok == "ENTRY") {
       readEntry();
     } else if (Tok == "EXTERN") {
       readExtern();
-    } else if (Tok == "GROUP" || Tok == "INPUT") {
+    } else if (Tok == "GROUP") {
       readGroup();
     } else if (Tok == "INCLUDE") {
       readInclude();
+    } else if (Tok == "INPUT") {
+      readInput();
     } else if (Tok == "MEMORY") {
       readMemory();
     } else if (Tok == "OUTPUT") {
@@ -236,18 +250,32 @@ void ScriptParser::readLinkerScript() {
       readOutputFormat();
     } else if (Tok == "PHDRS") {
       readPhdrs();
+    } else if (Tok == "REGION_ALIAS") {
+      readRegionAlias();
     } else if (Tok == "SEARCH_DIR") {
       readSearchDir();
     } else if (Tok == "SECTIONS") {
       readSections();
+    } else if (Tok == "TARGET") {
+      readTarget();
     } else if (Tok == "VERSION") {
       readVersion();
-    } else if (SymbolAssignment *Cmd = readProvideOrAssignment(Tok)) {
-      Script->Opt.Commands.push_back(Cmd);
+    } else if (SymbolAssignment *Cmd = readAssignment(Tok)) {
+      Script->SectionCommands.push_back(Cmd);
     } else {
       setError("unknown directive: " + Tok);
     }
   }
+}
+
+void ScriptParser::readDefsym(StringRef Name) {
+  if (errorCount())
+    return;
+  Expr E = readExpr();
+  if (!atEOF())
+    setError("EOF expected, but got " + next());
+  SymbolAssignment *Cmd = make<SymbolAssignment>(Name, E, getCurrentLocation());
+  Script->SectionCommands.push_back(Cmd);
 }
 
 void ScriptParser::addFile(StringRef S) {
@@ -284,7 +312,7 @@ void ScriptParser::readAsNeeded() {
   expect("(");
   bool Orig = Config->AsNeeded;
   Config->AsNeeded = true;
-  while (!ErrorCount && !consume(")"))
+  while (!errorCount() && !consume(")"))
     addFile(unquote(next()));
   Config->AsNeeded = Orig;
 }
@@ -300,37 +328,43 @@ void ScriptParser::readEntry() {
 
 void ScriptParser::readExtern() {
   expect("(");
-  while (!ErrorCount && !consume(")"))
-    Config->Undefined.push_back(next());
+  while (!errorCount() && !consume(")"))
+    Config->Undefined.push_back(unquote(next()));
 }
 
 void ScriptParser::readGroup() {
-  expect("(");
-  while (!ErrorCount && !consume(")")) {
-    if (consume("AS_NEEDED"))
-      readAsNeeded();
-    else
-      addFile(unquote(next()));
-  }
+  bool Orig = InputFile::IsInGroup;
+  InputFile::IsInGroup = true;
+  readInput();
+  InputFile::IsInGroup = Orig;
+  if (!Orig)
+    ++InputFile::NextGroupId;
 }
 
 void ScriptParser::readInclude() {
   StringRef Tok = unquote(next());
 
-  // https://sourceware.org/binutils/docs/ld/File-Commands.html:
-  // The file will be searched for in the current directory, and in any
-  // directory specified with the -L option.
-  if (sys::fs::exists(Tok)) {
-    if (Optional<MemoryBufferRef> MB = readFile(Tok))
-      tokenize(*MB);
+  if (!Seen.insert(Tok).second) {
+    setError("there is a cycle in linker script INCLUDEs");
     return;
   }
-  if (Optional<std::string> Path = findFromSearchPaths(Tok)) {
+
+  if (Optional<std::string> Path = searchScript(Tok)) {
     if (Optional<MemoryBufferRef> MB = readFile(*Path))
       tokenize(*MB);
     return;
   }
-  setError("cannot open " + Tok);
+  setError("cannot find linker script " + Tok);
+}
+
+void ScriptParser::readInput() {
+  expect("(");
+  while (!errorCount() && !consume(")")) {
+    if (consume("AS_NEEDED"))
+      readAsNeeded();
+    else
+      addFile(unquote(next()));
+  }
 }
 
 void ScriptParser::readOutput() {
@@ -345,14 +379,47 @@ void ScriptParser::readOutput() {
 void ScriptParser::readOutputArch() {
   // OUTPUT_ARCH is ignored for now.
   expect("(");
-  while (!ErrorCount && !consume(")"))
+  while (!errorCount() && !consume(")"))
     skip();
 }
 
+static std::pair<ELFKind, uint16_t> parseBfdName(StringRef S) {
+  return StringSwitch<std::pair<ELFKind, uint16_t>>(S)
+      .Case("elf32-i386", {ELF32LEKind, EM_386})
+      .Case("elf32-iamcu", {ELF32LEKind, EM_IAMCU})
+      .Case("elf32-littlearm", {ELF32LEKind, EM_ARM})
+      .Case("elf32-x86-64", {ELF32LEKind, EM_X86_64})
+      .Case("elf64-aarch64", {ELF64LEKind, EM_AARCH64})
+      .Case("elf64-littleaarch64", {ELF64LEKind, EM_AARCH64})
+      .Case("elf32-powerpc", {ELF32BEKind, EM_PPC})
+      .Case("elf64-powerpc", {ELF64BEKind, EM_PPC64})
+      .Case("elf64-powerpcle", {ELF64LEKind, EM_PPC64})
+      .Case("elf64-x86-64", {ELF64LEKind, EM_X86_64})
+      .Cases("elf32-tradbigmips", "elf32-bigmips", {ELF32BEKind, EM_MIPS})
+      .Case("elf32-ntradbigmips", {ELF32BEKind, EM_MIPS})
+      .Case("elf32-tradlittlemips", {ELF32LEKind, EM_MIPS})
+      .Case("elf32-ntradlittlemips", {ELF32LEKind, EM_MIPS})
+      .Case("elf64-tradbigmips", {ELF64BEKind, EM_MIPS})
+      .Case("elf64-tradlittlemips", {ELF64LEKind, EM_MIPS})
+      .Default({ELFNoneKind, EM_NONE});
+}
+
+// Parse OUTPUT_FORMAT(bfdname) or OUTPUT_FORMAT(bfdname, big, little).
+// Currently we ignore big and little parameters.
 void ScriptParser::readOutputFormat() {
-  // Error checking only for now.
   expect("(");
-  skip();
+
+  StringRef Name = unquote(next());
+  StringRef S = Name;
+  if (S.consume_back("-freebsd"))
+    Config->OSABI = ELFOSABI_FREEBSD;
+
+  std::tie(Config->EKind, Config->EMachine) = parseBfdName(S);
+  if (Config->EMachine == EM_NONE)
+    setError("unknown output format name: " + Name);
+  if (S == "elf32-ntradlittlemips" || S == "elf32-ntradbigmips")
+    Config->MipsN32Abi = true;
+
   if (consume(")"))
     return;
   expect(",");
@@ -364,26 +431,41 @@ void ScriptParser::readOutputFormat() {
 
 void ScriptParser::readPhdrs() {
   expect("{");
-  while (!ErrorCount && !consume("}")) {
-    Script->Opt.PhdrsCommands.push_back(
-        {next(), PT_NULL, false, false, UINT_MAX, nullptr});
 
-    PhdrsCommand &PhdrCmd = Script->Opt.PhdrsCommands.back();
-    PhdrCmd.Type = readPhdrType();
+  while (!errorCount() && !consume("}")) {
+    PhdrsCommand Cmd;
+    Cmd.Name = next();
+    Cmd.Type = readPhdrType();
 
-    while (!ErrorCount && !consume(";")) {
+    while (!errorCount() && !consume(";")) {
       if (consume("FILEHDR"))
-        PhdrCmd.HasFilehdr = true;
+        Cmd.HasFilehdr = true;
       else if (consume("PHDRS"))
-        PhdrCmd.HasPhdrs = true;
+        Cmd.HasPhdrs = true;
       else if (consume("AT"))
-        PhdrCmd.LMAExpr = readParenExpr();
+        Cmd.LMAExpr = readParenExpr();
       else if (consume("FLAGS"))
-        PhdrCmd.Flags = readParenExpr()().getValue();
+        Cmd.Flags = readParenExpr()().getValue();
       else
         setError("unexpected header attribute: " + next());
     }
+
+    Script->PhdrsCommands.push_back(Cmd);
   }
+}
+
+void ScriptParser::readRegionAlias() {
+  expect("(");
+  StringRef Alias = unquote(next());
+  expect(",");
+  StringRef Name = next();
+  expect(")");
+
+  if (Script->MemoryRegions.count(Alias))
+    setError("redefinition of memory region '" + Alias + "'");
+  if (!Script->MemoryRegions.count(Name))
+    setError("memory region '" + Name + "' is not defined");
+  Script->MemoryRegions.insert({Alias, Script->MemoryRegions[Name]});
 }
 
 void ScriptParser::readSearchDir() {
@@ -394,8 +476,51 @@ void ScriptParser::readSearchDir() {
   expect(")");
 }
 
+// This reads an overlay description. Overlays are used to describe output
+// sections that use the same virtual memory range and normally would trigger
+// linker's sections sanity check failures.
+// https://sourceware.org/binutils/docs/ld/Overlay-Description.html#Overlay-Description
+std::vector<BaseCommand *> ScriptParser::readOverlay() {
+  // VA and LMA expressions are optional, though for simplicity of
+  // implementation we assume they are not. That is what OVERLAY was designed
+  // for first of all: to allow sections with overlapping VAs at different LMAs.
+  Expr AddrExpr = readExpr();
+  expect(":");
+  expect("AT");
+  Expr LMAExpr = readParenExpr();
+  expect("{");
+
+  std::vector<BaseCommand *> V;
+  OutputSection *Prev = nullptr;
+  while (!errorCount() && !consume("}")) {
+    // VA is the same for all sections. The LMAs are consecutive in memory
+    // starting from the base load address specified.
+    OutputSection *OS = readOverlaySectionDescription();
+    OS->AddrExpr = AddrExpr;
+    if (Prev)
+      OS->LMAExpr = [=] { return Prev->getLMA() + Prev->Size; };
+    else
+      OS->LMAExpr = LMAExpr;
+    V.push_back(OS);
+    Prev = OS;
+  }
+
+  // According to the specification, at the end of the overlay, the location
+  // counter should be equal to the overlay base address plus size of the
+  // largest section seen in the overlay.
+  // Here we want to create the Dot assignment command to achieve that.
+  Expr MoveDot = [=] {
+    uint64_t Max = 0;
+    for (BaseCommand *Cmd : V)
+      Max = std::max(Max, cast<OutputSection>(Cmd)->Size);
+    return AddrExpr().getValue() + Max;
+  };
+  V.push_back(make<SymbolAssignment>(".", MoveDot, getCurrentLocation()));
+  return V;
+}
+
 void ScriptParser::readSections() {
-  Script->Opt.HasSections = true;
+  Script->HasSectionsCommand = true;
 
   // -no-rosegment is used to avoid placing read only non-executable sections in
   // their own segment. We do the same if SECTIONS command is present in linker
@@ -403,32 +528,74 @@ void ScriptParser::readSections() {
   Config->SingleRoRx = true;
 
   expect("{");
-  while (!ErrorCount && !consume("}")) {
+  std::vector<BaseCommand *> V;
+  while (!errorCount() && !consume("}")) {
     StringRef Tok = next();
-    BaseCommand *Cmd = readProvideOrAssignment(Tok);
-    if (!Cmd) {
-      if (Tok == "ASSERT")
-        Cmd = readAssert();
-      else
-        Cmd = readOutputSectionDescription(Tok);
+    if (Tok == "OVERLAY") {
+      for (BaseCommand *Cmd : readOverlay())
+        V.push_back(Cmd);
+      continue;
+    } else if (Tok == "INCLUDE") {
+      readInclude();
+      continue;
     }
-    Script->Opt.Commands.push_back(Cmd);
+
+    if (BaseCommand *Cmd = readAssignment(Tok))
+      V.push_back(Cmd);
+    else
+      V.push_back(readOutputSectionDescription(Tok));
   }
+
+  if (!atEOF() && consume("INSERT")) {
+    std::vector<BaseCommand *> *Dest = nullptr;
+    if (consume("AFTER"))
+      Dest = &Script->InsertAfterCommands[next()];
+    else if (consume("BEFORE"))
+      Dest = &Script->InsertBeforeCommands[next()];
+    else
+      setError("expected AFTER/BEFORE, but got '" + next() + "'");
+    if (Dest)
+      Dest->insert(Dest->end(), V.begin(), V.end());
+    return;
+  }
+
+  Script->SectionCommands.insert(Script->SectionCommands.end(), V.begin(),
+                                 V.end());
+}
+
+void ScriptParser::readTarget() {
+  // TARGET(foo) is an alias for "--format foo". Unlike GNU linkers,
+  // we accept only a limited set of BFD names (i.e. "elf" or "binary")
+  // for --format. We recognize only /^elf/ and "binary" in the linker
+  // script as well.
+  expect("(");
+  StringRef Tok = next();
+  expect(")");
+
+  if (Tok.startswith("elf"))
+    Config->FormatBinary = false;
+  else if (Tok == "binary")
+    Config->FormatBinary = true;
+  else
+    setError("unknown target: " + Tok);
 }
 
 static int precedence(StringRef Op) {
   return StringSwitch<int>(Op)
-      .Cases("*", "/", 5)
-      .Cases("+", "-", 4)
-      .Cases("<<", ">>", 3)
-      .Cases("<", "<=", ">", ">=", "==", "!=", 2)
-      .Cases("&", "|", 1)
+      .Cases("*", "/", "%", 8)
+      .Cases("+", "-", 7)
+      .Cases("<<", ">>", 6)
+      .Cases("<", "<=", ">", ">=", "==", "!=", 5)
+      .Case("&", 4)
+      .Case("|", 3)
+      .Case("&&", 2)
+      .Case("||", 1)
       .Default(-1);
 }
 
 StringMatcher ScriptParser::readFilePatterns() {
   std::vector<StringRef> V;
-  while (!ErrorCount && !consume(")"))
+  while (!errorCount() && !consume(")"))
     V.push_back(next());
   return StringMatcher(V);
 }
@@ -460,7 +627,7 @@ SortSectionPolicy ScriptParser::readSortKind() {
 // any file but a.o, and section .baz in any file but b.o.
 std::vector<SectionPattern> ScriptParser::readInputSectionsList() {
   std::vector<SectionPattern> Ret;
-  while (!ErrorCount && peek() != ")") {
+  while (!errorCount() && peek() != ")") {
     StringMatcher ExcludeFilePat;
     if (consume("EXCLUDE_FILE")) {
       expect("(");
@@ -468,7 +635,7 @@ std::vector<SectionPattern> ScriptParser::readInputSectionsList() {
     }
 
     std::vector<StringRef> V;
-    while (!ErrorCount && peek() != ")" && peek() != "EXCLUDE_FILE")
+    while (!errorCount() && peek() != ")" && peek() != "EXCLUDE_FILE")
       V.push_back(next());
 
     if (!V.empty())
@@ -495,7 +662,7 @@ ScriptParser::readInputSectionRules(StringRef FilePattern) {
   auto *Cmd = make<InputSectionDescription>(FilePattern);
   expect("(");
 
-  while (!ErrorCount && !consume(")")) {
+  while (!errorCount() && !consume(")")) {
     SortSectionPolicy Outer = readSortKind();
     SortSectionPolicy Inner = SortSectionPolicy::Default;
     std::vector<SectionPattern> V;
@@ -533,7 +700,7 @@ ScriptParser::readInputSectionDescription(StringRef Tok) {
     StringRef FilePattern = next();
     InputSectionDescription *Cmd = readInputSectionRules(FilePattern);
     expect(")");
-    Script->Opt.KeptSections.push_back(Cmd);
+    Script->KeptSections.push_back(Cmd);
     return Cmd;
   }
   return readInputSectionRules(Tok);
@@ -545,11 +712,7 @@ void ScriptParser::readSort() {
   expect(")");
 }
 
-AssertCommand *ScriptParser::readAssert() {
-  return make<AssertCommand>(readAssertExpr());
-}
-
-Expr ScriptParser::readAssertExpr() {
+Expr ScriptParser::readAssert() {
   expect("(");
   Expr E = readExpr();
   expect(",");
@@ -567,56 +730,92 @@ Expr ScriptParser::readAssertExpr() {
 // alias for =fillexp section attribute, which is different from
 // what GNU linkers do.
 // https://sourceware.org/binutils/docs/ld/Output-Section-Data.html
-uint32_t ScriptParser::readFill() {
+std::array<uint8_t, 4> ScriptParser::readFill() {
   expect("(");
-  uint32_t V = parseFill(next());
+  std::array<uint8_t, 4> V = parseFill(next());
   expect(")");
   return V;
 }
 
-// Reads an expression and/or the special directive "(NOLOAD)" for an
-// output section definition.
+// Tries to read the special directive for an output section definition which
+// can be one of following: "(NOLOAD)", "(COPY)", "(INFO)" or "(OVERLAY)".
+// Tok1 and Tok2 are next 2 tokens peeked. See comment for readSectionAddressType below.
+bool ScriptParser::readSectionDirective(OutputSection *Cmd, StringRef Tok1, StringRef Tok2) {
+  if (Tok1 != "(")
+    return false;
+  if (Tok2 != "NOLOAD" && Tok2 != "COPY" && Tok2 != "INFO" && Tok2 != "OVERLAY")
+    return false;
+
+  expect("(");
+  if (consume("NOLOAD")) {
+    Cmd->Noload = true;
+  } else {
+    skip(); // This is "COPY", "INFO" or "OVERLAY".
+    Cmd->NonAlloc = true;
+  }
+  expect(")");
+  return true;
+}
+
+// Reads an expression and/or the special directive for an output
+// section definition. Directive is one of following: "(NOLOAD)",
+// "(COPY)", "(INFO)" or "(OVERLAY)".
 //
 // An output section name can be followed by an address expression
-// and/or by "(NOLOAD)". This grammar is not LL(1) because "(" can be
-// interpreted as either the beginning of some expression or "(NOLOAD)".
+// and/or directive. This grammar is not LL(1) because "(" can be
+// interpreted as either the beginning of some expression or beginning
+// of directive.
 //
 // https://sourceware.org/binutils/docs/ld/Output-Section-Address.html
 // https://sourceware.org/binutils/docs/ld/Output-Section-Type.html
 void ScriptParser::readSectionAddressType(OutputSection *Cmd) {
-  if (consume("(")) {
-    if (consume("NOLOAD")) {
-      expect(")");
-      Cmd->Noload = true;
-      return;
-    }
-    Cmd->AddrExpr = readExpr();
-    expect(")");
-  } else {
-    Cmd->AddrExpr = readExpr();
-  }
+  if (readSectionDirective(Cmd, peek(), peek2()))
+    return;
 
-  if (consume("(")) {
-    expect("NOLOAD");
-    expect(")");
-    Cmd->Noload = true;
-  }
+  Cmd->AddrExpr = readExpr();
+  if (peek() == "(" && !readSectionDirective(Cmd, "(", peek2()))
+    setError("unknown section directive: " + peek2());
+}
+
+static Expr checkAlignment(Expr E, std::string &Loc) {
+  return [=] {
+    uint64_t Alignment = std::max((uint64_t)1, E().getValue());
+    if (!isPowerOf2_64(Alignment)) {
+      error(Loc + ": alignment must be power of 2");
+      return (uint64_t)1; // Return a dummy value.
+    }
+    return Alignment;
+  };
+}
+
+OutputSection *ScriptParser::readOverlaySectionDescription() {
+  OutputSection *Cmd =
+      Script->createOutputSection(next(), getCurrentLocation());
+  Cmd->InOverlay = true;
+  expect("{");
+  while (!errorCount() && !consume("}"))
+    Cmd->SectionCommands.push_back(readInputSectionRules(next()));
+  Cmd->Phdrs = readOutputSectionPhdrs();
+  return Cmd;
 }
 
 OutputSection *ScriptParser::readOutputSectionDescription(StringRef OutSec) {
   OutputSection *Cmd =
       Script->createOutputSection(OutSec, getCurrentLocation());
 
+  size_t SymbolsReferenced = Script->ReferencedSymbols.size();
+
   if (peek() != ":")
     readSectionAddressType(Cmd);
   expect(":");
 
+  std::string Location = getCurrentLocation();
   if (consume("AT"))
     Cmd->LMAExpr = readParenExpr();
   if (consume("ALIGN"))
-    Cmd->AlignExpr = readParenExpr();
+    Cmd->AlignExpr = checkAlignment(readParenExpr(), Location);
   if (consume("SUBALIGN"))
-    Cmd->SubalignExpr = readParenExpr();
+    Cmd->SubalignExpr = checkAlignment(readParenExpr(), Location);
 
   // Parse constraints.
   if (consume("ONLY_IF_RO"))
@@ -625,17 +824,14 @@ OutputSection *ScriptParser::readOutputSectionDescription(StringRef OutSec) {
     Cmd->Constraint = ConstraintKind::ReadWrite;
   expect("{");
 
-  while (!ErrorCount && !consume("}")) {
+  while (!errorCount() && !consume("}")) {
     StringRef Tok = next();
     if (Tok == ";") {
       // Empty commands are allowed. Do nothing here.
-    } else if (SymbolAssignment *Assign = readProvideOrAssignment(Tok)) {
-      Cmd->Commands.push_back(Assign);
-    } else if (BytesDataCommand *Data = readBytesDataCommand(Tok)) {
-      Cmd->Commands.push_back(Data);
-    } else if (Tok == "ASSERT") {
-      Cmd->Commands.push_back(readAssert());
-      expect(";");
+    } else if (SymbolAssignment *Assign = readAssignment(Tok)) {
+      Cmd->SectionCommands.push_back(Assign);
+    } else if (ByteCommand *Data = readByteCommand(Tok)) {
+      Cmd->SectionCommands.push_back(Data);
     } else if (Tok == "CONSTRUCTORS") {
       // CONSTRUCTORS is a keyword to make the linker recognize C++ ctors/dtors
       // by name. This is for very old file formats such as ECOFF/XCOFF.
@@ -644,17 +840,30 @@ OutputSection *ScriptParser::readOutputSectionDescription(StringRef OutSec) {
       Cmd->Filler = readFill();
     } else if (Tok == "SORT") {
       readSort();
+    } else if (Tok == "INCLUDE") {
+      readInclude();
     } else if (peek() == "(") {
-      Cmd->Commands.push_back(readInputSectionDescription(Tok));
+      Cmd->SectionCommands.push_back(readInputSectionDescription(Tok));
     } else {
-      setError("unknown command " + Tok);
+      // We have a file name and no input sections description. It is not a
+      // commonly used syntax, but still acceptable. In that case, all sections
+      // from the file will be included.
+      auto *ISD = make<InputSectionDescription>(Tok);
+      ISD->SectionPatterns.push_back({{}, StringMatcher({"*"})});
+      Cmd->SectionCommands.push_back(ISD);
     }
   }
 
   if (consume(">"))
     Cmd->MemoryRegionName = next();
-  else if (peek().startswith(">"))
-    Cmd->MemoryRegionName = next().drop_front();
+
+  if (consume("AT")) {
+    expect(">");
+    Cmd->LMARegionName = next();
+  }
+
+  if (Cmd->LMAExpr && !Cmd->LMARegionName.empty())
+    error("section can't have both LMA and a load region");
 
   Cmd->Phdrs = readOutputSectionPhdrs();
 
@@ -666,6 +875,8 @@ OutputSection *ScriptParser::readOutputSectionDescription(StringRef OutSec) {
   // Consume optional comma following output section command.
   consume(",");
 
+  if (Script->ReferencedSymbols.size() > SymbolsReferenced)
+    Cmd->ExpressionsUseSymbols = true;
   return Cmd;
 }
 
@@ -676,48 +887,57 @@ OutputSection *ScriptParser::readOutputSectionDescription(StringRef OutSec) {
 // When reading a hexstring, ld.bfd handles it as a blob of arbitrary
 // size, while ld.gold always handles it as a 32-bit big-endian number.
 // We are compatible with ld.gold because it's easier to implement.
-uint32_t ScriptParser::parseFill(StringRef Tok) {
+std::array<uint8_t, 4> ScriptParser::parseFill(StringRef Tok) {
   uint32_t V = 0;
   if (!to_integer(Tok, V))
     setError("invalid filler expression: " + Tok);
 
-  uint32_t Buf;
-  write32be(&Buf, V);
+  std::array<uint8_t, 4> Buf;
+  write32be(Buf.data(), V);
   return Buf;
 }
 
 SymbolAssignment *ScriptParser::readProvideHidden(bool Provide, bool Hidden) {
   expect("(");
-  SymbolAssignment *Cmd = readAssignment(next());
+  SymbolAssignment *Cmd = readSymbolAssignment(next());
   Cmd->Provide = Provide;
   Cmd->Hidden = Hidden;
   expect(")");
-  expect(";");
   return Cmd;
 }
 
-SymbolAssignment *ScriptParser::readProvideOrAssignment(StringRef Tok) {
+SymbolAssignment *ScriptParser::readAssignment(StringRef Tok) {
+  // Assert expression returns Dot, so this is equal to ".=."
+  if (Tok == "ASSERT")
+    return make<SymbolAssignment>(".", readAssert(), getCurrentLocation());
+
+  size_t OldPos = Pos;
   SymbolAssignment *Cmd = nullptr;
-  if (peek() == "=" || peek() == "+=") {
-    Cmd = readAssignment(Tok);
-    expect(";");
-  } else if (Tok == "PROVIDE") {
+  if (peek() == "=" || peek() == "+=")
+    Cmd = readSymbolAssignment(Tok);
+  else if (Tok == "PROVIDE")
     Cmd = readProvideHidden(true, false);
-  } else if (Tok == "HIDDEN") {
+  else if (Tok == "HIDDEN")
     Cmd = readProvideHidden(false, true);
-  } else if (Tok == "PROVIDE_HIDDEN") {
+  else if (Tok == "PROVIDE_HIDDEN")
     Cmd = readProvideHidden(true, true);
+
+  if (Cmd) {
+    Cmd->CommandString =
+        Tok.str() + " " +
+        llvm::join(Tokens.begin() + OldPos, Tokens.begin() + Pos, " ");
+    expect(";");
   }
   return Cmd;
 }
 
-SymbolAssignment *ScriptParser::readAssignment(StringRef Name) {
+SymbolAssignment *ScriptParser::readSymbolAssignment(StringRef Name) {
   StringRef Op = next();
   assert(Op == "=" || Op == "+=");
   Expr E = readExpr();
   if (Op == "+=") {
     std::string Loc = getCurrentLocation();
-    E = [=] { return add(Script->getSymbolValue(Loc, Name), E()); };
+    E = [=] { return add(Script->getSymbolValue(Name, Loc), E()); };
   }
   return make<SymbolAssignment>(Name, E, getCurrentLocation());
 }
@@ -734,15 +954,31 @@ Expr ScriptParser::readExpr() {
   return E;
 }
 
-static Expr combine(StringRef Op, Expr L, Expr R) {
+Expr ScriptParser::combine(StringRef Op, Expr L, Expr R) {
   if (Op == "+")
     return [=] { return add(L(), R()); };
   if (Op == "-")
     return [=] { return sub(L(), R()); };
   if (Op == "*")
-    return [=] { return mul(L(), R()); };
-  if (Op == "/")
-    return [=] { return div(L(), R()); };
+    return [=] { return L().getValue() * R().getValue(); };
+  if (Op == "/") {
+    std::string Loc = getCurrentLocation();
+    return [=]() -> uint64_t {
+      if (uint64_t RV = R().getValue())
+        return L().getValue() / RV;
+      error(Loc + ": division by zero");
+      return 0;
+    };
+  }
+  if (Op == "%") {
+    std::string Loc = getCurrentLocation();
+    return [=]() -> uint64_t {
+      if (uint64_t RV = R().getValue())
+        return L().getValue() % RV;
+      error(Loc + ": modulo by zero");
+      return 0;
+    };
+  }
   if (Op == "<<")
     return [=] { return L().getValue() << R().getValue(); };
   if (Op == ">>")
@@ -759,6 +995,10 @@ static Expr combine(StringRef Op, Expr L, Expr R) {
     return [=] { return L().getValue() == R().getValue(); };
   if (Op == "!=")
     return [=] { return L().getValue() != R().getValue(); };
+  if (Op == "||")
+    return [=] { return L().getValue() || R().getValue(); };
+  if (Op == "&&")
+    return [=] { return L().getValue() && R().getValue(); };
   if (Op == "&")
     return [=] { return bitAnd(L(), R()); };
   if (Op == "|")
@@ -769,7 +1009,7 @@ static Expr combine(StringRef Op, Expr L, Expr R) {
 // This is a part of the operator-precedence parser. This function
 // assumes that the remaining token stream starts with an operator.
 Expr ScriptParser::readExpr1(Expr Lhs, int MinPrec) {
-  while (!atEOF() && !ErrorCount) {
+  while (!atEOF() && !errorCount()) {
     // Read an operator and an expression.
     if (consume("?"))
       return readTernary(Lhs);
@@ -812,26 +1052,25 @@ Expr ScriptParser::readConstant() {
   if (S == "MAXPAGESIZE")
     return [] { return Config->MaxPageSize; };
   setError("unknown constant: " + S);
-  return {};
+  return [] { return 0; };
 }
 
 // Parses Tok as an integer. It recognizes hexadecimal (prefixed with
 // "0x" or suffixed with "H") and decimal numbers. Decimal numbers may
 // have "K" (Ki) or "M" (Mi) suffixes.
 static Optional<uint64_t> parseInt(StringRef Tok) {
-  // Negative number
-  if (Tok.startswith("-")) {
-    if (Optional<uint64_t> Val = parseInt(Tok.substr(1)))
-      return -*Val;
-    return None;
-  }
-
   // Hexadecimal
   uint64_t Val;
-  if (Tok.startswith_lower("0x") && to_integer(Tok.substr(2), Val, 16))
+  if (Tok.startswith_lower("0x")) {
+    if (!to_integer(Tok.substr(2), Val, 16))
+      return None;
     return Val;
-  if (Tok.endswith_lower("H") && to_integer(Tok.drop_back(), Val, 16))
+  }
+  if (Tok.endswith_lower("H")) {
+    if (!to_integer(Tok.drop_back(), Val, 16))
+      return None;
     return Val;
+  }
 
   // Decimal
   if (Tok.endswith_lower("K")) {
@@ -849,7 +1088,7 @@ static Optional<uint64_t> parseInt(StringRef Tok) {
   return Val;
 }
 
-BytesDataCommand *ScriptParser::readBytesDataCommand(StringRef Tok) {
+ByteCommand *ScriptParser::readByteCommand(StringRef Tok) {
   int Size = StringSwitch<int>(Tok)
                  .Case("BYTE", 1)
                  .Case("SHORT", 2)
@@ -859,21 +1098,27 @@ BytesDataCommand *ScriptParser::readBytesDataCommand(StringRef Tok) {
   if (Size == -1)
     return nullptr;
 
-  return make<BytesDataCommand>(readParenExpr(), Size);
+  size_t OldPos = Pos;
+  Expr E = readParenExpr();
+  std::string CommandString =
+      Tok.str() + " " +
+      llvm::join(Tokens.begin() + OldPos, Tokens.begin() + Pos, " ");
+  return make<ByteCommand>(E, Size, CommandString);
 }
 
 StringRef ScriptParser::readParenLiteral() {
   expect("(");
+  bool Orig = InExpr;
+  InExpr = false;
   StringRef Tok = next();
+  InExpr = Orig;
   expect(")");
   return Tok;
 }
 
-OutputSection *ScriptParser::checkSection(OutputSection *Cmd,
-                                          StringRef Location) {
+static void checkIfExists(OutputSection *Cmd, StringRef Location) {
   if (Cmd->Location.empty() && Script->ErrorOnMissingSection)
     error(Location + ": undefined section " + Cmd->Name);
-  return Cmd;
 }
 
 Expr ScriptParser::readPrimary() {
@@ -908,34 +1153,38 @@ Expr ScriptParser::readPrimary() {
   }
   if (Tok == "ADDR") {
     StringRef Name = readParenLiteral();
-    OutputSection *Cmd = Script->getOrCreateOutputSection(Name);
+    OutputSection *Sec = Script->getOrCreateOutputSection(Name);
     return [=]() -> ExprValue {
-      return {checkSection(Cmd, Location), 0, Location};
+      checkIfExists(Sec, Location);
+      return {Sec, false, 0, Location};
     };
   }
   if (Tok == "ALIGN") {
     expect("(");
     Expr E = readExpr();
-    if (consume(")"))
-      return [=] {
-        return alignTo(Script->getDot(), std::max((uint64_t)1, E().getValue()));
-      };
+    if (consume(")")) {
+      E = checkAlignment(E, Location);
+      return [=] { return alignTo(Script->getDot(), E().getValue()); };
+    }
     expect(",");
-    Expr E2 = readExpr();
+    Expr E2 = checkAlignment(readExpr(), Location);
     expect(")");
     return [=] {
       ExprValue V = E();
-      V.Alignment = std::max((uint64_t)1, E2().getValue());
+      V.Alignment = E2().getValue();
       return V;
     };
   }
   if (Tok == "ALIGNOF") {
     StringRef Name = readParenLiteral();
     OutputSection *Cmd = Script->getOrCreateOutputSection(Name);
-    return [=] { return checkSection(Cmd, Location)->Alignment; };
+    return [=] {
+      checkIfExists(Cmd, Location);
+      return Cmd->Alignment;
+    };
   }
   if (Tok == "ASSERT")
-    return readAssertExpr();
+    return readAssert();
   if (Tok == "CONSTANT")
     return readConstant();
   if (Tok == "DATA_SEGMENT_ALIGN") {
@@ -968,24 +1217,41 @@ Expr ScriptParser::readPrimary() {
   }
   if (Tok == "DEFINED") {
     StringRef Name = readParenLiteral();
-    return [=] { return Script->isDefined(Name) ? 1 : 0; };
+    return [=] { return Symtab->find(Name) ? 1 : 0; };
   }
   if (Tok == "LENGTH") {
     StringRef Name = readParenLiteral();
-    if (Script->Opt.MemoryRegions.count(Name) == 0)
+    if (Script->MemoryRegions.count(Name) == 0) {
       setError("memory region not defined: " + Name);
-    return [=] { return Script->Opt.MemoryRegions[Name].Length; };
+      return [] { return 0; };
+    }
+    return [=] { return Script->MemoryRegions[Name]->Length; };
   }
   if (Tok == "LOADADDR") {
     StringRef Name = readParenLiteral();
     OutputSection *Cmd = Script->getOrCreateOutputSection(Name);
-    return [=] { return checkSection(Cmd, Location)->getLMA(); };
+    return [=] {
+      checkIfExists(Cmd, Location);
+      return Cmd->getLMA();
+    };
+  }
+  if (Tok == "MAX" || Tok == "MIN") {
+    expect("(");
+    Expr A = readExpr();
+    expect(",");
+    Expr B = readExpr();
+    expect(")");
+    if (Tok == "MIN")
+      return [=] { return std::min(A().getValue(), B().getValue()); };
+    return [=] { return std::max(A().getValue(), B().getValue()); };
   }
   if (Tok == "ORIGIN") {
     StringRef Name = readParenLiteral();
-    if (Script->Opt.MemoryRegions.count(Name) == 0)
+    if (Script->MemoryRegions.count(Name) == 0) {
       setError("memory region not defined: " + Name);
-    return [=] { return Script->Opt.MemoryRegions[Name].Origin; };
+      return [] { return 0; };
+    }
+    return [=] { return Script->MemoryRegions[Name]->Origin; };
   }
   if (Tok == "SEGMENT_START") {
     expect("(");
@@ -1008,7 +1274,7 @@ Expr ScriptParser::readPrimary() {
 
   // Tok is the dot.
   if (Tok == ".")
-    return [=] { return Script->getSymbolValue(Location, Tok); };
+    return [=] { return Script->getSymbolValue(Tok, Location); };
 
   // Tok is a literal number.
   if (Optional<uint64_t> Val = parseInt(Tok))
@@ -1017,8 +1283,8 @@ Expr ScriptParser::readPrimary() {
   // Tok is a symbol name.
   if (!isValidCIdentifier(Tok))
     setError("malformed number: " + Tok);
-  Script->Opt.ReferencedSymbols.push_back(Tok);
-  return [=] { return Script->getSymbolValue(Location, Tok); };
+  Script->ReferencedSymbols.push_back(Tok);
+  return [=] { return Script->getSymbolValue(Tok, Location); };
 }
 
 Expr ScriptParser::readTernary(Expr Cond) {
@@ -1037,7 +1303,7 @@ Expr ScriptParser::readParenExpr() {
 
 std::vector<StringRef> ScriptParser::readOutputSectionPhdrs() {
   std::vector<StringRef> Phdrs;
-  while (!ErrorCount && peek().startswith(":")) {
+  while (!errorCount() && peek().startswith(":")) {
     StringRef Tok = next();
     Phdrs.push_back((Tok.size() == 1) ? next() : Tok.substr(1));
   }
@@ -1140,7 +1406,7 @@ ScriptParser::readSymbols() {
   std::vector<SymbolVersion> Globals;
   std::vector<SymbolVersion> *V = &Globals;
 
-  while (!ErrorCount) {
+  while (!errorCount()) {
     if (consume("}"))
       break;
     if (consumeLabel("local")) {
@@ -1166,6 +1432,9 @@ ScriptParser::readSymbols() {
 
 // Reads an "extern C++" directive, e.g.,
 // "extern "C++" { ns::*; "f(int, double)"; };"
+//
+// The last semicolon is optional. E.g. this is OK:
+// "extern "C++" { ns::*; "f(int, double)" };"
 std::vector<SymbolVersion> ScriptParser::readVersionExtern() {
   StringRef Tok = next();
   bool IsCXX = Tok == "\"C++\"";
@@ -1174,10 +1443,12 @@ std::vector<SymbolVersion> ScriptParser::readVersionExtern() {
   expect("{");
 
   std::vector<SymbolVersion> Ret;
-  while (!ErrorCount && peek() != "}") {
+  while (!errorCount() && peek() != "}") {
     StringRef Tok = next();
     bool HasWildcard = !Tok.startswith("\"") && hasWildcard(Tok);
     Ret.push_back({unquote(Tok), IsCXX, HasWildcard});
+    if (consume("}"))
+      return Ret;
     expect(";");
   }
 
@@ -1201,8 +1472,12 @@ uint64_t ScriptParser::readMemoryAssignment(StringRef S1, StringRef S2,
 // MEMORY { name [(attr)] : ORIGIN = origin, LENGTH = len ... }
 void ScriptParser::readMemory() {
   expect("{");
-  while (!ErrorCount && !consume("}")) {
-    StringRef Name = next();
+  while (!errorCount() && !consume("}")) {
+    StringRef Tok = next();
+    if (Tok == "INCLUDE") {
+      readInclude();
+      continue;
+    }
 
     uint32_t Flags = 0;
     uint32_t NegFlags = 0;
@@ -1216,12 +1491,10 @@ void ScriptParser::readMemory() {
     expect(",");
     uint64_t Length = readMemoryAssignment("LENGTH", "len", "l");
 
-    // Add the memory region to the region map (if it doesn't already exist).
-    auto It = Script->Opt.MemoryRegions.find(Name);
-    if (It != Script->Opt.MemoryRegions.end())
-      setError("region '" + Name + "' already defined");
-    else
-      Script->Opt.MemoryRegions[Name] = {Name, Origin, Length, Flags, NegFlags};
+    // Add the memory region to the region map.
+    MemoryRegion *MR = make<MemoryRegion>(Tok, Origin, Length, Flags, NegFlags);
+    if (!Script->MemoryRegions.insert({Tok, MR}).second)
+      setError("region '" + Tok + "' already defined");
   }
 }
 
@@ -1264,4 +1537,8 @@ void elf::readVersionScript(MemoryBufferRef MB) {
 
 void elf::readDynamicList(MemoryBufferRef MB) {
   ScriptParser(MB).readDynamicList();
+}
+
+void elf::readDefsym(StringRef Name, MemoryBufferRef MB) {
+  ScriptParser(MB).readDefsym(Name);
 }

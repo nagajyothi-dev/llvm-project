@@ -15,20 +15,20 @@
 ; 12   }
 ; 13   return ret;
 ; 14 }
-; 
-; With the test code, LLVM-IR below shows that loop-control branches have a 
+;
+; With the test code, LLVM-IR below shows that loop-control branches have a
 ; debug location of line 6 (branches in entry and for.body block). Make sure that
 ; these debug locations are propaged correctly to lowered instructions.
 ;
 ; CHECK: [[DLOC:![0-9]+]] = !DILocation(line: 6
-; CHECK-DAG: [[VREG1:%[^ ]+]] = COPY %rsi
-; CHECK-DAG: [[VREG2:%[^ ]+]] = COPY %rdi
+; CHECK-DAG: [[VREG1:%[^ ]+]]:gr64 = COPY $rsi
+; CHECK-DAG: [[VREG2:%[^ ]+]]:gr64 = COPY $rdi
 ; CHECK: SUB64rr [[VREG2]], [[VREG1]]
-; CHECK-NEXT: JNE_1 {{.*}}, debug-location [[DLOC]]{{$}}
-; CHECK: [[VREG3:%[^ ]+]] = PHI [[VREG2]]
-; CHECK: [[VREG4:%[^ ]+]] = ADD64ri8 [[VREG3]], 4
+; CHECK-NEXT: JCC_1 {{.*}}, debug-location [[DLOC]]{{$}}
+; CHECK: [[VREG3:%[^ ]+]]:gr64 = PHI [[VREG2]]
+; CHECK: [[VREG4:%[^ ]+]]:gr64 = nuw ADD64ri8 [[VREG3]], 4
 ; CHECK: SUB64rr [[VREG1]], [[VREG4]]
-; CHECK-NEXT: JNE_1 {{.*}}, debug-location [[DLOC]]{{$}}
+; CHECK-NEXT: JCC_1 {{.*}}, debug-location [[DLOC]]{{$}}
 ; CHECK-NEXT: JMP_1 {{.*}}, debug-location [[DLOC]]{{$}}
 
 target triple = "x86_64-unknown-linux-gnu"

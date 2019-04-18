@@ -6,8 +6,8 @@
 // RUN: %run %t.promo.gen
 // RUN: llvm-profdata merge -o %t.promo.profdata %t.promo.prof/
 // RUN: llvm-profdata show --counts --all-functions %t.promo.profdata  > %t.promo.dump
-// RUN: %clang_pgogen=%t.nopromo.prof/ -mllvm -do-counter-promotion=false -o %t.nopromo.gen -O2 %s
-// RUN: %clang_pgogen=%t.nopromo.prof/ -mllvm -do-counter-promotion=false -o %t.nopromo.gen.ll -emit-llvm -S -O2 %s
+// RUN: %clang_pgogen=%t.nopromo.prof/ -mllvm -do-counter-promotion=false -mllvm -simplifycfg-sink-common=false -o %t.nopromo.gen -O2 %s
+// RUN: %clang_pgogen=%t.nopromo.prof/ -mllvm -do-counter-promotion=false -mllvm -simplifycfg-sink-common=false -o %t.nopromo.gen.ll -emit-llvm -S -O2 %s
 // RUN: cat %t.nopromo.gen.ll | FileCheck --check-prefix=NOPROMO %s
 // RUN: %run %t.nopromo.gen
 // RUN: llvm-profdata merge -o %t.nopromo.profdata %t.nopromo.prof/
@@ -19,18 +19,18 @@ __attribute__((noinline)) void bar(int i) { g += i; }
 
 __attribute__((noinline)) void foo(int n, int N) {
 // PROMO-LABEL: @foo
+// PROMO: load{{.*}}@__profc_foo{{.*}} 3){{.*}}
+// PROMO-NEXT: add
+// PROMO-NEXT: store{{.*}}@__profc_foo{{.*}} 3){{.*}}
 // PROMO: load{{.*}}@__profc_foo{{.*}} 0){{.*}}
 // PROMO-NEXT: add
 // PROMO-NEXT: store{{.*}}@__profc_foo{{.*}} 0){{.*}}
 // PROMO-NEXT: load{{.*}}@__profc_foo{{.*}} 1){{.*}}
 // PROMO-NEXT: add
 // PROMO-NEXT: store{{.*}}@__profc_foo{{.*}} 1){{.*}}
-// PROMO-NEXT: load{{.*}}@__profc_foo{{.*}} 2){{.*}}
+// PROMO: load{{.*}}@__profc_foo{{.*}} 2){{.*}}
 // PROMO-NEXT: add
 // PROMO-NEXT: store{{.*}}@__profc_foo{{.*}} 2){{.*}}
-// PROMO: load{{.*}}@__profc_foo{{.*}} 3){{.*}}
-// PROMO-NEXT: add
-// PROMO-NEXT: store{{.*}}@__profc_foo{{.*}} 3){{.*}}
 //
 // NOPROMO-LABEL: @foo
 // NOPROMO: load{{.*}}@__profc_foo{{.*}} 0){{.*}}

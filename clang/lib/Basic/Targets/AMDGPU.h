@@ -1,9 +1,8 @@
 //===--- AMDGPU.h - Declare AMDGPU target feature support -------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,11 +13,12 @@
 #ifndef LLVM_CLANG_LIB_BASIC_TARGETS_AMDGPU_H
 #define LLVM_CLANG_LIB_BASIC_TARGETS_AMDGPU_H
 
-#include "clang/AST/Type.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/TargetParser.h"
 
 namespace clang {
 namespace targets {
@@ -28,58 +28,55 @@ class LLVM_LIBRARY_VISIBILITY AMDGPUTargetInfo final : public TargetInfo {
   static const Builtin::Info BuiltinInfo[];
   static const char *const GCCRegNames[];
 
-  struct LLVM_LIBRARY_VISIBILITY AddrSpace {
-    unsigned Generic, Global, Local, Constant, Private;
-    AddrSpace(bool IsGenericZero_ = false) {
-      if (IsGenericZero_) {
-        Generic = 0;
-        Global = 1;
-        Local = 3;
-        Constant = 2;
-        Private = 5;
-      } else {
-        Generic = 4;
-        Global = 1;
-        Local = 3;
-        Constant = 2;
-        Private = 0;
-      }
-    }
+  enum AddrSpace {
+    Generic = 0,
+    Global = 1,
+    Local = 3,
+    Constant = 4,
+    Private = 5
   };
+  static const LangASMap AMDGPUDefIsGenMap;
+  static const LangASMap AMDGPUDefIsPrivMap;
 
-  /// \brief The GPU profiles supported by the AMDGPU target.
-  enum GPUKind {
-    GK_NONE,
-    GK_R600,
-    GK_R600_DOUBLE_OPS,
-    GK_R700,
-    GK_R700_DOUBLE_OPS,
-    GK_EVERGREEN,
-    GK_EVERGREEN_DOUBLE_OPS,
-    GK_NORTHERN_ISLANDS,
-    GK_CAYMAN,
-    GK_GFX6,
-    GK_GFX7,
-    GK_GFX8,
-    GK_GFX9
-  } GPU;
+  llvm::AMDGPU::GPUKind GPUKind;
+  unsigned GPUFeatures;
 
-  bool hasFP64 : 1;
-  bool hasFMAF : 1;
-  bool hasLDEXPF : 1;
-  const AddrSpace AS;
 
-  static bool hasFullSpeedFMAF32(StringRef GPUName) {
-    return parseAMDGCNName(GPUName) >= GK_GFX9;
+  bool hasFP64() const {
+    return getTriple().getArch() == llvm::Triple::amdgcn ||
+           !!(GPUFeatures & llvm::AMDGPU::FEATURE_FP64);
+  }
+
+  /// Has fast fma f32
+  bool hasFastFMAF() const {
+    return !!(GPUFeatures & llvm::AMDGPU::FEATURE_FAST_FMA_F32);
+  }
+
+  /// Has fast fma f64
+  bool hasFastFMA() const {
+    return getTriple().getArch() == llvm::Triple::amdgcn;
+  }
+
+  bool hasFMAF() const {
+    return getTriple().getArch() == llvm::Triple::amdgcn ||
+           !!(GPUFeatures & llvm::AMDGPU::FEATURE_FMA);
+  }
+
+  bool hasFullRateDenormalsF32() const {
+    return !!(GPUFeatures & llvm::AMDGPU::FEATURE_FAST_DENORMAL_F32);
+  }
+
+  bool hasLDEXPF() const {
+    return getTriple().getArch() == llvm::Triple::amdgcn ||
+           !!(GPUFeatures & llvm::AMDGPU::FEATURE_LDEXP);
   }
 
   static bool isAMDGCN(const llvm::Triple &TT) {
     return TT.getArch() == llvm::Triple::amdgcn;
   }
 
-  static bool isGenericZero(const llvm::Triple &TT) {
-    return TT.getEnvironmentName() == "amdgiz" ||
-           TT.getEnvironmentName() == "amdgizcl";
+  static bool isR600(const llvm::Triple &TT) {
+    return TT.getArch() == llvm::Triple::r600;
   }
 
 public:
@@ -90,12 +87,12 @@ public:
   void adjust(LangOptions &Opts) override;
 
   uint64_t getPointerWidthV(unsigned AddrSpace) const override {
-    if (GPU <= GK_CAYMAN)
+    if (isR600(getTriple()))
       return 32;
 
-    if (AddrSpace == AS.Private || AddrSpace == AS.Local) {
+    if (AddrSpace == Private || AddrSpace == Local)
       return 32;
-    }
+
     return 64;
   }
 
@@ -115,17 +112,96 @@ public:
     return None;
   }
 
+  /// Accepted register names: (n, m is unsigned integer, n < m)
+  /// v
+  /// s
+  /// {vn}, {v[n]}
+  /// {sn}, {s[n]}
+  /// {S} , where S is a special register name
+  ////{v[n:m]}
+  /// {s[n:m]}
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &Info) const override {
-    switch (*Name) {
-    default:
-      break;
-    case 'v': // vgpr
-    case 's': // sgpr
+    static const ::llvm::StringSet<> SpecialRegs({
+        "exec", "vcc", "flat_scratch", "m0", "scc", "tba", "tma",
+        "flat_scratch_lo", "flat_scratch_hi", "vcc_lo", "vcc_hi", "exec_lo",
+        "exec_hi", "tma_lo", "tma_hi", "tba_lo", "tba_hi",
+    });
+
+    StringRef S(Name);
+    bool HasLeftParen = false;
+    if (S.front() == '{') {
+      HasLeftParen = true;
+      S = S.drop_front();
+    }
+    if (S.empty())
+      return false;
+    if (S.front() != 'v' && S.front() != 's') {
+      if (!HasLeftParen)
+        return false;
+      auto E = S.find('}');
+      if (!SpecialRegs.count(S.substr(0, E)))
+        return false;
+      S = S.drop_front(E + 1);
+      if (!S.empty())
+        return false;
+      // Found {S} where S is a special register.
       Info.setAllowsRegister();
+      Name = S.data() - 1;
       return true;
     }
-    return false;
+    S = S.drop_front();
+    if (!HasLeftParen) {
+      if (!S.empty())
+        return false;
+      // Found s or v.
+      Info.setAllowsRegister();
+      Name = S.data() - 1;
+      return true;
+    }
+    bool HasLeftBracket = false;
+    if (!S.empty() && S.front() == '[') {
+      HasLeftBracket = true;
+      S = S.drop_front();
+    }
+    unsigned long long N;
+    if (S.empty() || consumeUnsignedInteger(S, 10, N))
+      return false;
+    if (!S.empty() && S.front() == ':') {
+      if (!HasLeftBracket)
+        return false;
+      S = S.drop_front();
+      unsigned long long M;
+      if (consumeUnsignedInteger(S, 10, M) || N >= M)
+        return false;
+    }
+    if (HasLeftBracket) {
+      if (S.empty() || S.front() != ']')
+        return false;
+      S = S.drop_front();
+    }
+    if (S.empty() || S.front() != '}')
+      return false;
+    S = S.drop_front();
+    if (!S.empty())
+      return false;
+    // Found {vn}, {sn}, {v[n]}, {s[n]}, {v[n:m]}, or {s[n:m]}.
+    Info.setAllowsRegister();
+    Name = S.data() - 1;
+    return true;
+  }
+
+  // \p Constraint will be left pointing at the last character of
+  // the constraint.  In practice, it won't be changed unless the
+  // constraint is longer than one character.
+  std::string convertConstraint(const char *&Constraint) const override {
+    const char *Begin = Constraint;
+    TargetInfo::ConstraintInfo Info("", "");
+    if (validateAsmConstraint(Constraint, Info))
+      return std::string(Begin).substr(0, Constraint - Begin + 1);
+
+    Constraint = Begin;
+    return std::string(1, *Constraint);
   }
 
   bool
@@ -145,24 +221,24 @@ public:
     return TargetInfo::CharPtrBuiltinVaList;
   }
 
-  static GPUKind parseR600Name(StringRef Name);
-
-  static GPUKind parseAMDGCNName(StringRef Name);
-
   bool isValidCPUName(StringRef Name) const override {
     if (getTriple().getArch() == llvm::Triple::amdgcn)
-      return GK_NONE != parseAMDGCNName(Name);
-    else
-      return GK_NONE != parseR600Name(Name);
+      return llvm::AMDGPU::parseArchAMDGCN(Name) != llvm::AMDGPU::GK_NONE;
+    return llvm::AMDGPU::parseArchR600(Name) != llvm::AMDGPU::GK_NONE;
   }
 
-  bool setCPU(const std::string &Name) override {
-    if (getTriple().getArch() == llvm::Triple::amdgcn)
-      GPU = parseAMDGCNName(Name);
-    else
-      GPU = parseR600Name(Name);
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
-    return GPU != GK_NONE;
+  bool setCPU(const std::string &Name) override {
+    if (getTriple().getArch() == llvm::Triple::amdgcn) {
+      GPUKind = llvm::AMDGPU::parseArchAMDGCN(Name);
+      GPUFeatures = llvm::AMDGPU::getArchAttrAMDGCN(GPUKind);
+    } else {
+      GPUKind = llvm::AMDGPU::parseArchR600(Name);
+      GPUFeatures = llvm::AMDGPU::getArchAttrR600(GPUKind);
+    }
+
+    return GPUKind != llvm::AMDGPU::GK_NONE;
   }
 
   void setSupportedOpenCLOpts() override {
@@ -170,16 +246,20 @@ public:
     Opts.support("cl_clang_storage_class_specifiers");
     Opts.support("cl_khr_icd");
 
-    if (hasFP64)
+    bool IsAMDGCN = isAMDGCN(getTriple());
+
+    if (hasFP64())
       Opts.support("cl_khr_fp64");
-    if (GPU >= GK_EVERGREEN) {
+
+    if (IsAMDGCN || GPUKind >= llvm::AMDGPU::GK_CEDAR) {
       Opts.support("cl_khr_byte_addressable_store");
       Opts.support("cl_khr_global_int32_base_atomics");
       Opts.support("cl_khr_global_int32_extended_atomics");
       Opts.support("cl_khr_local_int32_base_atomics");
       Opts.support("cl_khr_local_int32_extended_atomics");
     }
-    if (GPU >= GK_GFX6) {
+
+    if (IsAMDGCN) {
       Opts.support("cl_khr_fp16");
       Opts.support("cl_khr_int64_base_atomics");
       Opts.support("cl_khr_int64_extended_atomics");
@@ -191,29 +271,50 @@ public:
     }
   }
 
-  LangAS::ID getOpenCLTypeAddrSpace(const Type *T) const override {
-    auto BT = dyn_cast<BuiltinType>(T);
+  LangAS getOpenCLTypeAddrSpace(OpenCLTypeKind TK) const override {
+    switch (TK) {
+    case OCLTK_Image:
+      return LangAS::opencl_constant;
 
-    if (!BT)
-      return TargetInfo::getOpenCLTypeAddrSpace(T);
-
-    switch (BT->getKind()) {
-#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix)                   \
-  case BuiltinType::Id:                                                        \
-    return LangAS::opencl_constant;
-#include "clang/Basic/OpenCLImageTypes.def"
+    case OCLTK_ClkEvent:
+    case OCLTK_Queue:
+    case OCLTK_ReserveID:
+      return LangAS::opencl_global;
 
     default:
-      return TargetInfo::getOpenCLTypeAddrSpace(T);
+      return TargetInfo::getOpenCLTypeAddrSpace(TK);
     }
   }
 
-  llvm::Optional<unsigned> getConstantAddressSpace() const override {
-    return LangAS::FirstTargetAddressSpace + AS.Constant;
+  LangAS getOpenCLBuiltinAddressSpace(unsigned AS) const override {
+    switch (AS) {
+    case 0:
+      return LangAS::opencl_generic;
+    case 1:
+      return LangAS::opencl_global;
+    case 3:
+      return LangAS::opencl_local;
+    case 4:
+      return LangAS::opencl_constant;
+    case 5:
+      return LangAS::opencl_private;
+    default:
+      return getLangASFromTargetAS(AS);
+    }
+  }
+
+  LangAS getCUDABuiltinAddressSpace(unsigned AS) const override {
+    return LangAS::Default;
+  }
+
+  llvm::Optional<LangAS> getConstantAddressSpace() const override {
+    return getLangASFromTargetAS(Constant);
   }
 
   /// \returns Target specific vtbl ptr address space.
-  unsigned getVtblPtrAddressSpace() const override { return AS.Constant; }
+  unsigned getVtblPtrAddressSpace() const override {
+    return static_cast<unsigned>(Constant);
+  }
 
   /// \returns If a target requires an address within a target specific address
   /// space \p AddressSpace to be converted in order to be used, then return the
@@ -225,9 +326,9 @@ public:
   getDWARFAddressSpace(unsigned AddressSpace) const override {
     const unsigned DWARF_Private = 1;
     const unsigned DWARF_Local = 2;
-    if (AddressSpace == AS.Private) {
+    if (AddressSpace == Private) {
       return DWARF_Private;
-    } else if (AddressSpace == AS.Local) {
+    } else if (AddressSpace == Local) {
       return DWARF_Local;
     } else {
       return None;
@@ -247,9 +348,11 @@ public:
   // In amdgcn target the null pointer in global, constant, and generic
   // address space has value 0 but in private and local address space has
   // value ~0.
-  uint64_t getNullPointerValue(unsigned AS) const override {
+  uint64_t getNullPointerValue(LangAS AS) const override {
     return AS == LangAS::opencl_local ? ~0 : 0;
   }
+
+  void setAuxTarget(const TargetInfo *Aux) override;
 };
 
 } // namespace targets

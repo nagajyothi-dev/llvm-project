@@ -1,9 +1,8 @@
 //===--- ImplicitConversionInLoopCheck.cpp - clang-tidy--------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,7 +27,7 @@ namespace performance {
 static bool IsNonTrivialImplicitCast(const Stmt *ST) {
   if (const auto *ICE = dyn_cast<ImplicitCastExpr>(ST)) {
     return (ICE->getCastKind() != CK_NoOp) ||
-           IsNonTrivialImplicitCast(ICE->getSubExpr());
+            IsNonTrivialImplicitCast(ICE->getSubExpr());
   }
   return false;
 }
@@ -39,7 +38,9 @@ void ImplicitConversionInLoopCheck::registerMatchers(MatchFinder *Finder) {
   // conversion. The check on the implicit conversion is done in check() because
   // we can't access implicit conversion subnode via matchers: has() skips casts
   // and materialize! We also bind on the call to operator* to get the proper
-  // type in the diagnostic message.
+  // type in the diagnostic message. We use both cxxOperatorCallExpr for user
+  // defined operator and unaryOperator when the iterator is a pointer, like
+  // for arrays or std::array.
   //
   // Note that when the implicit conversion is done through a user defined
   // conversion operator, the node is a CXXMemberCallExpr, not a
@@ -47,10 +48,14 @@ void ImplicitConversionInLoopCheck::registerMatchers(MatchFinder *Finder) {
   // cxxOperatorCallExpr() matcher.
   Finder->addMatcher(
       cxxForRangeStmt(hasLoopVariable(
-          varDecl(hasType(qualType(references(qualType(isConstQualified())))),
-                  hasInitializer(expr(hasDescendant(cxxOperatorCallExpr().bind(
-                                          "operator-call")))
-                                     .bind("init")))
+          varDecl(
+              hasType(qualType(references(qualType(isConstQualified())))),
+              hasInitializer(
+                  expr(anyOf(hasDescendant(
+                                 cxxOperatorCallExpr().bind("operator-call")),
+                             hasDescendant(unaryOperator(hasOperatorName("*"))
+                                               .bind("operator-call"))))
+                      .bind("init")))
               .bind("faulty-var"))),
       this);
 }
@@ -60,7 +65,7 @@ void ImplicitConversionInLoopCheck::check(
   const auto *VD = Result.Nodes.getNodeAs<VarDecl>("faulty-var");
   const auto *Init = Result.Nodes.getNodeAs<Expr>("init");
   const auto *OperatorCall =
-      Result.Nodes.getNodeAs<CXXOperatorCallExpr>("operator-call");
+      Result.Nodes.getNodeAs<Expr>("operator-call");
 
   if (const auto *Cleanup = dyn_cast<ExprWithCleanups>(Init))
     Init = Cleanup->getSubExpr();
@@ -79,7 +84,7 @@ void ImplicitConversionInLoopCheck::check(
 
 void ImplicitConversionInLoopCheck::ReportAndFix(
     const ASTContext *Context, const VarDecl *VD,
-    const CXXOperatorCallExpr *OperatorCall) {
+    const Expr *OperatorCall) {
   // We only match on const ref, so we should print a const ref version of the
   // type.
   QualType ConstType = OperatorCall->getType().withConst();
@@ -90,7 +95,7 @@ void ImplicitConversionInLoopCheck::ReportAndFix(
       "change the type to the matching one (%1 but 'const auto&' is always a "
       "valid option) or remove the reference to make it explicit that you are "
       "creating a new value";
-  diag(VD->getLocStart(), Message) << VD << ConstRefType;
+  diag(VD->getBeginLoc(), Message) << VD << ConstRefType;
 }
 
 } // namespace performance

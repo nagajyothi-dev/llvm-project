@@ -1,6 +1,6 @@
 // REQUIRES: x86
 // RUN: llvm-mc -filetype=obj -triple=x86_64-pc-linux %s -o %t.o
-// RUN: echo .global __progname > %t2.s
+// RUN: echo ".global __progname; .data; .dc.a __progname" > %t2.s
 // RUN: llvm-mc -filetype=obj -triple=x86_64-pc-linux %t2.s -o %t2.o
 // RUN: ld.lld -shared %t2.o -o %t2.so
 // RUN: ld.lld -o %t %t.o %t2.so
@@ -17,7 +17,7 @@
 // RUN: ld.lld -dynamic-list %t.dynlist -o %t %t.o %t.so
 // RUN: llvm-readobj -dyn-symbols %t | FileCheck %s
 
-// CHECK:      Name:     __progname@
+// CHECK:      Name:     __progname
 // CHECK-NEXT: Value:    0x201000
 // CHECK-NEXT: Size:     0
 // CHECK-NEXT: Binding:  Global (0x1)

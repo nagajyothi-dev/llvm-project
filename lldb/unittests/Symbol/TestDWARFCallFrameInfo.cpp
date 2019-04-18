@@ -1,27 +1,30 @@
 //===-- TestDWARFCallFrameInfo.cpp ------------------------------*- C++ -*-===//
 //
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
+#include "gtest/gtest.h"
+
 #include "Plugins/ObjectFile/ELF/ObjectFileELF.h"
 #include "Plugins/Process/Utility/RegisterContext_x86.h"
+#include "TestingSupport/TestUtilities.h"
+
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/Section.h"
+#include "lldb/Host/FileSystem.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Symbol/DWARFCallFrameInfo.h"
 #include "lldb/Utility/StreamString.h"
-#include "unittests/Utility/Helpers/TestUtilities.h"
+
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
-#include "gtest/gtest.h"
 
 using namespace lldb_private;
 using namespace lldb;
@@ -29,6 +32,7 @@ using namespace lldb;
 class DWARFCallFrameInfoTest : public testing::Test {
 public:
   void SetUp() override {
+    FileSystem::Initialize();
     HostInfo::Initialize();
     ObjectFileELF::Initialize();
   }
@@ -36,6 +40,7 @@ public:
   void TearDown() override {
     ObjectFileELF::Terminate();
     HostInfo::Terminate();
+    FileSystem::Terminate();
   }
 
 protected:
@@ -96,16 +101,18 @@ void DWARFCallFrameInfoTest::TestBasic(DWARFCallFrameInfo::Type type,
       "basic-call-frame-info-%%%%%%", "obj", obj));
   llvm::FileRemover obj_remover(obj);
 
-  const char *args[] = {YAML2OBJ, yaml.c_str(), nullptr};
+  llvm::StringRef args[] = {YAML2OBJ, yaml};
   llvm::StringRef obj_ref = obj;
-  const llvm::StringRef *redirects[] = {nullptr, &obj_ref, nullptr};
-  ASSERT_EQ(0, llvm::sys::ExecuteAndWait(YAML2OBJ, args, nullptr, redirects));
+  const llvm::Optional<llvm::StringRef> redirects[] = {llvm::None, obj_ref,
+                                                       llvm::None};
+  ASSERT_EQ(0,
+            llvm::sys::ExecuteAndWait(YAML2OBJ, args, llvm::None, redirects));
 
   uint64_t size;
   ASSERT_NO_ERROR(llvm::sys::fs::file_size(obj, size));
   ASSERT_GT(size, 0u);
 
-  auto module_sp = std::make_shared<Module>(ModuleSpec(FileSpec(obj, false)));
+  auto module_sp = std::make_shared<Module>(ModuleSpec(FileSpec(obj)));
   SectionList *list = module_sp->GetSectionList();
   ASSERT_NE(nullptr, list);
 

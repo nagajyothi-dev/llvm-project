@@ -1,6 +1,21 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-inlining=constructors -std=c++11 -verify %s
+// RUN: %clang_analyze_cc1 -w -verify %s\
+// RUN:   -analyzer-checker=core,unix.Malloc,cplusplus.NewDeleteLeaks\
+// RUN:   -analyzer-checker=debug.ExprInspection -std=c++11
+// RUN: %clang_analyze_cc1 -w -verify %s\
+// RUN:   -analyzer-checker=core,unix.Malloc,cplusplus.NewDeleteLeaks\
+// RUN:   -analyzer-checker=debug.ExprInspection -std=c++17
+// RUN: %clang_analyze_cc1 -w -verify %s\
+// RUN:   -analyzer-checker=core,unix.Malloc,cplusplus.NewDeleteLeaks\
+// RUN:   -analyzer-checker=debug.ExprInspection -std=c++11\
+// RUN:   -DTEST_INLINABLE_ALLOCATORS
+// RUN: %clang_analyze_cc1 -w -verify %s\
+// RUN:   -analyzer-checker=core,unix.Malloc,cplusplus.NewDeleteLeaks\
+// RUN:   -analyzer-checker=debug.ExprInspection -std=c++17\
+// RUN:   -DTEST_INLINABLE_ALLOCATORS
 
 void clang_analyzer_eval(bool);
+
+#include "Inputs/system-header-simulator-cxx.h"
 
 class A {
   int x;
@@ -173,29 +188,6 @@ namespace ReferenceInitialization {
     const MyStruct &myStruct(OtherStruct(5));
     myStruct.method(); // no-warning
   }
-
-  struct HasMyStruct {
-    const MyStruct &ms; // expected-note {{reference member declared here}}
-    const MyStruct &msWithCleanups; // expected-note {{reference member declared here}}
-
-    // clang's Sema issues a warning when binding a reference member to a
-    // temporary value.
-    HasMyStruct() : ms(5), msWithCleanups(OtherStruct(5)) {
-        // expected-warning@-1 {{binding reference member 'ms' to a temporary value}}
-        // expected-warning@-2 {{binding reference member 'msWithCleanups' to a temporary value}}
-
-      // At this point the members are not garbage so we should not expect an
-      // analyzer warning here even though binding a reference member
-      // to a member is a terrible idea.
-      ms.method(); // no-warning
-      msWithCleanups.method(); // no-warning
-    }
-  };
-
-  void referenceInitializeField() {
-    HasMyStruct hms;
-  }
-
 };
 
 namespace PR31592 {
@@ -204,3 +196,82 @@ struct C {
    const char(&f)[2];
 };
 }
+
+namespace CXX_initializer_lists {
+struct C {
+  C(std::initializer_list<int *> list);
+};
+void testPointerEscapeIntoLists() {
+  C empty{}; // no-crash
+
+  // Do not warn that 'x' leaks. It might have been deleted by
+  // the destructor of 'c'.
+  int *x = new int;
+  C c{x}; // no-warning
+}
+
+void testPassListsWithExplicitConstructors() {
+  (void)(std::initializer_list<int>){12}; // no-crash
+}
+}
+
+namespace CXX17_aggregate_construction {
+struct A {
+  A();
+};
+
+struct B: public A {
+};
+
+struct C: public B {
+};
+
+struct D: public virtual A {
+};
+
+// In C++17, classes B and C are aggregates, so they will be constructed
+// without actually calling their trivial constructor. Used to crash.
+void foo() {
+  B b = {}; // no-crash
+  const B &bl = {}; // no-crash
+  B &&br = {}; // no-crash
+
+  C c = {}; // no-crash
+  const C &cl = {}; // no-crash
+  C &&cr = {}; // no-crash
+
+  D d = {}; // no-crash
+
+#if __cplusplus >= 201703L
+  C cd = {{}}; // no-crash
+  const C &cdl = {{}}; // no-crash
+  C &&cdr = {{}}; // no-crash
+
+  const B &bll = {{}}; // no-crash
+  const B &bcl = C({{}}); // no-crash
+  B &&bcr = C({{}}); // no-crash
+#endif
+}
+} // namespace CXX17_aggregate_construction
+
+namespace CXX17_transparent_init_list_exprs {
+class A {};
+
+class B: private A {};
+
+B boo();
+void foo1() {
+  B b { boo() }; // no-crash
+}
+
+class C: virtual public A {};
+
+C coo();
+void foo2() {
+  C c { coo() }; // no-crash
+}
+
+B foo_recursive() {
+  B b { foo_recursive() };
+}
+} // namespace CXX17_transparent_init_list_exprs

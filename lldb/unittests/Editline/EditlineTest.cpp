@@ -1,9 +1,8 @@
 //===-- EditlineTest.cpp ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,10 +19,13 @@
 #include "gtest/gtest.h"
 
 #include "lldb/Host/Editline.h"
+#include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Pipe.h"
 #include "lldb/Host/PseudoTerminal.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StringList.h"
+
+using namespace lldb_private;
 
 namespace {
 const size_t TIMEOUT_MILLIS = 5000;
@@ -60,7 +62,7 @@ public:
 
   void CloseInput();
 
-  bool IsValid() const { return _editline_sp.get() != nullptr; }
+  bool IsValid() const { return _editline_sp != nullptr; }
 
   lldb_private::Editline &GetEditline() { return *_editline_sp; }
 
@@ -81,7 +83,7 @@ private:
 
   std::unique_ptr<lldb_private::Editline> _editline_sp;
 
-  lldb_utility::PseudoTerminal _pty;
+  PseudoTerminal _pty;
   int _pty_master_fd;
   int _pty_slave_fd;
 
@@ -244,6 +246,8 @@ private:
 
 public:
   void SetUp() {
+    FileSystem::Initialize();
+
     // We need a TERM set properly for editline to work as expected.
     setenv("TERM", "vt100", 1);
 
@@ -253,14 +257,16 @@ public:
       return;
 
     // Dump output.
-    _sp_output_thread.reset(
-        new std::thread([&] { _el_adapter.ConsumeAllOutput(); }));
+    _sp_output_thread =
+        std::make_shared<std::thread>([&] { _el_adapter.ConsumeAllOutput(); });
   }
 
   void TearDown() {
     _el_adapter.CloseInput();
     if (_sp_output_thread)
       _sp_output_thread->join();
+
+    FileSystem::Terminate();
   }
 
   EditlineAdapter &GetEditlineAdapter() { return _el_adapter; }

@@ -1,22 +1,21 @@
 //===-- RegisterContextPOSIXCore_x86_64.cpp ---------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "RegisterContextPOSIXCore_x86_64.h"
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/DataExtractor.h"
+#include "lldb/Utility/RegisterValue.h"
 
 using namespace lldb_private;
 
 RegisterContextCorePOSIX_x86_64::RegisterContextCorePOSIX_x86_64(
     Thread &thread, RegisterInfoInterface *register_info,
-    const DataExtractor &gpregset, const DataExtractor &fpregset)
+    const DataExtractor &gpregset, llvm::ArrayRef<CoreNote> notes)
     : RegisterContextPOSIX_x86(thread, 0, register_info) {
   size_t size, len;
 
@@ -27,6 +26,8 @@ RegisterContextCorePOSIX_x86_64::RegisterContextCorePOSIX_x86_64(
   if (len != size)
     m_gpregset.reset();
 
+  DataExtractor fpregset = getRegset(
+      notes, register_info->GetTargetArchitecture().GetTriple(), FPR_Desc);
   size = sizeof(FXSAVE);
   m_fpregset.reset(new uint8_t[size]);
   len =
@@ -58,8 +59,8 @@ bool RegisterContextCorePOSIX_x86_64::ReadRegister(const RegisterInfo *reg_info,
   const uint8_t *src;
   size_t offset;
   const size_t fxsave_offset = reg_info->byte_offset - GetFXSAVEOffset();
-  // make the offset relative to the beginning of the FXSAVE structure
-  // because this is the data that we have (not the entire UserArea)
+  // make the offset relative to the beginning of the FXSAVE structure because
+  // this is the data that we have (not the entire UserArea)
 
   if (m_gpregset && reg_info->byte_offset < GetGPRSize()) {
     src = m_gpregset.get();

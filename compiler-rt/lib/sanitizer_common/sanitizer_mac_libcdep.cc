@@ -1,9 +1,8 @@
 //===-- sanitizer_mac_libcdep.cc ------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,7 +19,7 @@
 namespace __sanitizer {
 
 void RestrictMemoryToMaxAddress(uptr max_address) {
-  uptr size_to_mmap = GetMaxVirtualAddress() + 1 - max_address;
+  uptr size_to_mmap = GetMaxUserVirtualAddress() + 1 - max_address;
   void *res = MmapFixedNoAccess(max_address, size_to_mmap, "high gap");
   CHECK(res != MAP_FAILED);
 }

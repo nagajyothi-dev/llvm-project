@@ -1,23 +1,19 @@
 //===-- UnixSignals.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Target/UnixSignals.h"
 #include "Plugins/Process/Utility/FreeBSDSignals.h"
 #include "Plugins/Process/Utility/LinuxSignals.h"
 #include "Plugins/Process/Utility/MipsLinuxSignals.h"
 #include "Plugins/Process/Utility/NetBSDSignals.h"
-#include "lldb/Core/ArchSpec.h"
+#include "lldb/Host/HostInfo.h"
 #include "lldb/Host/StringConvert.h"
+#include "lldb/Utility/ArchSpec.h"
 
 using namespace lldb_private;
 
@@ -55,9 +51,13 @@ lldb::UnixSignalsSP UnixSignals::Create(const ArchSpec &arch) {
   }
 }
 
-//----------------------------------------------------------------------
+lldb::UnixSignalsSP UnixSignals::CreateForHost() {
+  static lldb::UnixSignalsSP s_unix_signals_sp =
+      Create(HostInfo::GetArchitecture());
+  return s_unix_signals_sp;
+}
+
 // UnixSignals constructor
-//----------------------------------------------------------------------
 UnixSignals::UnixSignals() { Reset(); }
 
 UnixSignals::UnixSignals(const UnixSignals &rhs) : m_signals(rhs.m_signals) {}
@@ -66,9 +66,8 @@ UnixSignals::~UnixSignals() = default;
 
 void UnixSignals::Reset() {
   // This builds one standard set of Unix Signals.  If yours aren't quite in
-  // this
-  // order, you can either subclass this class, and use Add & Remove to change
-  // them
+  // this order, you can either subclass this class, and use Add & Remove to
+  // change them
   // or you can subclass and build them afresh in your constructor;
   //
   // Note: the signals below are the Darwin signals.  Do not change these!
@@ -89,7 +88,7 @@ void UnixSignals::Reset() {
   AddSignal(10, "SIGBUS", false, true, true, "bus error");
   AddSignal(11, "SIGSEGV", false, true, true, "segmentation violation");
   AddSignal(12, "SIGSYS", false, true, true, "bad argument to system call");
-  AddSignal(13, "SIGPIPE", false, true, true,
+  AddSignal(13, "SIGPIPE", false, false, false,
             "write on a pipe with no one to read it");
   AddSignal(14, "SIGALRM", false, false, false, "alarm clock");
   AddSignal(15, "SIGTERM", false, true, true,
@@ -306,8 +305,8 @@ UnixSignals::GetFilteredSignals(llvm::Optional<bool> should_suppress,
     bool signal_notify = false;
     GetSignalInfo(signo, signal_suppress, signal_stop, signal_notify);
 
-    // If any of filtering conditions are not met,
-    // we move on to the next signal.
+    // If any of filtering conditions are not met, we move on to the next
+    // signal.
     if (should_suppress.hasValue() &&
         signal_suppress != should_suppress.getValue())
       continue;

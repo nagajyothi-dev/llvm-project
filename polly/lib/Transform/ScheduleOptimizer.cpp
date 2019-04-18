@@ -1,9 +1,8 @@
 //===- Schedule.cpp - Calculate an optimized schedule ---------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -52,22 +51,29 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
+#include "polly/ScopPass.h"
 #include "polly/Simplify.h"
-#include "polly/Support/GICHelper.h"
 #include "polly/Support/ISLOStream.h"
+#include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "isl/aff.h"
-#include "isl/band.h"
-#include "isl/constraint.h"
-#include "isl/map.h"
+#include "llvm/Support/raw_ostream.h"
+#include "isl/ctx.h"
 #include "isl/options.h"
 #include "isl/printer.h"
 #include "isl/schedule.h"
 #include "isl/schedule_node.h"
-#include "isl/space.h"
 #include "isl/union_map.h"
 #include "isl/union_set.h"
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <string>
+#include <vector>
 
 using namespace llvm;
 using namespace polly;
@@ -141,28 +147,51 @@ static cl::opt<int> ThroughputVectorFma(
 // represent the parameters of the target cache, which do not have typical
 // values that can be used by default. However, to apply the pattern matching
 // optimizations, we use the values of the parameters of Intel Core i7-3820
-// SandyBridge in case the parameters are not specified. Such an approach helps
-// also to attain the high-performance on IBM POWER System S822 and IBM Power
-// 730 Express server.
+// SandyBridge in case the parameters are not specified or not provided by the
+// TargetTransformInfo.
 static cl::opt<int> FirstCacheLevelAssociativity(
     "polly-target-1st-cache-level-associativity",
     cl::desc("The associativity of the first cache level."), cl::Hidden,
-    cl::init(8), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::init(-1), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<int> FirstCacheLevelDefaultAssociativity(
+    "polly-target-1st-cache-level-default-associativity",
+    cl::desc("The default associativity of the first cache level"
+             " (if not enough were provided by the TargetTransformInfo)."),
+    cl::Hidden, cl::init(8), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<int> SecondCacheLevelAssociativity(
     "polly-target-2nd-cache-level-associativity",
     cl::desc("The associativity of the second cache level."), cl::Hidden,
-    cl::init(8), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::init(-1), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<int> SecondCacheLevelDefaultAssociativity(
+    "polly-target-2nd-cache-level-default-associativity",
+    cl::desc("The default associativity of the second cache level"
+             " (if not enough were provided by the TargetTransformInfo)."),
+    cl::Hidden, cl::init(8), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<int> FirstCacheLevelSize(
     "polly-target-1st-cache-level-size",
     cl::desc("The size of the first cache level specified in bytes."),
+    cl::Hidden, cl::init(-1), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<int> FirstCacheLevelDefaultSize(
+    "polly-target-1st-cache-level-default-size",
+    cl::desc("The default size of the first cache level specified in bytes"
+             " (if not enough were provided by the TargetTransformInfo)."),
     cl::Hidden, cl::init(32768), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<int> SecondCacheLevelSize(
     "polly-target-2nd-cache-level-size",
     cl::desc("The size of the second level specified in bytes."), cl::Hidden,
-    cl::init(262144), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::init(-1), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<int> SecondCacheLevelDefaultSize(
+    "polly-target-2nd-cache-level-default-size",
+    cl::desc("The default size of the second cache level specified in bytes"
+             " (if not enough were provided by the TargetTransformInfo)."),
+    cl::Hidden, cl::init(262144), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 static cl::opt<int> VectorRegisterBitwidth(
     "polly-target-vector-register-bitwidth",
@@ -237,6 +266,33 @@ static cl::opt<bool> OptimizedScops(
              "transformations is applied on the schedule tree"),
     cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
 
+STATISTIC(ScopsProcessed, "Number of scops processed");
+STATISTIC(ScopsRescheduled, "Number of scops rescheduled");
+STATISTIC(ScopsOptimized, "Number of scops optimized");
+
+STATISTIC(NumAffineLoopsOptimized, "Number of affine loops optimized");
+STATISTIC(NumBoxedLoopsOptimized, "Number of boxed loops optimized");
+
+#define THREE_STATISTICS(VARNAME, DESC)                                        \
+  static Statistic VARNAME[3] = {                                              \
+      {DEBUG_TYPE, #VARNAME "0", DESC " (original)", {0}, {false}},            \
+      {DEBUG_TYPE, #VARNAME "1", DESC " (after scheduler)", {0}, {false}},     \
+      {DEBUG_TYPE, #VARNAME "2", DESC " (after optimizer)", {0}, {false}}}
+
+THREE_STATISTICS(NumBands, "Number of bands");
+THREE_STATISTICS(NumBandMembers, "Number of band members");
+THREE_STATISTICS(NumCoincident, "Number of coincident band members");
+THREE_STATISTICS(NumPermutable, "Number of permutable bands");
+THREE_STATISTICS(NumFilters, "Number of filter nodes");
+THREE_STATISTICS(NumExtension, "Number of extension nodes");
+
+STATISTIC(FirstLevelTileOpts, "Number of first level tiling applied");
+STATISTIC(SecondLevelTileOpts, "Number of second level tiling applied");
+STATISTIC(RegisterTileOpts, "Number of register tiling applied");
+STATISTIC(PrevectOpts, "Number of strip-mining for prevectorization applied");
+STATISTIC(MatMulOpts,
+          "Number of matrix multiplication patterns detected and optimized");
+
 /// Create an isl::union_set, which describes the isolate option based on
 /// IsolateDomain.
 ///
@@ -261,19 +317,20 @@ static isl::union_set getIsolateOptions(isl::set IsolateDomain,
   return isl::union_set(IsolateOption);
 }
 
-/// Create an isl::union_set, which describes the atomic option for the
+namespace {
+/// Create an isl::union_set, which describes the specified option for the
 /// dimension of the current node.
 ///
-/// It may help to reduce the size of generated code.
-///
-/// @param Ctx An isl::ctx, which is used to create the isl::union_set.
-static isl::union_set getAtomicOptions(isl::ctx Ctx) {
+/// @param Ctx    An isl::ctx, which is used to create the isl::union_set.
+/// @param Option The name of the option.
+isl::union_set getDimOptions(isl::ctx Ctx, const char *Option) {
   isl::space Space(Ctx, 0, 1);
-  isl::set AtomicOption = isl::set::universe(Space);
-  isl::id Id = isl::id::alloc(Ctx, "atomic", nullptr);
-  AtomicOption = AtomicOption.set_tuple_id(Id);
-  return isl::union_set(AtomicOption);
+  auto DimOption = isl::set::universe(Space);
+  auto Id = isl::id::alloc(Ctx, Option, nullptr);
+  DimOption = DimOption.set_tuple_id(Id);
+  return isl::union_set(DimOption);
 }
+} // namespace
 
 /// Create an isl::union_set, which describes the option of the form
 /// [isolate[] -> unroll[x]].
@@ -329,7 +386,7 @@ ScheduleTreeOptimizer::isolateFullPartialTiles(isl::schedule_node Node,
   isl::map ScheduleRelation = isl::map::from_union_map(SchedRelUMap);
   isl::set ScheduleRange = ScheduleRelation.range();
   isl::set IsolateDomain = getPartialTilePrefixes(ScheduleRange, VectorWidth);
-  isl::union_set AtomicOption = getAtomicOptions(IsolateDomain.get_ctx());
+  auto AtomicOption = getDimOptions(IsolateDomain.get_ctx(), "atomic");
   isl::union_set IsolateOption = getIsolateOptions(IsolateDomain, 1);
   Node = Node.parent().parent();
   isl::union_set Options = IsolateOption.unite(AtomicOption);
@@ -368,6 +425,7 @@ isl::schedule_node ScheduleTreeOptimizer::prevectSchedBand(
   if (isl_schedule_node_get_type(Node.get()) == isl_schedule_node_leaf)
     Node = Node.parent();
   auto LoopMarker = isl::id::alloc(Node.get_ctx(), "SIMD", nullptr);
+  PrevectOpts++;
   return Node.insert_mark(LoopMarker);
 }
 
@@ -385,7 +443,7 @@ isl::schedule_node ScheduleTreeOptimizer::tileNode(isl::schedule_node Node,
   }
   auto TileLoopMarkerStr = IdentifierString + " - Tiles";
   auto TileLoopMarker =
-      isl::id::alloc(Node.get_ctx(), TileLoopMarkerStr.c_str(), nullptr);
+      isl::id::alloc(Node.get_ctx(), TileLoopMarkerStr, nullptr);
   Node = Node.insert_mark(TileLoopMarker);
   Node = Node.child(0);
   Node =
@@ -393,26 +451,23 @@ isl::schedule_node ScheduleTreeOptimizer::tileNode(isl::schedule_node Node,
   Node = Node.child(0);
   auto PointLoopMarkerStr = IdentifierString + " - Points";
   auto PointLoopMarker =
-      isl::id::alloc(Node.get_ctx(), PointLoopMarkerStr.c_str(), nullptr);
+      isl::id::alloc(Node.get_ctx(), PointLoopMarkerStr, nullptr);
   Node = Node.insert_mark(PointLoopMarker);
   return Node.child(0);
 }
 
-isl::schedule_node
-ScheduleTreeOptimizer::applyRegisterTiling(isl::schedule_node Node,
-                                           llvm::ArrayRef<int> TileSizes,
-                                           int DefaultTileSize) {
+isl::schedule_node ScheduleTreeOptimizer::applyRegisterTiling(
+    isl::schedule_node Node, ArrayRef<int> TileSizes, int DefaultTileSize) {
   Node = tileNode(Node, "Register tiling", TileSizes, DefaultTileSize);
   auto Ctx = Node.get_ctx();
   return Node.band_set_ast_build_options(isl::union_set(Ctx, "{unroll[x]}"));
 }
 
-namespace {
-bool isSimpleInnermostBand(const isl::schedule_node &Node) {
-  assert(isl_schedule_node_get_type(Node.keep()) == isl_schedule_node_band);
-  assert(isl_schedule_node_n_children(Node.keep()) == 1);
+static bool isSimpleInnermostBand(const isl::schedule_node &Node) {
+  assert(isl_schedule_node_get_type(Node.get()) == isl_schedule_node_band);
+  assert(isl_schedule_node_n_children(Node.get()) == 1);
 
-  auto ChildType = isl_schedule_node_get_type(Node.child(0).keep());
+  auto ChildType = isl_schedule_node_get_type(Node.child(0).get());
 
   if (ChildType == isl_schedule_node_leaf)
     return true;
@@ -422,18 +477,17 @@ bool isSimpleInnermostBand(const isl::schedule_node &Node) {
 
   auto Sequence = Node.child(0);
 
-  for (int c = 0, nc = isl_schedule_node_n_children(Sequence.keep()); c < nc;
+  for (int c = 0, nc = isl_schedule_node_n_children(Sequence.get()); c < nc;
        ++c) {
     auto Child = Sequence.child(c);
-    if (isl_schedule_node_get_type(Child.keep()) != isl_schedule_node_filter)
+    if (isl_schedule_node_get_type(Child.get()) != isl_schedule_node_filter)
       return false;
-    if (isl_schedule_node_get_type(Child.child(0).keep()) !=
+    if (isl_schedule_node_get_type(Child.child(0).get()) !=
         isl_schedule_node_leaf)
       return false;
   }
   return true;
 }
-} // namespace
 
 bool ScheduleTreeOptimizer::isTileableBandNode(isl::schedule_node Node) {
   if (isl_schedule_node_get_type(Node.get()) != isl_schedule_node_band)
@@ -456,17 +510,23 @@ bool ScheduleTreeOptimizer::isTileableBandNode(isl::schedule_node Node) {
 
 __isl_give isl::schedule_node
 ScheduleTreeOptimizer::standardBandOpts(isl::schedule_node Node, void *User) {
-  if (FirstLevelTiling)
+  if (FirstLevelTiling) {
     Node = tileNode(Node, "1st level tiling", FirstLevelTileSizes,
                     FirstLevelDefaultTileSize);
+    FirstLevelTileOpts++;
+  }
 
-  if (SecondLevelTiling)
+  if (SecondLevelTiling) {
     Node = tileNode(Node, "2nd level tiling", SecondLevelTileSizes,
                     SecondLevelDefaultTileSize);
+    SecondLevelTileOpts++;
+  }
 
-  if (RegisterTiling)
+  if (RegisterTiling) {
     Node =
         applyRegisterTiling(Node, RegisterTileSizes, RegisterDefaultTileSize);
+    RegisterTileOpts++;
+  }
 
   if (PollyVectorizerChoice == VECTORIZER_NONE)
     return Node;
@@ -481,61 +541,6 @@ ScheduleTreeOptimizer::standardBandOpts(isl::schedule_node Node, void *User) {
     }
 
   return Node;
-}
-
-/// Get the position of a dimension with a non-zero coefficient.
-///
-/// Check that isl constraint @p Constraint has only one non-zero
-/// coefficient for dimensions that have type @p DimType. If this is true,
-/// return the position of the dimension corresponding to the non-zero
-/// coefficient and negative value, otherwise.
-///
-/// @param Constraint The isl constraint to be checked.
-/// @param DimType    The type of the dimensions.
-/// @return           The position of the dimension in case the isl
-///                   constraint satisfies the requirements, a negative
-///                   value, otherwise.
-static int getMatMulConstraintDim(isl::constraint Constraint,
-                                  isl::dim DimType) {
-  int DimPos = -1;
-  auto LocalSpace = Constraint.get_local_space();
-  int LocalSpaceDimNum = LocalSpace.dim(DimType);
-  for (int i = 0; i < LocalSpaceDimNum; i++) {
-    auto Val = Constraint.get_coefficient_val(DimType, i);
-    if (Val.is_zero())
-      continue;
-    if (DimPos >= 0 || (DimType == isl::dim::out && !Val.is_one()) ||
-        (DimType == isl::dim::in && !Val.is_negone()))
-      return -1;
-    DimPos = i;
-  }
-  return DimPos;
-}
-
-/// Check the form of the isl constraint.
-///
-/// Check that the @p DimInPos input dimension of the isl constraint
-/// @p Constraint has a coefficient that is equal to negative one, the @p
-/// DimOutPos has a coefficient that is equal to one and others
-/// have coefficients equal to zero.
-///
-/// @param Constraint The isl constraint to be checked.
-/// @param DimInPos   The input dimension of the isl constraint.
-/// @param DimOutPos  The output dimension of the isl constraint.
-/// @return           isl_stat_ok in case the isl constraint satisfies
-///                   the requirements, isl_stat_error otherwise.
-static isl_stat isMatMulOperandConstraint(isl::constraint Constraint,
-                                          int &DimInPos, int &DimOutPos) {
-  auto Val = Constraint.get_constant_val();
-  if (!isl_constraint_is_equality(Constraint.get()) || !Val.is_zero())
-    return isl_stat_error;
-  DimInPos = getMatMulConstraintDim(Constraint, isl::dim::in);
-  if (DimInPos < 0)
-    return isl_stat_error;
-  DimOutPos = getMatMulConstraintDim(Constraint, isl::dim::out);
-  if (DimOutPos < 0)
-    return isl_stat_error;
-  return isl_stat_ok;
 }
 
 /// Permute the two dimensions of the isl map.
@@ -585,30 +590,48 @@ isl::map permuteDimensions(isl::map Map, isl::dim DimType, unsigned DstPos,
 ///                  second output dimension.
 /// @return          True in case @p AccMap has the expected form and false,
 ///                  otherwise.
-static bool isMatMulOperandAcc(isl::map AccMap, int &FirstPos, int &SecondPos) {
-  int DimInPos[] = {FirstPos, SecondPos};
-  auto Lambda = [=, &DimInPos](isl::basic_map BasicMap) -> isl::stat {
-    auto Constraints = BasicMap.get_constraint_list();
-    if (isl_constraint_list_n_constraint(Constraints.get()) != 2)
-      return isl::stat::error;
-    for (int i = 0; i < 2; i++) {
-      auto Constraint =
-          isl::manage(isl_constraint_list_get_constraint(Constraints.get(), i));
-      int InPos, OutPos;
-      if (isMatMulOperandConstraint(Constraint, InPos, OutPos) ==
-              isl_stat_error ||
-          OutPos > 1 || (DimInPos[OutPos] >= 0 && DimInPos[OutPos] != InPos))
-        return isl::stat::error;
-      DimInPos[OutPos] = InPos;
-    }
-    return isl::stat::ok;
-  };
-  if (AccMap.foreach_basic_map(Lambda) != isl::stat::ok || DimInPos[0] < 0 ||
-      DimInPos[1] < 0)
+static bool isMatMulOperandAcc(isl::set Domain, isl::map AccMap, int &FirstPos,
+                               int &SecondPos) {
+  isl::space Space = AccMap.get_space();
+  isl::map Universe = isl::map::universe(Space);
+
+  if (Space.dim(isl::dim::out) != 2)
     return false;
-  FirstPos = DimInPos[0];
-  SecondPos = DimInPos[1];
-  return true;
+
+  // MatMul has the form:
+  // for (i = 0; i < N; i++)
+  //   for (j = 0; j < M; j++)
+  //     for (k = 0; k < P; k++)
+  //       C[i, j] += A[i, k] * B[k, j]
+  //
+  // Permutation of three outer loops: 3! = 6 possibilities.
+  int FirstDims[] = {0, 0, 1, 1, 2, 2};
+  int SecondDims[] = {1, 2, 2, 0, 0, 1};
+  for (int i = 0; i < 6; i += 1) {
+    auto PossibleMatMul =
+        Universe.equate(isl::dim::in, FirstDims[i], isl::dim::out, 0)
+            .equate(isl::dim::in, SecondDims[i], isl::dim::out, 1);
+
+    AccMap = AccMap.intersect_domain(Domain);
+    PossibleMatMul = PossibleMatMul.intersect_domain(Domain);
+
+    // If AccMap spans entire domain (Non-partial write),
+    // compute FirstPos and SecondPos.
+    // If AccMap != PossibleMatMul here (the two maps have been gisted at
+    // this point), it means that the writes are not complete, or in other
+    // words, it is a Partial write and Partial writes must be rejected.
+    if (AccMap.is_equal(PossibleMatMul)) {
+      if (FirstPos != -1 && FirstPos != FirstDims[i])
+        continue;
+      FirstPos = FirstDims[i];
+      if (SecondPos != -1 && SecondPos != SecondDims[i])
+        continue;
+      SecondPos = SecondDims[i];
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /// Does the memory access represent a non-scalar operand of the matrix
@@ -627,18 +650,16 @@ static bool isMatMulNonScalarReadAccess(MemoryAccess *MemAccess,
   if (!MemAccess->isLatestArrayKind() || !MemAccess->isRead())
     return false;
   auto AccMap = MemAccess->getLatestAccessRelation();
-  if (isMatMulOperandAcc(AccMap, MMI.i, MMI.j) && !MMI.ReadFromC &&
-      isl_map_n_basic_map(AccMap.get()) == 1) {
+  isl::set StmtDomain = MemAccess->getStatement()->getDomain();
+  if (isMatMulOperandAcc(StmtDomain, AccMap, MMI.i, MMI.j) && !MMI.ReadFromC) {
     MMI.ReadFromC = MemAccess;
     return true;
   }
-  if (isMatMulOperandAcc(AccMap, MMI.i, MMI.k) && !MMI.A &&
-      isl_map_n_basic_map(AccMap.get()) == 1) {
+  if (isMatMulOperandAcc(StmtDomain, AccMap, MMI.i, MMI.k) && !MMI.A) {
     MMI.A = MemAccess;
     return true;
   }
-  if (isMatMulOperandAcc(AccMap, MMI.k, MMI.j) && !MMI.B &&
-      isl_map_n_basic_map(AccMap.get()) == 1) {
+  if (isMatMulOperandAcc(StmtDomain, AccMap, MMI.k, MMI.j) && !MMI.B) {
     MMI.B = MemAccess;
     return true;
   }
@@ -701,8 +722,8 @@ static bool containsOnlyMatrMultAcc(isl::map PartialSchedule,
 ///         and false, otherwise.
 static bool containsOnlyMatMulDep(isl::map Schedule, const Dependences *D,
                                   int &Pos) {
-  auto Dep = isl::manage(D->getDependences(Dependences::TYPE_RAW));
-  auto Red = isl::manage(D->getDependences(Dependences::TYPE_RED));
+  isl::union_map Dep = D->getDependences(Dependences::TYPE_RAW);
+  isl::union_map Red = D->getDependences(Dependences::TYPE_RED);
   if (Red)
     Dep = Dep.unite(Red);
   auto DomainSpace = Schedule.get_space().domain();
@@ -758,8 +779,7 @@ static bool containsMatrMult(isl::map PartialSchedule, const Dependences *D,
     if (!MemAccessPtr->isWrite())
       return false;
     auto AccMap = MemAccessPtr->getLatestAccessRelation();
-    if (isl_map_n_basic_map(AccMap.get()) != 1 ||
-        !isMatMulOperandAcc(AccMap, MMI.i, MMI.j))
+    if (!isMatMulOperandAcc(Stmt->getDomain(), AccMap, MMI.i, MMI.j))
       return false;
     MMI.WriteToC = MemAccessPtr;
     break;
@@ -870,7 +890,7 @@ static uint64_t getMatMulTypeSize(MatMulInfoTy MMI) {
 /// @return The structure of type MicroKernelParamsTy.
 /// @see MicroKernelParamsTy
 static struct MicroKernelParamsTy
-getMicroKernelParams(const llvm::TargetTransformInfo *TTI, MatMulInfoTy MMI) {
+getMicroKernelParams(const TargetTransformInfo *TTI, MatMulInfoTy MMI) {
   assert(TTI && "The target transform info should be provided.");
 
   // Nvec - Number of double-precision floating-point numbers that can be hold
@@ -891,6 +911,44 @@ getMicroKernelParams(const llvm::TargetTransformInfo *TTI, MatMulInfoTy MMI) {
   return {Mr, Nr};
 }
 
+namespace {
+/// Determine parameters of the target cache.
+///
+/// @param TTI Target Transform Info.
+void getTargetCacheParameters(const llvm::TargetTransformInfo *TTI) {
+  auto L1DCache = llvm::TargetTransformInfo::CacheLevel::L1D;
+  auto L2DCache = llvm::TargetTransformInfo::CacheLevel::L2D;
+  if (FirstCacheLevelSize == -1) {
+    if (TTI->getCacheSize(L1DCache).hasValue())
+      FirstCacheLevelSize = TTI->getCacheSize(L1DCache).getValue();
+    else
+      FirstCacheLevelSize = static_cast<int>(FirstCacheLevelDefaultSize);
+  }
+  if (SecondCacheLevelSize == -1) {
+    if (TTI->getCacheSize(L2DCache).hasValue())
+      SecondCacheLevelSize = TTI->getCacheSize(L2DCache).getValue();
+    else
+      SecondCacheLevelSize = static_cast<int>(SecondCacheLevelDefaultSize);
+  }
+  if (FirstCacheLevelAssociativity == -1) {
+    if (TTI->getCacheAssociativity(L1DCache).hasValue())
+      FirstCacheLevelAssociativity =
+          TTI->getCacheAssociativity(L1DCache).getValue();
+    else
+      FirstCacheLevelAssociativity =
+          static_cast<int>(FirstCacheLevelDefaultAssociativity);
+  }
+  if (SecondCacheLevelAssociativity == -1) {
+    if (TTI->getCacheAssociativity(L2DCache).hasValue())
+      SecondCacheLevelAssociativity =
+          TTI->getCacheAssociativity(L2DCache).getValue();
+    else
+      SecondCacheLevelAssociativity =
+          static_cast<int>(SecondCacheLevelDefaultAssociativity);
+  }
+}
+} // namespace
+
 /// Get parameters of the BLIS macro kernel.
 ///
 /// During the computation of matrix multiplication, blocks of partitioned
@@ -899,6 +957,7 @@ getMicroKernelParams(const llvm::TargetTransformInfo *TTI, MatMulInfoTy MMI) {
 /// iterations. Since parameters of the macro kernel determine sizes of these
 /// blocks, there are upper and lower bounds on these parameters.
 ///
+/// @param TTI Target Transform Info.
 /// @param MicroKernelParams Parameters of the micro-kernel
 ///                          to be taken into account.
 /// @param MMI Parameters of the matrix multiplication operands.
@@ -906,8 +965,10 @@ getMicroKernelParams(const llvm::TargetTransformInfo *TTI, MatMulInfoTy MMI) {
 /// @see MacroKernelParamsTy
 /// @see MicroKernelParamsTy
 static struct MacroKernelParamsTy
-getMacroKernelParams(const MicroKernelParamsTy &MicroKernelParams,
+getMacroKernelParams(const llvm::TargetTransformInfo *TTI,
+                     const MicroKernelParamsTy &MicroKernelParams,
                      MatMulInfoTy MMI) {
+  getTargetCacheParameters(TTI);
   // According to www.cs.utexas.edu/users/flame/pubs/TOMS-BLIS-Analytical.pdf,
   // it requires information about the first two levels of a cache to determine
   // all the parameters of a macro-kernel. It also checks that an associativity
@@ -1032,9 +1093,9 @@ optimizeDataLayoutMatrMulPattern(isl::schedule_node Node, isl::map MapOldIndVar,
 
   // Create a copy statement that corresponds to the memory access to the
   // matrix B, the second operand of the matrix multiplication.
-  Node = Node.parent().parent().parent().parent().parent();
+  Node = Node.parent().parent().parent().parent().parent().parent();
   Node = isl::manage(isl_schedule_node_band_split(Node.release(), 2)).child(0);
-  auto AccRel = getMatMulAccRel(isl::manage(MapOldIndVar.copy()), 3, 7);
+  auto AccRel = getMatMulAccRel(MapOldIndVar, 3, 7);
   unsigned FirstDimSize = MacroParams.Nc / MicroParams.Nr;
   unsigned SecondDimSize = MacroParams.Kc;
   unsigned ThirdDimSize = MicroParams.Nr;
@@ -1055,15 +1116,15 @@ optimizeDataLayoutMatrMulPattern(isl::schedule_node Node, isl::map MapOldIndVar,
   auto DomainId = Domain.get_tuple_id();
   auto *NewStmt = Stmt->getParent()->addScopStmt(
       OldAcc, MMI.B->getLatestAccessRelation(), Domain);
-  ExtMap = ExtMap.set_tuple_id(isl::dim::out, isl::manage(DomainId.copy()));
-  ExtMap = ExtMap.intersect_range(isl::manage(Domain.copy()));
+  ExtMap = ExtMap.set_tuple_id(isl::dim::out, DomainId);
+  ExtMap = ExtMap.intersect_range(Domain);
   ExtMap = ExtMap.set_tuple_id(isl::dim::out, NewStmt->getDomainId());
   Node = createExtensionNode(Node, ExtMap);
 
   // Create a copy statement that corresponds to the memory access
   // to the matrix A, the first operand of the matrix multiplication.
   Node = Node.child(0);
-  AccRel = getMatMulAccRel(isl::manage(MapOldIndVar.copy()), 4, 6);
+  AccRel = getMatMulAccRel(MapOldIndVar, 4, 6);
   FirstDimSize = MacroParams.Mc / MicroParams.Mr;
   ThirdDimSize = MicroParams.Mr;
   SAI = Stmt->getParent()->createScopArrayInfo(
@@ -1085,7 +1146,7 @@ optimizeDataLayoutMatrMulPattern(isl::schedule_node Node, isl::map MapOldIndVar,
   ExtMap = ExtMap.intersect_range(Domain);
   ExtMap = ExtMap.set_tuple_id(isl::dim::out, NewStmt->getDomainId());
   Node = createExtensionNode(Node, ExtMap);
-  return Node.child(0).child(0).child(0).child(0);
+  return Node.child(0).child(0).child(0).child(0).child(0);
 }
 
 /// Get a relation mapping induction variables produced by schedule
@@ -1141,15 +1202,14 @@ isolateAndUnrollMatMulInnerLoops(isl::schedule_node Node,
   isl::union_set IsolateOption =
       getIsolateOptions(Prefix.add_dims(isl::dim::set, 3), 3);
   isl::ctx Ctx = Node.get_ctx();
-  isl::union_set AtomicOption = getAtomicOptions(Ctx);
-  isl::union_set Options = IsolateOption.unite(AtomicOption);
+  auto Options = IsolateOption.unite(getDimOptions(Ctx, "unroll"));
   Options = Options.unite(getUnrollIsolatedSetOptions(Ctx));
   Node = Node.band_set_ast_build_options(Options);
-  Node = Node.parent().parent();
+  Node = Node.parent().parent().parent();
   IsolateOption = getIsolateOptions(Prefix, 3);
-  Options = IsolateOption.unite(AtomicOption);
+  Options = IsolateOption.unite(getDimOptions(Ctx, "separate"));
   Node = Node.band_set_ast_build_options(Options);
-  Node = Node.child(0).child(0);
+  Node = Node.child(0).child(0).child(0);
   return Node;
 }
 
@@ -1159,12 +1219,21 @@ isolateAndUnrollMatMulInnerLoops(isl::schedule_node Node,
 /// @param BasePtr The pointer to be marked.
 /// @return The modified isl_schedule_node.
 static isl::schedule_node markInterIterationAliasFree(isl::schedule_node Node,
-                                                      llvm::Value *BasePtr) {
+                                                      Value *BasePtr) {
   if (!BasePtr)
     return Node;
 
   auto Id =
       isl::id::alloc(Node.get_ctx(), "Inter iteration alias-free", BasePtr);
+  return Node.insert_mark(Id).child(0);
+}
+
+/// Insert "Loop Vectorizer Disabled" mark node.
+///
+/// @param Node The child of the mark node to be inserted.
+/// @return The modified isl_schedule_node.
+static isl::schedule_node markLoopVectorizerDisabled(isl::schedule_node Node) {
+  auto Id = isl::id::alloc(Node.get_ctx(), "Loop Vectorizer Disabled", nullptr);
   return Node.insert_mark(Id).child(0);
 }
 
@@ -1176,19 +1245,18 @@ static isl::schedule_node markInterIterationAliasFree(isl::schedule_node Node,
 ///
 /// @param Node The band node to be modified.
 /// @return The modified schedule node.
-namespace {
-isl::schedule_node getBandNodeWithOriginDimOrder(isl::schedule_node Node) {
-  assert(isl_schedule_node_get_type(Node.keep()) == isl_schedule_node_band);
-  if (isl_schedule_node_get_type(Node.child(0).keep()) !=
-      isl_schedule_node_leaf)
+static isl::schedule_node
+getBandNodeWithOriginDimOrder(isl::schedule_node Node) {
+  assert(isl_schedule_node_get_type(Node.get()) == isl_schedule_node_band);
+  if (isl_schedule_node_get_type(Node.child(0).get()) != isl_schedule_node_leaf)
     return Node;
   auto Domain = Node.get_universe_domain();
-  assert(isl_union_set_n_set(Domain.keep()) == 1);
+  assert(isl_union_set_n_set(Domain.get()) == 1);
   if (Node.get_schedule_depth() != 0 ||
-      (isl::set(isl::manage(Domain.copy())).dim(isl::dim::set) !=
-       isl_schedule_node_band_n_member(Node.keep())))
+      (isl::set(Domain).dim(isl::dim::set) !=
+       isl_schedule_node_band_n_member(Node.get())))
     return Node;
-  Node = isl::manage(isl_schedule_node_delete(Node.take()));
+  Node = isl::manage(isl_schedule_node_delete(Node.copy()));
   auto PartialSchedulePwAff = Domain.identity_union_pw_multi_aff();
   auto PartialScheduleMultiPwAff =
       isl::multi_union_pw_aff(PartialSchedulePwAff);
@@ -1196,11 +1264,11 @@ isl::schedule_node getBandNodeWithOriginDimOrder(isl::schedule_node Node) {
       PartialScheduleMultiPwAff.reset_tuple_id(isl::dim::set);
   return Node.insert_partial_schedule(PartialScheduleMultiPwAff);
 }
-} // namespace
 
-isl::schedule_node ScheduleTreeOptimizer::optimizeMatMulPattern(
-    isl::schedule_node Node, const llvm::TargetTransformInfo *TTI,
-    MatMulInfoTy &MMI) {
+isl::schedule_node
+ScheduleTreeOptimizer::optimizeMatMulPattern(isl::schedule_node Node,
+                                             const TargetTransformInfo *TTI,
+                                             MatMulInfoTy &MMI) {
   assert(TTI && "The target transform info should be provided.");
   Node = markInterIterationAliasFree(
       Node, MMI.WriteToC->getLatestScopArrayInfo()->getBasePtr());
@@ -1216,7 +1284,7 @@ isl::schedule_node ScheduleTreeOptimizer::optimizeMatMulPattern(
   NewK = NewK == DimOutNum - 2 ? NewJ : NewK;
   Node = permuteBandNodeDimensions(Node, NewK, DimOutNum - 1);
   auto MicroKernelParams = getMicroKernelParams(TTI, MMI);
-  auto MacroKernelParams = getMacroKernelParams(MicroKernelParams, MMI);
+  auto MacroKernelParams = getMacroKernelParams(TTI, MicroKernelParams, MMI);
   Node = createMacroKernel(Node, MacroKernelParams);
   Node = createMicroKernel(Node, MicroKernelParams);
   if (MacroKernelParams.Mc == 1 || MacroKernelParams.Nc == 1 ||
@@ -1226,6 +1294,7 @@ isl::schedule_node ScheduleTreeOptimizer::optimizeMatMulPattern(
                                                         MacroKernelParams);
   if (!MapOldIndVar)
     return Node;
+  Node = markLoopVectorizerDisabled(Node.parent()).child(0);
   Node = isolateAndUnrollMatMulInnerLoops(Node, MicroKernelParams);
   return optimizeDataLayoutMatrMulPattern(Node, MapOldIndVar, MicroKernelParams,
                                           MacroKernelParams, MMI);
@@ -1253,7 +1322,7 @@ bool ScheduleTreeOptimizer::isMatrMultPattern(isl::schedule_node Node,
 __isl_give isl_schedule_node *
 ScheduleTreeOptimizer::optimizeBand(__isl_take isl_schedule_node *Node,
                                     void *User) {
-  if (!isTileableBandNode(isl::manage(isl_schedule_node_copy(Node))))
+  if (!isTileableBandNode(isl::manage_copy(Node)))
     return Node;
 
   const OptimizerAdditionalInfoTy *OAI =
@@ -1261,9 +1330,9 @@ ScheduleTreeOptimizer::optimizeBand(__isl_take isl_schedule_node *Node,
 
   MatMulInfoTy MMI;
   if (PMBasedOpts && User &&
-      isMatrMultPattern(isl::manage(isl_schedule_node_copy(Node)), OAI->D,
-                        MMI)) {
-    DEBUG(dbgs() << "The matrix multiplication pattern was detected\n");
+      isMatrMultPattern(isl::manage_copy(Node), OAI->D, MMI)) {
+    LLVM_DEBUG(dbgs() << "The matrix multiplication pattern was detected\n");
+    MatMulOpts++;
     return optimizeMatMulPattern(isl::manage(Node), OAI->TTI, MMI).release();
   }
 
@@ -1297,7 +1366,7 @@ bool ScheduleTreeOptimizer::isProfitableSchedule(Scop &S,
   // optimizations, by comparing (yet to be defined) performance metrics
   // before/after the scheduling optimizer
   // (e.g., #stride-one accesses)
-  if (S.containsExtensionNode(NewSchedule.get()))
+  if (S.containsExtensionNode(NewSchedule))
     return true;
   auto NewScheduleMap = NewSchedule.get_map();
   auto OldSchedule = S.getSchedule();
@@ -1308,12 +1377,14 @@ bool ScheduleTreeOptimizer::isProfitableSchedule(Scop &S,
 }
 
 namespace {
+
 class IslScheduleOptimizer : public ScopPass {
 public:
   static char ID;
-  explicit IslScheduleOptimizer() : ScopPass(ID) { LastSchedule = nullptr; }
 
-  ~IslScheduleOptimizer() { isl_schedule_free(LastSchedule); }
+  explicit IslScheduleOptimizer() : ScopPass(ID) {}
+
+  ~IslScheduleOptimizer() override { isl_schedule_free(LastSchedule); }
 
   /// Optimize the schedule of the SCoP @p S.
   bool runOnScop(Scop &S) override;
@@ -1331,14 +1402,66 @@ public:
   }
 
 private:
-  isl_schedule *LastSchedule;
+  isl_schedule *LastSchedule = nullptr;
 };
 } // namespace
 
 char IslScheduleOptimizer::ID = 0;
 
-bool IslScheduleOptimizer::runOnScop(Scop &S) {
+/// Collect statistics for the schedule tree.
+///
+/// @param Schedule The schedule tree to analyze. If not a schedule tree it is
+/// ignored.
+/// @param Version  The version of the schedule tree that is analyzed.
+///                 0 for the original schedule tree before any transformation.
+///                 1 for the schedule tree after isl's rescheduling.
+///                 2 for the schedule tree after optimizations are applied
+///                 (tiling, pattern matching)
+static void walkScheduleTreeForStatistics(isl::schedule Schedule, int Version) {
+  auto Root = Schedule.get_root();
+  if (!Root)
+    return;
 
+  isl_schedule_node_foreach_descendant_top_down(
+      Root.get(),
+      [](__isl_keep isl_schedule_node *nodeptr, void *user) -> isl_bool {
+        isl::schedule_node Node = isl::manage_copy(nodeptr);
+        int Version = *static_cast<int *>(user);
+
+        switch (isl_schedule_node_get_type(Node.get())) {
+        case isl_schedule_node_band: {
+          NumBands[Version]++;
+          if (isl_schedule_node_band_get_permutable(Node.get()) ==
+              isl_bool_true)
+            NumPermutable[Version]++;
+
+          int CountMembers = isl_schedule_node_band_n_member(Node.get());
+          NumBandMembers[Version] += CountMembers;
+          for (int i = 0; i < CountMembers; i += 1) {
+            if (Node.band_member_get_coincident(i))
+              NumCoincident[Version]++;
+          }
+          break;
+        }
+
+        case isl_schedule_node_filter:
+          NumFilters[Version]++;
+          break;
+
+        case isl_schedule_node_extension:
+          NumExtension[Version]++;
+          break;
+
+        default:
+          break;
+        }
+
+        return isl_bool_true;
+      },
+      &Version);
+}
+
+bool IslScheduleOptimizer::runOnScop(Scop &S) {
   // Skip SCoPs in case they're already optimised by PPCGCodeGeneration
   if (S.isToBeSkipped())
     return false;
@@ -1352,6 +1475,11 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
 
   const Dependences &D =
       getAnalysis<DependenceInfo>().getDependences(Dependences::AL_Statement);
+
+  if (D.getSharedIslCtx() != S.getSharedIslCtx()) {
+    LLVM_DEBUG(dbgs() << "DependenceInfo for another SCoP/isl_ctx\n");
+    return false;
+  }
 
   if (!D.hasValidDependences())
     return false;
@@ -1381,8 +1509,11 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   if (!Domain)
     return false;
 
-  isl::union_map Validity = give(D.getDependences(ValidityKinds));
-  isl::union_map Proximity = give(D.getDependences(ProximityKinds));
+  ScopsProcessed++;
+  walkScheduleTreeForStatistics(S.getScheduleTree(), 0);
+
+  isl::union_map Validity = D.getDependences(ValidityKinds);
+  isl::union_map Proximity = D.getDependences(ProximityKinds);
 
   // Simplify the dependences by removing the constraints introduced by the
   // domains. This can speed up the scheduling time significantly, as large
@@ -1401,10 +1532,10 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
               "or 'no'. Falling back to default: 'yes'\n";
   }
 
-  DEBUG(dbgs() << "\n\nCompute schedule from: ");
-  DEBUG(dbgs() << "Domain := " << Domain << ";\n");
-  DEBUG(dbgs() << "Proximity := " << Proximity << ";\n");
-  DEBUG(dbgs() << "Validity := " << Validity << ";\n");
+  LLVM_DEBUG(dbgs() << "\n\nCompute schedule from: ");
+  LLVM_DEBUG(dbgs() << "Domain := " << Domain << ";\n");
+  LLVM_DEBUG(dbgs() << "Proximity := " << Proximity << ";\n");
+  LLVM_DEBUG(dbgs() << "Validity := " << Validity << ";\n");
 
   unsigned IslSerializeSCCs;
 
@@ -1442,7 +1573,7 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
     IslOuterCoincidence = 0;
   }
 
-  isl_ctx *Ctx = S.getIslCtx();
+  isl_ctx *Ctx = S.getIslCtx().get();
 
   isl_options_set_schedule_outer_coincidence(Ctx, IslOuterCoincidence);
   isl_options_set_schedule_serialize_sccs(Ctx, IslSerializeSCCs);
@@ -1461,12 +1592,16 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   auto Schedule = SC.compute_schedule();
   isl_options_set_on_error(Ctx, OnErrorStatus);
 
+  walkScheduleTreeForStatistics(Schedule, 1);
+
   // In cases the scheduler is not able to optimize the code, we just do not
   // touch the schedule.
   if (!Schedule)
     return false;
 
-  DEBUG({
+  ScopsRescheduled++;
+
+  LLVM_DEBUG({
     auto *P = isl_printer_to_str(Ctx);
     P = isl_printer_set_yaml_style(P, ISL_YAML_STYLE_BLOCK);
     P = isl_printer_print_schedule(P, Schedule.get());
@@ -1480,11 +1615,17 @@ bool IslScheduleOptimizer::runOnScop(Scop &S) {
   auto *TTI = &getAnalysis<TargetTransformInfoWrapperPass>().getTTI(F);
   const OptimizerAdditionalInfoTy OAI = {TTI, const_cast<Dependences *>(&D)};
   auto NewSchedule = ScheduleTreeOptimizer::optimizeSchedule(Schedule, &OAI);
+  walkScheduleTreeForStatistics(NewSchedule, 2);
 
   if (!ScheduleTreeOptimizer::isProfitableSchedule(S, NewSchedule))
     return false;
 
-  S.setScheduleTree(NewSchedule.release());
+  auto ScopStats = S.getStatistics();
+  ScopsOptimized++;
+  NumAffineLoopsOptimized += ScopStats.NumAffineLoops;
+  NumBoxedLoopsOptimized += ScopStats.NumBoxedLoops;
+
+  S.setScheduleTree(NewSchedule);
   S.markAsOptimized();
 
   if (OptimizedScops)
@@ -1516,6 +1657,8 @@ void IslScheduleOptimizer::getAnalysisUsage(AnalysisUsage &AU) const {
   ScopPass::getAnalysisUsage(AU);
   AU.addRequired<DependenceInfo>();
   AU.addRequired<TargetTransformInfoWrapperPass>();
+
+  AU.addPreserved<DependenceInfo>();
 }
 
 Pass *polly::createIslScheduleOptimizerPass() {

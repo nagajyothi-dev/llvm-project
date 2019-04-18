@@ -1,12 +1,15 @@
 ; RUN: opt -S -loop-rotate < %s | FileCheck %s
+; RUN: opt -S -loop-rotate -enable-mssa-loop-dependency=true -verify-memoryssa < %s | FileCheck %s
 
 ;CHECK-LABEL: func
 ;CHECK-LABEL: entry
 ;CHECK-NEXT: tail call void @llvm.dbg.value(metadata i32 %a
-;CHECK-NEXT: tail call void @llvm.dbg.value(metadata i32 1, metadata !13, metadata !11), !dbg !15
+;CHECK-NEXT: tail call void @llvm.dbg.value(metadata i32 1, metadata ![[I_VAR:[0-9]+]], metadata !DIExpression())
 ;CHECK-LABEL: for.body:
 ;CHECK-NEXT: [[I:%.*]] = phi i32 [ 1, %entry ], [ %inc, %for.body ]
-;CHECK-NEXT: tail call void @llvm.dbg.value(metadata i32 [[I]], metadata !13, metadata !11), !dbg !15
+;CHECK-NEXT: tail call void @llvm.dbg.value(metadata i32 [[I]], metadata ![[I_VAR]], metadata !DIExpression())
+
+; CHECK: ![[I_VAR]] = !DILocalVariable(name: "i",{{.*}})
 
 ; Function Attrs: noinline nounwind
 define void @func(i32 %a) local_unnamed_addr #0 !dbg !6 {
@@ -45,13 +48,13 @@ attributes #3 = { nounwind }
 !llvm.module.flags = !{!3, !4}
 !llvm.ident = !{!5}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 5.0.0 (http://llvm.org/git/clang.git 0f3ed908c1f13f83da4b240f7595eb8d05e0a754) (http://llvm.org/git/llvm.git 8e270f5a6b8ceb0f3ac3ef1ffb83c5e29b44ae68)", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 5.0.0", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2)
 !1 = !DIFile(filename: "debug-phi.c", directory: "/work/projects/src/tests/debug")
 !2 = !{}
 !3 = !{i32 2, !"Dwarf Version", i32 4}
 !4 = !{i32 2, !"Debug Info Version", i32 3}
-!5 = !{!"clang version 5.0.0 (http://llvm.org/git/clang.git 0f3ed908c1f13f83da4b240f7595eb8d05e0a754) (http://llvm.org/git/llvm.git 8e270f5a6b8ceb0f3ac3ef1ffb83c5e29b44ae68)"}
-!6 = distinct !DISubprogram(name: "func", scope: !1, file: !1, line: 2, type: !7, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!5 = !{!"clang version 5.0.0"}
+!6 = distinct !DISubprogram(name: "func", scope: !1, file: !1, line: 2, type: !7, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: false, unit: !0, retainedNodes: !2)
 !7 = !DISubroutineType(types: !8)
 !8 = !{null, !9}
 !9 = !DIBasicType(name: "int", size: 32, encoding: DW_ATE_signed)

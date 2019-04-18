@@ -1,9 +1,8 @@
 //===-- LineTable.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,15 +17,11 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // LineTable constructor
-//----------------------------------------------------------------------
 LineTable::LineTable(CompileUnit *comp_unit)
     : m_comp_unit(comp_unit), m_entries() {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 LineTable::~LineTable() {}
 
 void LineTable::InsertLineEntry(lldb::addr_t file_addr, uint32_t line,
@@ -73,30 +68,24 @@ void LineTable::AppendLineEntryToSequence(
               is_terminal_entry);
   entry_collection &entries = seq->m_entries;
   // Replace the last entry if the address is the same, otherwise append it. If
-  // we have multiple
-  // line entries at the same address, this indicates illegal DWARF so this
-  // "fixes" the line table
-  // to be correct. If not fixed this can cause a line entry's address that when
-  // resolved back to
-  // a symbol context, could resolve to a different line entry. We really want a
+  // we have multiple line entries at the same address, this indicates illegal
+  // DWARF so this "fixes" the line table to be correct. If not fixed this can
+  // cause a line entry's address that when resolved back to a symbol context,
+  // could resolve to a different line entry. We really want a
   // 1 to 1 mapping
-  // here to avoid these kinds of inconsistencies. We will need tor revisit this
-  // if the DWARF line
-  // tables are updated to allow multiple entries at the same address legally.
+  // here to avoid these kinds of inconsistencies. We will need tor revisit
+  // this if the DWARF line tables are updated to allow multiple entries at the
+  // same address legally.
   if (!entries.empty() && entries.back().file_addr == file_addr) {
     // GCC don't use the is_prologue_end flag to mark the first instruction
     // after the prologue.
     // Instead of it it is issuing a line table entry for the first instruction
-    // of the prologue
-    // and one for the first instruction after the prologue. If the size of the
-    // prologue is 0
-    // instruction then the 2 line entry will have the same file address.
-    // Removing it will remove
-    // our ability to properly detect the location of the end of prologe so we
-    // set the prologue_end
-    // flag to preserve this information (setting the prologue_end flag for an
-    // entry what is after
-    // the prologue end don't have any effect)
+    // of the prologue and one for the first instruction after the prologue. If
+    // the size of the prologue is 0 instruction then the 2 line entry will
+    // have the same file address. Removing it will remove our ability to
+    // properly detect the location of the end of prologe so we set the
+    // prologue_end flag to preserve this information (setting the prologue_end
+    // flag for an entry what is after the prologue end don't have any effect)
     entry.is_prologue_end = entry.file_idx == entries.back().file_idx;
     entries.back() = entry;
   } else
@@ -132,7 +121,7 @@ void LineTable::InsertSequence(LineSequence *sequence) {
       pos++;
   }
 
-#ifdef LLDB_CONFIGURATION_DEBUG
+#ifndef NDEBUG
   // If we aren't inserting at the beginning, the previous entry should
   // terminate a sequence.
   if (pos != begin_pos) {
@@ -143,7 +132,6 @@ void LineTable::InsertSequence(LineSequence *sequence) {
   m_entries.insert(pos, seq->m_entries.begin(), seq->m_entries.end());
 }
 
-//----------------------------------------------------------------------
 LineTable::Entry::LessThanBinaryPredicate::LessThanBinaryPredicate(
     LineTable *line_table)
     : m_line_table(line_table) {}
@@ -200,14 +188,13 @@ bool LineTable::FindLineEntryByAddress(const Address &so_addr,
           if (pos->file_addr != search_entry.file_addr)
             --pos;
           else if (pos->file_addr == search_entry.file_addr) {
-            // If this is a termination entry, it shouldn't match since
-            // entries with the "is_terminal_entry" member set to true
-            // are termination entries that define the range for the
-            // previous entry.
+            // If this is a termination entry, it shouldn't match since entries
+            // with the "is_terminal_entry" member set to true are termination
+            // entries that define the range for the previous entry.
             if (pos->is_terminal_entry) {
-              // The matching entry is a terminal entry, so we skip
-              // ahead to the next entry to see if there is another
-              // entry following this one whose section/offset matches.
+              // The matching entry is a terminal entry, so we skip ahead to
+              // the next entry to see if there is another entry following this
+              // one whose section/offset matches.
               ++pos;
               if (pos != end_pos) {
                 if (pos->file_addr != search_entry.file_addr)
@@ -216,9 +203,8 @@ bool LineTable::FindLineEntryByAddress(const Address &so_addr,
             }
 
             if (pos != end_pos) {
-              // While in the same section/offset backup to find the first
-              // line entry that matches the address in case there are
-              // multiple
+              // While in the same section/offset backup to find the first line
+              // entry that matches the address in case there are multiple
               while (pos != begin_pos) {
                 entry_collection::const_iterator prev_pos = pos - 1;
                 if (prev_pos->file_addr == search_entry.file_addr &&
@@ -232,16 +218,15 @@ bool LineTable::FindLineEntryByAddress(const Address &so_addr,
         }
         else
         {
-          // There might be code in the containing objfile before the first line
-          // table entry.  Make sure that does not get considered part of the first
-          // line table entry.
+          // There might be code in the containing objfile before the first
+          // line table entry.  Make sure that does not get considered part of
+          // the first line table entry.
           if (pos->file_addr > so_addr.GetFileAddress())
             return false;
         }
 
         // Make sure we have a valid match and that the match isn't a
-        // terminating
-        // entry for a previous line...
+        // terminating entry for a previous line...
         if (pos != end_pos && pos->is_terminal_entry == false) {
           uint32_t match_idx = std::distance(begin_pos, pos);
           success = ConvertEntryAtIndexToLineEntry(match_idx, line_entry);
@@ -304,8 +289,7 @@ uint32_t LineTable::FindLineEntryIndexByFileIndex(
       continue;
 
     // Exact match always wins.  Otherwise try to find the closest line > the
-    // desired
-    // line.
+    // desired line.
     // FIXME: Maybe want to find the line closest before and the line closest
     // after and
     // if they're not in the same function, don't return a match.
@@ -349,8 +333,7 @@ uint32_t LineTable::FindLineEntryIndexByFileIndex(uint32_t start_idx,
       continue;
 
     // Exact match always wins.  Otherwise try to find the closest line > the
-    // desired
-    // line.
+    // desired line.
     // FIXME: Maybe want to find the line closest before and the line closest
     // after and
     // if they're not in the same function, don't return a match.
@@ -389,8 +372,8 @@ size_t LineTable::FineLineEntriesForFileIndex(uint32_t file_idx, bool append,
     SymbolContext sc(m_comp_unit);
 
     for (size_t idx = 0; idx < count; ++idx) {
-      // Skip line table rows that terminate the previous row (is_terminal_entry
-      // is non-zero)
+      // Skip line table rows that terminate the previous row
+      // (is_terminal_entry is non-zero)
       if (m_entries[idx].is_terminal_entry)
         continue;
 
@@ -456,7 +439,7 @@ size_t LineTable::GetContiguousFileAddressRanges(FileAddressRanges &file_ranges,
 }
 
 LineTable *LineTable::LinkLineTable(const FileRangeMap &file_range_map) {
-  std::unique_ptr<LineTable> line_table_ap(new LineTable(m_comp_unit));
+  std::unique_ptr<LineTable> line_table_up(new LineTable(m_comp_unit));
   LineSequenceImpl sequence;
   const size_t count = m_entries.size();
   LineEntry line_entry;
@@ -497,10 +480,9 @@ LineTable *LineTable::LinkLineTable(const FileRangeMap &file_range_map) {
           terminate_previous_entry = prev_entry_was_linked;
       }
     } else if (prev_entry_was_linked) {
-      // This entry doesn't have a remapping and it needs to be removed.
-      // Watch out in case we need to terminate a previous entry needs to
-      // be terminated now that one line entry in a sequence is not longer
-      // valid.
+      // This entry doesn't have a remapping and it needs to be removed. Watch
+      // out in case we need to terminate a previous entry needs to be
+      // terminated now that one line entry in a sequence is not longer valid.
       if (!sequence.m_entries.empty() &&
           !sequence.m_entries.back().is_terminal_entry) {
         terminate_previous_entry = true;
@@ -520,7 +502,7 @@ LineTable *LineTable::LinkLineTable(const FileRangeMap &file_range_map) {
       sequence.m_entries.back().is_terminal_entry = true;
 
       // Append the sequence since we just terminated the previous one
-      line_table_ap->InsertSequence(&sequence);
+      line_table_up->InsertSequence(&sequence);
       sequence.Clear();
     }
 
@@ -536,7 +518,7 @@ LineTable *LineTable::LinkLineTable(const FileRangeMap &file_range_map) {
     // insert this sequence into our new line table.
     if (!sequence.m_entries.empty() &&
         sequence.m_entries.back().is_terminal_entry) {
-      line_table_ap->InsertSequence(&sequence);
+      line_table_up->InsertSequence(&sequence);
       sequence.Clear();
       prev_entry_was_linked = false;
     } else {
@@ -545,7 +527,7 @@ LineTable *LineTable::LinkLineTable(const FileRangeMap &file_range_map) {
     prev_file_addr = entry.file_addr;
     range_changed = false;
   }
-  if (line_table_ap->m_entries.empty())
+  if (line_table_up->m_entries.empty())
     return nullptr;
-  return line_table_ap.release();
+  return line_table_up.release();
 }

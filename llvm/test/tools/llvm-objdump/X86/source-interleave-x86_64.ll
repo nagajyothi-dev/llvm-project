@@ -1,8 +1,14 @@
-;  REQUIRES: x86_64-linux
+;  REQUIRES: shell
 ;  RUN: sed -e "s,SRC_COMPDIR,%p/Inputs,g" %s > %t.ll
 ;  RUN: llc  -o %t.o -filetype=obj -mtriple=x86_64-pc-linux  %t.ll
-;  RUN: llvm-objdump -d -l %t.o | FileCheck --check-prefix="LINES" %t.ll
-;  RUN: llvm-objdump -d -S %t.o | FileCheck --check-prefix="SOURCE" %t.ll
+;  RUN: llvm-objdump -d -l %t.o >%t0
+;  RUN: llvm-objdump -dl %t.o >%t1
+;  RUN: llvm-objdump -d -S %t.o >%t2
+;  RUN: llvm-objdump -dS %t.o >%t3
+;  RUN: cmp %t0 %t1
+;  RUN: cmp %t2 %t3
+;  RUN: FileCheck --check-prefix=LINES %t.ll < %t0
+;  RUN: FileCheck --check-prefix=SOURCE --strict-whitespace %t.ll < %t2
 ; ModuleID = 'source-interleave-x86_64.bc'
 source_filename = "source-interleave-x86_64.c"
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
@@ -42,21 +48,21 @@ attributes #1 = { nounwind readnone }
 !llvm.module.flags = !{!6, !7}
 !llvm.ident = !{!8}
 
-!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 4.0.0 (http://llvm.org/git/clang d19a95e94dc57c5a72fd25d64f26134aa7d25fa0) (http://llvm.org/git/llvm.git 313924e6ff8a332063f61d3fda03812c220762f6)", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, globals: !3)
+!0 = distinct !DICompileUnit(language: DW_LANG_C99, file: !1, producer: "clang version 4.0.0", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !2, globals: !3)
 !1 = !DIFile(filename: "source-interleave-x86_64.c", directory: "SRC_COMPDIR")
 !2 = !{}
 !3 = !{!4}
-!4 = !DIGlobalVariableExpression(var: !DIGlobalVariable(name: "a", scope: !0, file: !1, line: 1, type: !5, isLocal: false, isDefinition: true))
+!4 = !DIGlobalVariableExpression(var: !DIGlobalVariable(name: "a", scope: !0, file: !1, line: 1, type: !5, isLocal: false, isDefinition: true), expr: !DIExpression())
 !5 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
 !6 = !{i32 2, !"Dwarf Version", i32 4}
 !7 = !{i32 2, !"Debug Info Version", i32 3}
-!8 = !{!"clang version 4.0.0 (http://llvm.org/git/clang d19a95e94dc57c5a72fd25d64f26134aa7d25fa0) (http://llvm.org/git/llvm.git 313924e6ff8a332063f61d3fda03812c220762f6)"}
-!9 = distinct !DISubprogram(name: "foo", scope: !1, file: !1, line: 2, type: !10, isLocal: false, isDefinition: true, scopeLine: 2, isOptimized: false, unit: !0, variables: !2)
+!8 = !{!"clang version 4.0.0"}
+!9 = distinct !DISubprogram(name: "foo", scope: !1, file: !1, line: 2, type: !10, isLocal: false, isDefinition: true, scopeLine: 2, isOptimized: false, unit: !0, retainedNodes: !2)
 !10 = !DISubroutineType(types: !11)
 !11 = !{!5}
 !12 = !DILocation(line: 3, column: 10, scope: !9)
 !13 = !DILocation(line: 3, column: 3, scope: !9)
-!14 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 6, type: !10, isLocal: false, isDefinition: true, scopeLine: 6, isOptimized: false, unit: !0, variables: !2)
+!14 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 6, type: !10, isLocal: false, isDefinition: true, scopeLine: 6, isOptimized: false, unit: !0, retainedNodes: !2)
 !15 = !DILocalVariable(name: "b", scope: !14, file: !1, line: 7, type: !16)
 !16 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !5, size: 64, align: 64)
 !17 = !DIExpression()
@@ -71,3 +77,4 @@ attributes #1 = { nounwind readnone }
 
 ; SOURCE: main:
 ; SOURCE-NEXT: ; int main() {
+; SOURCE:      ;   int *b = &a;

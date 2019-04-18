@@ -1,5 +1,17 @@
 // RUN: %clang_cc1 -verify -fopenmp %s
 
+// RUN: %clang_cc1 -verify -fopenmp-simd %s
+
+typedef void **omp_allocator_handle_t;
+extern const omp_allocator_handle_t omp_default_mem_alloc;
+extern const omp_allocator_handle_t omp_large_cap_mem_alloc;
+extern const omp_allocator_handle_t omp_const_mem_alloc;
+extern const omp_allocator_handle_t omp_high_bw_mem_alloc;
+extern const omp_allocator_handle_t omp_low_lat_mem_alloc;
+extern const omp_allocator_handle_t omp_cgroup_mem_alloc;
+extern const omp_allocator_handle_t omp_pteam_mem_alloc;
+extern const omp_allocator_handle_t omp_thread_mem_alloc;
+
 void foo() {
 }
 
@@ -82,7 +94,7 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute simd firstprivate (argc > 0 ? argv[1] : argv[2]) // expected-error {{expected variable name}}
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute simd firstprivate (argc)
+#pragma omp target teams distribute simd firstprivate (argc) allocate , allocate(, allocate(omp_default , allocate(omp_default_mem_alloc, allocate(omp_default_mem_alloc:, allocate(omp_default_mem_alloc: argc, allocate(omp_default_mem_alloc: argv), allocate(argv) // expected-error {{expected '(' after 'allocate'}} expected-error 2 {{expected expression}} expected-error 2 {{expected ')'}} expected-error {{use of undeclared identifier 'omp_default'}} expected-note 2 {{to match this '('}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute simd firstprivate (S1) // expected-error {{'S1' does not refer to a value}}
@@ -94,7 +106,7 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute simd firstprivate (argv[1]) // expected-error {{expected variable name}}
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute simd firstprivate(ba)
+#pragma omp target teams distribute simd firstprivate(ba) allocate(omp_thread_mem_alloc: ba) // expected-warning {{allocator with the 'thread' trait access has unspecified behavior on 'target teams distribute simd' directive}}
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute simd firstprivate(ca) // expected-error {{no matching constructor for initialization of 'S3'}}
@@ -124,7 +136,8 @@ int main(int argc, char **argv) {
 #pragma omp target teams distribute simd firstprivate(j)
   for (i = 0; i < argc; ++i) foo();
 
-#pragma omp target teams distribute simd lastprivate(argc), firstprivate(argc) // OK
+// expected-error@+1 {{lastprivate variable cannot be firstprivate}} expected-note@+1 {{defined as lastprivate}}
+#pragma omp target teams distribute simd lastprivate(argc), firstprivate(argc)
   for (i = 0; i < argc; ++i) foo();
 
 #pragma omp target teams distribute simd firstprivate(argc) map(argc) // expected-error {{firstprivate variable cannot be in a map clause in '#pragma omp target teams distribute simd' directive}} expected-note {{defined as firstprivate}}

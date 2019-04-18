@@ -1,9 +1,8 @@
 //===-- EmulateInstructionARM64.cpp ------------------------------*- C++-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,11 +11,11 @@
 #include <stdlib.h>
 
 #include "lldb/Core/Address.h"
-#include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Symbol/UnwindPlan.h"
+#include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/ConstString.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Stream.h"
 
 #include "Plugins/Process/Utility/ARMDefines.h"
@@ -41,8 +40,7 @@
 #include "Plugins/Process/Utility/RegisterInfos_arm64.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/MathExtras.h" // for SignExtend32 template function
-                                     // and CountTrailingZeros_32 function
+#include "llvm/Support/MathExtras.h"
 
 #include "Plugins/Process/Utility/InstructionUtils.h"
 
@@ -75,19 +73,6 @@ static bool LLDBTableGetRegisterInfo(uint32_t reg_num, RegisterInfo &reg_info) {
 static inline bool IsZero(uint64_t x) { return x == 0; }
 
 static inline uint64_t NOT(uint64_t x) { return ~x; }
-
-#if 0
-// LSL_C() 
-// =======
-static inline uint64_t
-LSL_C (uint64_t x, integer shift, bool &carry_out)
-{
-    assert (shift >= 0); 
-    uint64_t result = x << shift;
-    carry_out = ((1ull << (64-1)) >> (shift - 1)) != 0;
-    return result;
-}
-#endif
 
 // LSL()
 // =====
@@ -132,11 +117,9 @@ ConstrainUnpredictable(EmulateInstructionARM64::Unpredictable which) {
   return result;
 }
 
-//----------------------------------------------------------------------
 //
 // EmulateInstructionARM implementation
 //
-//----------------------------------------------------------------------
 
 void EmulateInstructionARM64::Initialize() {
   PluginManager::RegisterPlugin(GetPluginNameStatic(),
@@ -167,10 +150,7 @@ EmulateInstructionARM64::CreateInstance(const ArchSpec &arch,
   if (EmulateInstructionARM64::SupportsEmulatingInstructionsOfTypeStatic(
           inst_type)) {
     if (arch.GetTriple().getArch() == llvm::Triple::aarch64) {
-      std::auto_ptr<EmulateInstructionARM64> emulate_insn_ap(
-          new EmulateInstructionARM64(arch));
-      if (emulate_insn_ap.get())
-        return emulate_insn_ap.release();
+      return new EmulateInstructionARM64(arch);
     }
   }
 
@@ -225,9 +205,7 @@ bool EmulateInstructionARM64::GetRegisterInfo(RegisterKind reg_kind,
 EmulateInstructionARM64::Opcode *
 EmulateInstructionARM64::GetOpcodeForInstruction(const uint32_t opcode) {
   static EmulateInstructionARM64::Opcode g_opcodes[] = {
-      //----------------------------------------------------------------------
       // Prologue instructions
-      //----------------------------------------------------------------------
 
       // push register(s)
       {0xff000000, 0xd1000000, No_VFP,
@@ -453,7 +431,7 @@ bool EmulateInstructionARM64::EvaluateInstruction(uint32_t evaluate_options) {
 
   // Only return false if we are unable to read the CPSR if we care about
   // conditions
-  if (success == false && m_ignore_conditions == false)
+  if (!success && !m_ignore_conditions)
     return false;
 
   uint32_t orig_pc_value = 0;
@@ -522,8 +500,8 @@ bool EmulateInstructionARM64::UsingAArch32() {
 bool EmulateInstructionARM64::BranchTo(const Context &context, uint32_t N,
                                        addr_t target) {
 #if 0
-    // Set program counter to a new address, with a branch reason hint
-    // for possible use by hardware fetching the next instruction.
+    // Set program counter to a new address, with a branch reason hint for
+    // possible use by hardware fetching the next instruction.
     BranchTo(bits(N) target, BranchType branch_type)
         Hint_Branch(branch_type);
         if N == 32 then
@@ -563,18 +541,14 @@ bool EmulateInstructionARM64::BranchTo(const Context &context, uint32_t N,
   } else
     return false;
 
-  if (!WriteRegisterUnsigned(context, eRegisterKindGeneric,
-                             LLDB_REGNUM_GENERIC_PC, addr))
-    return false;
-
-  return true;
+  return WriteRegisterUnsigned(context, eRegisterKindGeneric,
+                               LLDB_REGNUM_GENERIC_PC, addr);
 }
 
 bool EmulateInstructionARM64::ConditionHolds(const uint32_t cond) {
-  // If we are ignoring conditions, then always return true.
-  // this allows us to iterate over disassembly code and still
-  // emulate an instruction even if we don't have all the right
-  // bits set in the CPSR register...
+  // If we are ignoring conditions, then always return true. this allows us to
+  // iterate over disassembly code and still emulate an instruction even if we
+  // don't have all the right bits set in the CPSR register...
   if (m_ignore_conditions)
     return true;
 
@@ -706,8 +680,8 @@ bool EmulateInstructionARM64::EmulateADDSUBImm(const uint32_t opcode) {
     context.SetRegisterPlusOffset(reg_info_Rn, imm);
 
   if (n == GetFramePointerRegisterNumber() && d == gpr_sp_arm64 && !setflags) {
-    // 'mov sp, fp' - common epilogue instruction, CFA is now in terms
-    // of the stack pointer, instead of frame pointer.
+    // 'mov sp, fp' - common epilogue instruction, CFA is now in terms of the
+    // stack pointer, instead of frame pointer.
     context.type = EmulateInstruction::eContextRestoreStackPointer;
   } else if ((n == gpr_sp_arm64 || n == GetFramePointerRegisterNumber()) &&
              d == gpr_sp_arm64 && !setflags) {
@@ -1114,9 +1088,7 @@ bool EmulateInstructionARM64::EmulateB(const uint32_t opcode) {
     return false;
   }
 
-  if (!BranchTo(context, 64, target))
-    return false;
-  return true;
+  return BranchTo(context, 64, target);
 }
 
 bool EmulateInstructionARM64::EmulateBcond(const uint32_t opcode) {

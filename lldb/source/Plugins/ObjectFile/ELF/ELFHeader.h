@@ -1,21 +1,20 @@
 //===-- ELFHeader.h ------------------------------------------- -*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Generic structures and typedefs for ELF files.
+/// \file
+/// Generic structures and typedefs for ELF files.
 ///
 /// This file provides definitions for the various entities comprising an ELF
 /// file.  The structures are generic in the sense that they do not correspond
 /// to the exact binary layout of an ELF, but can be used to hold the
 /// information present in both 32 and 64 bit variants of the format.  Each
-/// entity provides a \c Parse method which is capable of transparently reading
-/// both 32 and 64 bit instances of the object.
+/// entity provides a \c Parse method which is capable of transparently
+/// reading both 32 and 64 bit instances of the object.
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_ELFHeader_h_
@@ -32,11 +31,11 @@ class DataExtractor;
 
 namespace elf {
 
-//------------------------------------------------------------------------------
-/// @name ELF type definitions.
+/// \name ELF type definitions.
 ///
-/// Types used to represent the various components of ELF structures.  All types
-/// are signed or unsigned integral types wide enough to hold values from both
+/// Types used to represent the various components of ELF structures.  All
+/// types are signed or unsigned integral types wide enough to hold values
+/// from both
 /// 32 and 64 bit ELF variants.
 //@{
 typedef uint64_t elf_addr;
@@ -49,12 +48,11 @@ typedef uint64_t elf_xword;
 typedef int64_t elf_sxword;
 //@}
 
-//------------------------------------------------------------------------------
-/// @class ELFHeader
-/// @brief Generic representation of an ELF file header.
+/// \class ELFHeader
+/// Generic representation of an ELF file header.
 ///
-/// This object is used to identify the general attributes on an ELF file and to
-/// locate additional sections within the file.
+/// This object is used to identify the general attributes on an ELF file and
+/// to locate additional sections within the file.
 struct ELFHeader {
   unsigned char e_ident[llvm::ELF::EI_NIDENT]; ///< ELF file identification.
   elf_addr e_entry;     ///< Virtual address program entry point.
@@ -80,94 +78,84 @@ struct ELFHeader {
 
   ELFHeader();
 
-  //--------------------------------------------------------------------------
   /// Returns true if this is a 32 bit ELF file header.
   ///
-  /// @return
+  /// \return
   ///    True if this is a 32 bit ELF file header.
   bool Is32Bit() const {
     return e_ident[llvm::ELF::EI_CLASS] == llvm::ELF::ELFCLASS32;
   }
 
-  //--------------------------------------------------------------------------
   /// Returns true if this is a 64 bit ELF file header.
   ///
-  /// @return
+  /// \return
   ///   True if this is a 64 bit ELF file header.
   bool Is64Bit() const {
     return e_ident[llvm::ELF::EI_CLASS] == llvm::ELF::ELFCLASS64;
   }
 
-  //--------------------------------------------------------------------------
   /// The byte order of this ELF file header.
   ///
-  /// @return
+  /// \return
   ///    The byte order of this ELF file as described by the header.
   lldb::ByteOrder GetByteOrder() const;
 
-  //--------------------------------------------------------------------------
   /// The jump slot relocation type of this ELF.
   unsigned GetRelocationJumpSlotType() const;
 
-  //--------------------------------------------------------------------------
   /// Check if there should be header extension in section header #0
   ///
-  /// @return
+  /// \return
   ///    True if parsing the ELFHeader requires reading header extension
   ///    and false otherwise.
   bool HasHeaderExtension() const;
 
-  //--------------------------------------------------------------------------
-  /// Parse an ELFHeader entry starting at position \p offset and
-  /// update the data extractor with the address size and byte order
-  /// attributes as defined by the header.
+  /// Parse an ELFHeader entry starting at position \p offset and update the
+  /// data extractor with the address size and byte order attributes as
+  /// defined by the header.
   ///
-  /// @param[in,out] data
+  /// \param[in,out] data
   ///    The DataExtractor to read from.  Updated with the address size and
   ///    byte order attributes appropriate to this header.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFHeader was successfully read and false
   ///    otherwise.
   bool Parse(lldb_private::DataExtractor &data, lldb::offset_t *offset);
 
-  //--------------------------------------------------------------------------
   /// Examines at most EI_NIDENT bytes starting from the given pointer and
   /// determines if the magic ELF identification exists.
   ///
-  /// @return
+  /// \return
   ///    True if the given sequence of bytes identifies an ELF file.
   static bool MagicBytesMatch(const uint8_t *magic);
 
-  //--------------------------------------------------------------------------
   /// Examines at most EI_NIDENT bytes starting from the given address and
   /// determines the address size of the underlying ELF file.  This function
   /// should only be called on an pointer for which MagicBytesMatch returns
   /// true.
   ///
-  /// @return
+  /// \return
   ///    The number of bytes forming an address in the ELF file (either 4 or
   ///    8), else zero if the address size could not be determined.
   static unsigned AddressSizeInBytes(const uint8_t *magic);
 
 private:
 
-  //--------------------------------------------------------------------------
-  /// Parse an ELFHeader header extension entry.  This method is called
-  /// by Parse().
+  /// Parse an ELFHeader header extension entry.  This method is called by
+  /// Parse().
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.
   void ParseHeaderExtension(lldb_private::DataExtractor &data);
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFSectionHeader
-/// @brief Generic representation of an ELF section header.
+/// \class ELFSectionHeader
+/// Generic representation of an ELF section header.
 struct ELFSectionHeader {
   elf_word sh_name;       ///< Section name string index.
   elf_word sh_type;       ///< Section type.
@@ -182,27 +170,25 @@ struct ELFSectionHeader {
 
   ELFSectionHeader();
 
-  //--------------------------------------------------------------------------
   /// Parse an ELFSectionHeader entry from the given DataExtracter starting at
   /// position \p offset.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFSectionHeader was successfully read and false
   ///    otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFProgramHeader
-/// @brief Generic representation of an ELF program header.
+/// \class ELFProgramHeader
+/// Generic representation of an ELF program header.
 struct ELFProgramHeader {
   elf_word p_type;    ///< Type of program segment.
   elf_word p_flags;   ///< Segment attributes.
@@ -219,23 +205,22 @@ struct ELFProgramHeader {
   /// position \p offset.  The address size of the DataExtractor determines if
   /// a 32 or 64 bit object is to be parsed.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFProgramHeader was successfully read and false
   ///    otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFSymbol
-/// @brief Represents a symbol within an ELF symbol table.
+/// \class ELFSymbol
+/// Represents a symbol within an ELF symbol table.
 struct ELFSymbol {
   elf_addr st_value;      ///< Absolute or relocatable address.
   elf_xword st_size;      ///< Size of the symbol or zero.
@@ -269,15 +254,15 @@ struct ELFSymbol {
   /// position \p offset.  The address size of the DataExtractor determines if
   /// a 32 or 64 bit object is to be parsed.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFSymbol was successfully read and false otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 
@@ -286,9 +271,8 @@ struct ELFSymbol {
             const lldb_private::SectionList *section_list);
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFDynamic
-/// @brief Represents an entry in an ELF dynamic table.
+/// \class ELFDynamic
+/// Represents an entry in an ELF dynamic table.
 struct ELFDynamic {
   elf_sxword d_tag; ///< Type of dynamic table entry.
   union {
@@ -302,23 +286,22 @@ struct ELFDynamic {
   /// position \p offset.  The address size of the DataExtractor determines if
   /// a 32 or 64 bit object is to be parsed.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFDynamic entry was successfully read and false
   ///    otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFRel
-/// @brief Represents a relocation entry with an implicit addend.
+/// \class ELFRel
+/// Represents a relocation entry with an implicit addend.
 struct ELFRel {
   elf_addr r_offset; ///< Address of reference.
   elf_xword r_info;  ///< symbol index and type of relocation.
@@ -329,15 +312,15 @@ struct ELFRel {
   /// \p offset.  The address size of the DataExtractor determines if a 32 or
   /// 64 bit object is to be parsed.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFRel entry was successfully read and false otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 
@@ -358,9 +341,8 @@ struct ELFRel {
   static unsigned RelocSymbol64(const ELFRel &rel) { return rel.r_info >> 32; }
 };
 
-//------------------------------------------------------------------------------
-/// @class ELFRela
-/// @brief Represents a relocation entry with an explicit addend.
+/// \class ELFRela
+/// Represents a relocation entry with an explicit addend.
 struct ELFRela {
   elf_addr r_offset;   ///< Address of reference.
   elf_xword r_info;    ///< Symbol index and type of relocation.
@@ -372,15 +354,15 @@ struct ELFRela {
   /// \p offset.  The address size of the DataExtractor determines if a 32 or
   /// 64 bit object is to be parsed.
   ///
-  /// @param[in] data
+  /// \param[in] data
   ///    The DataExtractor to read from.  The address size of the extractor
   ///    determines if a 32 or 64 bit object should be read.
   ///
-  /// @param[in,out] offset
+  /// \param[in,out] offset
   ///    Pointer to an offset in the data.  On return the offset will be
   ///    advanced by the number of bytes read.
   ///
-  /// @return
+  /// \return
   ///    True if the ELFRela entry was successfully read and false otherwise.
   bool Parse(const lldb_private::DataExtractor &data, lldb::offset_t *offset);
 

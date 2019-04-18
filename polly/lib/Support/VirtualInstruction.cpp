@@ -1,9 +1,8 @@
 //===------ VirtualInstruction.cpp ------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,21 +12,40 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/Support/VirtualInstruction.h"
-#include "polly/Support/SCEVValidator.h"
 
 using namespace polly;
 using namespace llvm;
 
-VirtualUse VirtualUse ::create(Scop *S, const Use &U, LoopInfo *LI,
-                               bool Virtual) {
+VirtualUse VirtualUse::create(Scop *S, const Use &U, LoopInfo *LI,
+                              bool Virtual) {
   auto *UserBB = getUseBlock(U);
+  Loop *UserScope = LI->getLoopFor(UserBB);
   Instruction *UI = dyn_cast<Instruction>(U.getUser());
-  ScopStmt *UserStmt = nullptr;
-  if (PHINode *PHI = dyn_cast<PHINode>(UI))
-    UserStmt = S->getLastStmtFor(PHI->getIncomingBlock(U));
-  else
-    UserStmt = S->getStmtFor(UI);
-  auto *UserScope = LI->getLoopFor(UserBB);
+  ScopStmt *UserStmt = S->getStmtFor(UI);
+
+  // Uses by PHI nodes are always reading values written by other statements,
+  // except it is within a region statement.
+  if (PHINode *PHI = dyn_cast<PHINode>(UI)) {
+    // Handle PHI in exit block.
+    if (S->getRegion().getExit() == PHI->getParent())
+      return VirtualUse(UserStmt, U.get(), Inter, nullptr, nullptr);
+
+    if (UserStmt->getEntryBlock() != PHI->getParent())
+      return VirtualUse(UserStmt, U.get(), Intra, nullptr, nullptr);
+
+    // The MemoryAccess is expected to be set if @p Virtual is true.
+    MemoryAccess *IncomingMA = nullptr;
+    if (Virtual) {
+      if (const ScopArrayInfo *SAI =
+              S->getScopArrayInfoOrNull(PHI, MemoryKind::PHI)) {
+        IncomingMA = S->getPHIRead(SAI);
+        assert(IncomingMA->getStatement() == UserStmt);
+      }
+    }
+
+    return VirtualUse(UserStmt, U.get(), Inter, nullptr, IncomingMA);
+  }
+
   return create(S, UserStmt, UserScope, U.get(), Virtual);
 }
 
@@ -78,7 +96,7 @@ VirtualUse VirtualUse::create(Scop *S, ScopStmt *UserStmt, Loop *UserScope,
   // A use is inter-statement if either it is defined in another statement, or
   // there is a MemoryAccess that reads its value that has been written by
   // another statement.
-  if (InputMA || (!Virtual && !UserStmt->represents(Inst->getParent())))
+  if (InputMA || (!Virtual && UserStmt != S->getStmtFor(Inst)))
     return VirtualUse(UserStmt, Val, Inter, nullptr, InputMA);
 
   return VirtualUse(UserStmt, Val, Intra, nullptr, nullptr);
@@ -158,7 +176,7 @@ static bool isRoot(const Instruction *Inst) {
 
   // Terminator instructions (in region statements) are required for control
   // flow.
-  if (isa<TerminatorInst>(Inst))
+  if (Inst->isTerminator())
     return true;
 
   // Writes to memory must be honored.
@@ -180,12 +198,16 @@ static bool isEscaping(MemoryAccess *MA) {
 static void
 addInstructionRoots(ScopStmt *Stmt,
                     SmallVectorImpl<VirtualInstruction> &RootInsts) {
-  // For region statements we must keep all instructions because we do not
-  // support removing instructions from region statements.
   if (!Stmt->isBlockStmt()) {
-    for (auto *BB : Stmt->getRegion()->blocks())
-      for (Instruction &Inst : *BB)
-        RootInsts.emplace_back(Stmt, &Inst);
+    // In region statements the terminator statement and all statements that
+    // are not in the entry block cannot be eliminated and consequently must
+    // be roots.
+    RootInsts.emplace_back(Stmt,
+                           Stmt->getRegion()->getEntry()->getTerminator());
+    for (BasicBlock *BB : Stmt->getRegion()->blocks())
+      if (Stmt->getRegion()->getEntry() != BB)
+        for (Instruction &Inst : *BB)
+          RootInsts.emplace_back(Stmt, &Inst);
     return;
   }
 
@@ -307,7 +329,7 @@ static void walkReachable(Scop *S, LoopInfo *LI,
       if (Acc->isRead()) {
         const ScopArrayInfo *SAI = Acc->getScopArrayInfo();
 
-        if (Acc->isOriginalValueKind()) {
+        if (Acc->isLatestValueKind()) {
           MemoryAccess *DefAcc = S->getValueDef(SAI);
 
           // Accesses to read-only values do not have a definition.
@@ -315,7 +337,7 @@ static void walkReachable(Scop *S, LoopInfo *LI,
             WorklistAccs.push_back(S->getValueDef(SAI));
         }
 
-        if (Acc->isOriginalAnyPHIKind()) {
+        if (Acc->isLatestAnyPHIKind()) {
           auto IncomingMAs = S->getPHIIncomings(SAI);
           WorklistAccs.append(IncomingMAs.begin(), IncomingMAs.end());
         }

@@ -1,9 +1,8 @@
 //===-- sanitizer_symbolizer_libcdep.cc -----------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -26,8 +25,8 @@ Symbolizer *Symbolizer::GetOrInit() {
   return symbolizer_;
 }
 
-// See sanitizer_symbolizer_fuchsia.cc.
-#if !SANITIZER_FUCHSIA
+// See sanitizer_symbolizer_markup.cc.
+#if !SANITIZER_SYMBOLIZER_MARKUP
 
 const char *ExtractToken(const char *str, const char *delims, char **result) {
   uptr prefix_len = internal_strcspn(str, delims);
@@ -145,11 +144,6 @@ const char *Symbolizer::Demangle(const char *name) {
   return PlatformDemangle(name);
 }
 
-void Symbolizer::PrepareForSandboxing() {
-  BlockingMutexLock l(&mu_);
-  PlatformPrepareForSandboxing();
-}
-
 bool Symbolizer::FindModuleNameAndOffsetForAddress(uptr address,
                                                    const char **module_name,
                                                    uptr *module_offset,
@@ -163,28 +157,47 @@ bool Symbolizer::FindModuleNameAndOffsetForAddress(uptr address,
   return true;
 }
 
+void Symbolizer::RefreshModules() {
+  modules_.init();
+  fallback_modules_.fallbackInit();
+  RAW_CHECK(modules_.size() > 0);
+  modules_fresh_ = true;
+}
+
+static const LoadedModule *SearchForModule(const ListOfModules &modules,
+                                           uptr address) {
+  for (uptr i = 0; i < modules.size(); i++) {
+    if (modules[i].containsAddress(address)) {
+      return &modules[i];
+    }
+  }
+  return nullptr;
+}
+
 const LoadedModule *Symbolizer::FindModuleForAddress(uptr address) {
   bool modules_were_reloaded = false;
   if (!modules_fresh_) {
-    modules_.init();
-    RAW_CHECK(modules_.size() > 0);
-    modules_fresh_ = true;
+    RefreshModules();
     modules_were_reloaded = true;
   }
-  for (uptr i = 0; i < modules_.size(); i++) {
-    if (modules_[i].containsAddress(address)) {
-      return &modules_[i];
-    }
-  }
-  // Reload the modules and look up again, if we haven't tried it yet.
+  const LoadedModule *module = SearchForModule(modules_, address);
+  if (module) return module;
+
+  // dlopen/dlclose interceptors invalidate the module list, but when
+  // interception is disabled, we need to retry if the lookup fails in
+  // case the module list changed.
+#if !SANITIZER_INTERCEPT_DLOPEN_DLCLOSE
   if (!modules_were_reloaded) {
-    // FIXME: set modules_fresh_ from dlopen()/dlclose() interceptors.
-    // It's too aggressive to reload the list of modules each time we fail
-    // to find a module for a given address.
-    modules_fresh_ = false;
-    return FindModuleForAddress(address);
+    RefreshModules();
+    module = SearchForModule(modules_, address);
+    if (module) return module;
   }
-  return 0;
+#endif
+
+  if (fallback_modules_.size()) {
+    module = SearchForModule(fallback_modules_, address);
+  }
+  return module;
 }
 
 // For now we assume the following protocol:
@@ -475,6 +488,6 @@ bool SymbolizerProcess::WriteToSymbolizer(const char *buffer, uptr length) {
   return true;
 }
 
-#endif  // !SANITIZER_FUCHSIA
+#endif  // !SANITIZER_SYMBOLIZER_MARKUP
 
 }  // namespace __sanitizer

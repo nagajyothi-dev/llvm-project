@@ -7,7 +7,6 @@ from __future__ import print_function
 import lldb
 import os
 import time
-import lldbsuite.support.seven as seven
 from lldbsuite.test.decorators import *
 from lldbsuite.test.lldbtest import *
 from lldbsuite.test import lldbutil
@@ -34,7 +33,7 @@ class FatArchiveTestCase(TestBase):
         DWARF in .o file debugging. The only thing this test needs to do is to compile and
         set a breakpoint in the target and verify any breakpoint locations have valid debug
         info for the function, and source file and line.'''
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         # Create the target
         target = self.dbg.CreateTarget(exe)

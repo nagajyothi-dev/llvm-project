@@ -1,18 +1,13 @@
 //===-- OptionValueFormatEntity.cpp -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Interpreter/OptionValueFormatEntity.h"
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/Module.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Utility/Stream.h"
@@ -41,14 +36,30 @@ bool OptionValueFormatEntity::Clear() {
   return true;
 }
 
+static void EscapeBackticks(llvm::StringRef str, std::string &dst) {
+  dst.clear();
+  dst.reserve(str.size());
+
+  for (size_t i = 0, e = str.size(); i != e; ++i) {
+    char c = str[i];
+    if (c == '`') {
+      if (i == 0 || str[i - 1] != '\\')
+        dst += '\\';
+    }
+    dst += c;
+  }
+}
+
 void OptionValueFormatEntity::DumpValue(const ExecutionContext *exe_ctx,
                                         Stream &strm, uint32_t dump_mask) {
   if (dump_mask & eDumpOptionType)
     strm.Printf("(%s)", GetTypeAsCString());
   if (dump_mask & eDumpOptionValue) {
     if (dump_mask & eDumpOptionType)
-      strm.PutCString(" = \"");
-    strm << m_current_format.c_str() << '"';
+      strm.PutCString(" = ");
+    std::string escaped;
+    EscapeBackticks(m_current_format, escaped);
+    strm << '"' << escaped << '"';
   }
 }
 
@@ -64,12 +75,10 @@ Status OptionValueFormatEntity::SetValueFromString(llvm::StringRef value_str,
   case eVarSetOperationReplace:
   case eVarSetOperationAssign: {
     // Check if the string starts with a quote character after removing leading
-    // and trailing spaces.
-    // If it does start with a quote character, make sure it ends with the same
-    // quote character
-    // and remove the quotes before we parse the format string. If the string
-    // doesn't start with
-    // a quote, leave the string alone and parse as is.
+    // and trailing spaces. If it does start with a quote character, make sure
+    // it ends with the same quote character and remove the quotes before we
+    // parse the format string. If the string doesn't start with a quote, leave
+    // the string alone and parse as is.
     llvm::StringRef trimmed_value_str = value_str.trim();
     if (!trimmed_value_str.empty()) {
       const char first_char = trimmed_value_str[0];
@@ -107,9 +116,7 @@ lldb::OptionValueSP OptionValueFormatEntity::DeepCopy() const {
   return OptionValueSP(new OptionValueFormatEntity(*this));
 }
 
-size_t OptionValueFormatEntity::AutoComplete(
-    CommandInterpreter &interpreter, llvm::StringRef s, int match_start_point,
-    int max_return_elements, bool &word_complete, StringList &matches) {
-  return FormatEntity::AutoComplete(s, match_start_point, max_return_elements,
-                                    word_complete, matches);
+size_t OptionValueFormatEntity::AutoComplete(CommandInterpreter &interpreter,
+                                             CompletionRequest &request) {
+  return FormatEntity::AutoComplete(request);
 }

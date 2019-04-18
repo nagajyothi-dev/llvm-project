@@ -1,9 +1,8 @@
 //===-- ClangASTImporter.cpp ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,6 +17,8 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <memory>
 
 using namespace lldb_private;
 using namespace clang;
@@ -354,8 +355,7 @@ bool ClangASTImporter::CanImport(const CompilerType &type) {
       clang::ObjCInterfaceDecl *class_interface_decl =
           objc_class_type->getInterface();
       // We currently can't complete objective C types through the newly added
-      // ASTContext
-      // because it only supports TagDecl objects right now...
+      // ASTContext because it only supports TagDecl objects right now...
       if (class_interface_decl) {
         if (ResolveDeclOrigin(class_interface_decl, NULL, NULL))
           return true;
@@ -431,8 +431,7 @@ bool ClangASTImporter::Import(const CompilerType &type) {
       clang::ObjCInterfaceDecl *class_interface_decl =
           objc_class_type->getInterface();
       // We currently can't complete objective C types through the newly added
-      // ASTContext
-      // because it only supports TagDecl objects right now...
+      // ASTContext because it only supports TagDecl objects right now...
       if (class_interface_decl) {
         if (ResolveDeclOrigin(class_interface_decl, NULL, NULL))
           return CompleteAndFetchChildren(qual_type);
@@ -768,7 +767,7 @@ void ClangASTImporter::BuildNamespaceMap(const clang::NamespaceDecl *decl) {
 
   NamespaceMapSP new_map;
 
-  new_map.reset(new NamespaceMap);
+  new_map = std::make_shared<NamespaceMap>();
 
   if (context_md->m_map_completer) {
     std::string namespace_string = decl->getDeclName().getAsString();
@@ -896,9 +895,9 @@ void ClangASTImporter::Minion::ImportDefinitionTo(clang::Decl *to,
     }
   }
 
-  // If we're dealing with an Objective-C class, ensure that the inheritance has
-  // been set up correctly.  The ASTImporter may not do this correctly if the
-  // class was originally sourced from symbols.
+  // If we're dealing with an Objective-C class, ensure that the inheritance
+  // has been set up correctly.  The ASTImporter may not do this correctly if
+  // the class was originally sourced from symbols.
 
   if (ObjCInterfaceDecl *to_objc_interface = dyn_cast<ObjCInterfaceDecl>(to)) {
     do {
@@ -938,7 +937,7 @@ void ClangASTImporter::Minion::ImportDefinitionTo(clang::Decl *to,
   }
 }
 
-clang::Decl *ClangASTImporter::Minion::Imported(clang::Decl *from,
+void ClangASTImporter::Minion::Imported(clang::Decl *from,
                                                 clang::Decl *to) {
   ClangASTMetrics::RegisterClangImport();
 
@@ -1004,7 +1003,7 @@ clang::Decl *ClangASTImporter::Minion::Imported(clang::Decl *from,
         if (isa<TagDecl>(to) || isa<ObjCInterfaceDecl>(to)) {
           RecordDecl *from_record_decl = dyn_cast<RecordDecl>(from);
           if (from_record_decl == nullptr ||
-              from_record_decl->isInjectedClassName() == false) {
+              !from_record_decl->isInjectedClassName()) {
             NamedDecl *to_named_decl = dyn_cast<NamedDecl>(to);
 
             if (!m_decls_already_deported->count(to_named_decl))
@@ -1052,7 +1051,7 @@ clang::Decl *ClangASTImporter::Minion::Imported(clang::Decl *from,
     TagDecl *to_tag_decl = dyn_cast<TagDecl>(to);
 
     to_tag_decl->setHasExternalLexicalStorage();
-    to_tag_decl->setMustBuildLookupTable();
+    to_tag_decl->getPrimaryContext()->setMustBuildLookupTable();
 
     if (log)
       log->Printf(
@@ -1097,8 +1096,6 @@ clang::Decl *ClangASTImporter::Minion::Imported(clang::Decl *from,
       }
     }
   }
-
-  return clang::ASTImporter::Imported(from, to);
 }
 
 clang::Decl *ClangASTImporter::Minion::GetOriginalDecl(clang::Decl *To) {

@@ -1,9 +1,8 @@
-//===- polly/ScopBuilder.h -------------------------------------*- C++ -*-===//
+//===- polly/ScopBuilder.h --------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,22 +13,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef POLLY_SCOP_BUILDER_H
-#define POLLY_SCOP_BUILDER_H
+#ifndef POLLY_SCOPBUILDER_H
+#define POLLY_SCOPBUILDER_H
 
 #include "polly/ScopInfo.h"
+#include "polly/Support/ScopHelper.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace polly {
+
+class ScopDetection;
 
 /// Command line switch whether to model read-only accesses.
 extern bool ModelReadOnlyScalars;
 
 /// Build the Polly IR (Scop and ScopStmt) on a Region.
 class ScopBuilder {
-  //===-------------------------------------------------------------------===//
-  ScopBuilder(const ScopBuilder &) = delete;
-  const ScopBuilder &operator=(const ScopBuilder &) = delete;
-
   /// The AliasAnalysis to build AliasSetTracker.
   AliasAnalysis &AA;
 
@@ -117,7 +117,8 @@ class ScopBuilder {
   // @}
 
   // Build the SCoP for Region @p R.
-  void buildScop(Region &R, AssumptionCache &AC);
+  void buildScop(Region &R, AssumptionCache &AC,
+                 OptimizationRemarkEmitter &ORE);
 
   /// Try to build a multi-dimensional fixed sized MemoryAccess from the
   /// Load/Store instruction.
@@ -194,6 +195,26 @@ class ScopBuilder {
   /// Build the access functions for the subregion @p SR.
   void buildAccessFunctions();
 
+  /// Should an instruction be modeled in a ScopStmt.
+  ///
+  /// @param Inst The instruction to check.
+  /// @param L    The loop in which context the instruction is looked at.
+  ///
+  /// @returns True if the instruction should be modeled.
+  bool shouldModelInst(Instruction *Inst, Loop *L);
+
+  /// Create one or more ScopStmts for @p BB.
+  ///
+  /// Consecutive instructions are associated to the same statement until a
+  /// separator is found.
+  void buildSequentialBlockStmts(BasicBlock *BB, bool SplitOnStore = false);
+
+  /// Create one or more ScopStmts for @p BB using equivalence classes.
+  ///
+  /// Instructions of a basic block that belong to the same equivalence class
+  /// are added to the same statement.
+  void buildEqivClassBlockStmts(BasicBlock *BB);
+
   /// Create ScopStmt for all BBs and non-affine subregions of @p SR.
   ///
   /// @param SR A subregion of @p R.
@@ -202,16 +223,14 @@ class ScopBuilder {
   /// access any memory and thus have no effect.
   void buildStmts(Region &SR);
 
-  /// Build the access functions for the basic block @p BB in or represented by
-  /// @p Stmt.
+  /// Build the access functions for the statement @p Stmt in or represented by
+  /// @p BB.
   ///
   /// @param Stmt               Statement to add MemoryAccesses to.
   /// @param BB                 A basic block in @p R.
   /// @param NonAffineSubRegion The non affine sub-region @p BB is in.
-  /// @param IsExitBlock        Flag to indicate that @p BB is in the exit BB.
   void buildAccessFunctions(ScopStmt *Stmt, BasicBlock &BB,
-                            Region *NonAffineSubRegion = nullptr,
-                            bool IsExitBlock = false);
+                            Region *NonAffineSubRegion = nullptr);
 
   /// Create a new MemoryAccess object and add it to #AccFuncMap.
   ///
@@ -308,11 +327,49 @@ class ScopBuilder {
   /// @see MemoryKind
   void addPHIReadAccess(ScopStmt *PHIStmt, PHINode *PHI);
 
+  /// Build the domain of @p Stmt.
+  void buildDomain(ScopStmt &Stmt);
+
+  /// Fill NestLoops with loops surrounding @p Stmt.
+  void collectSurroundingLoops(ScopStmt &Stmt);
+
+  /// Check for reductions in @p Stmt.
+  ///
+  /// Iterate over all store memory accesses and check for valid binary
+  /// reduction like chains. For all candidates we check if they have the same
+  /// base address and there are no other accesses which overlap with them. The
+  /// base address check rules out impossible reductions candidates early. The
+  /// overlap check, together with the "only one user" check in
+  /// collectCandidateReductionLoads, guarantees that none of the intermediate
+  /// results will escape during execution of the loop nest. We basically check
+  /// here that no other memory access can access the same memory as the
+  /// potential reduction.
+  void checkForReductions(ScopStmt &Stmt);
+
+  /// Collect loads which might form a reduction chain with @p StoreMA.
+  ///
+  /// Check if the stored value for @p StoreMA is a binary operator with one or
+  /// two loads as operands. If the binary operand is commutative & associative,
+  /// used only once (by @p StoreMA) and its load operands are also used only
+  /// once, we have found a possible reduction chain. It starts at an operand
+  /// load and includes the binary operator and @p StoreMA.
+  ///
+  /// Note: We allow only one use to ensure the load and binary operator cannot
+  ///       escape this block or into any other store except @p StoreMA.
+  void collectCandidateReductionLoads(MemoryAccess *StoreMA,
+                                      SmallVectorImpl<MemoryAccess *> &Loads);
+
+  /// Build the access relation of all memory accesses of @p Stmt.
+  void buildAccessRelations(ScopStmt &Stmt);
+
 public:
   explicit ScopBuilder(Region *R, AssumptionCache &AC, AliasAnalysis &AA,
                        const DataLayout &DL, DominatorTree &DT, LoopInfo &LI,
-                       ScopDetection &SD, ScalarEvolution &SE);
-  ~ScopBuilder() {}
+                       ScopDetection &SD, ScalarEvolution &SE,
+                       OptimizationRemarkEmitter &ORE);
+  ScopBuilder(const ScopBuilder &) = delete;
+  ScopBuilder &operator=(const ScopBuilder &) = delete;
+  ~ScopBuilder() = default;
 
   /// Try to build the Polly IR of static control part on the current
   /// SESE-Region.
@@ -321,13 +378,6 @@ public:
   ///         for the region
   std::unique_ptr<Scop> getScop() { return std::move(scop); }
 };
-
 } // end namespace polly
 
-namespace llvm {
-class PassRegistry;
-void initializeScopInfoRegionPassPass(llvm::PassRegistry &);
-void initializeScopInfoWrapperPassPass(llvm::PassRegistry &);
-} // namespace llvm
-
-#endif
+#endif // POLLY_SCOPBUILDER_H

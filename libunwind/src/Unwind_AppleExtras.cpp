@@ -1,9 +1,8 @@
 //===--------------------- Unwind_AppleExtras.cpp -------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //
 //===----------------------------------------------------------------------===//
@@ -11,7 +10,6 @@
 #include "config.h"
 #include "AddressSpace.hpp"
 #include "DwarfParser.hpp"
-#include "unwind_ext.h"
 
 
 // private keymgr stuff
@@ -183,32 +181,3 @@ bool checkKeyMgrRegisteredFDEs(uintptr_t pc, void *&fde) {
 
 }
 
-
-#if !defined(FOR_DYLD) && defined(_LIBUNWIND_BUILD_SJLJ_APIS)
-
-#ifndef _LIBUNWIND_HAS_NO_THREADS
-  #include <System/pthread_machdep.h>
-#else
-  _Unwind_FunctionContext *fc_ = nullptr;
-#endif
-
-// Accessors to get get/set linked list of frames for sjlj based execeptions.
-_LIBUNWIND_HIDDEN
-struct _Unwind_FunctionContext *__Unwind_SjLj_GetTopOfFunctionStack() {
-#ifndef _LIBUNWIND_HAS_NO_THREADS
-  return (struct _Unwind_FunctionContext *)
-    _pthread_getspecific_direct(__PTK_LIBC_DYLD_Unwind_SjLj_Key);
-#else
-  return fc_;
-#endif
-}
-
-_LIBUNWIND_HIDDEN
-void __Unwind_SjLj_SetTopOfFunctionStack(struct _Unwind_FunctionContext *fc) {
-#ifndef _LIBUNWIND_HAS_NO_THREADS
-  _pthread_setspecific_direct(__PTK_LIBC_DYLD_Unwind_SjLj_Key, fc);
-#else
-  fc_ = fc;
-#endif
-}
-#endif

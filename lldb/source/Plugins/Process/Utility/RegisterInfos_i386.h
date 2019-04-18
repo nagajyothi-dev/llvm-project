@@ -1,9 +1,8 @@
 //===-- RegisterInfos_i386.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 
-// Project includes
 
 #ifdef DECLARE_REGISTER_INFOS_I386_STRUCT
 
@@ -27,19 +25,19 @@
 // Based on DNBArchImplI386.cpp from debugserver
 #define YMM_OFFSET(reg_index)                                                  \
   (LLVM_EXTENSION offsetof(UserArea, i387) +                                   \
-   LLVM_EXTENSION offsetof(FPR, xstate) +                                      \
+   LLVM_EXTENSION offsetof(FPR, fxsave) +                                      \
    LLVM_EXTENSION offsetof(FXSAVE, xmm[7]) + sizeof(XMMReg) +                  \
    (32 * reg_index))
 
-#define BNDR_OFFSET(reg_index) \
-    (LLVM_EXTENSION offsetof(UserArea, i387) + \
-     LLVM_EXTENSION offsetof(FPR, xstate) + \
-     LLVM_EXTENSION offsetof(XSAVE, mpxr[reg_index]))
+#define BNDR_OFFSET(reg_index)                                                 \
+  (LLVM_EXTENSION offsetof(UserArea, i387) +                                   \
+   LLVM_EXTENSION offsetof(FPR, xsave) +                                       \
+   LLVM_EXTENSION offsetof(XSAVE, mpxr[reg_index]))
 
-#define BNDC_OFFSET(reg_index) \
-    (LLVM_EXTENSION offsetof(UserArea, i387) + \
-     LLVM_EXTENSION offsetof(FPR, xstate) + \
-     LLVM_EXTENSION offsetof(XSAVE, mpxc[reg_index]))
+#define BNDC_OFFSET(reg_index)                                                 \
+  (LLVM_EXTENSION offsetof(UserArea, i387) +                                   \
+   LLVM_EXTENSION offsetof(FPR, xsave) +                                       \
+   LLVM_EXTENSION offsetof(XSAVE, mpxc[reg_index]))
 
 // Number of bytes needed to represent a FPR.
 #if !defined(FPR_SIZE)

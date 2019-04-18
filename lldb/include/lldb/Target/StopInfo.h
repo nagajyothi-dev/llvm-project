@@ -1,21 +1,16 @@
 //===-- StopInfo.h ----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_StopInfo_h_
 #define liblldb_StopInfo_h_
 
-// C Includes
-// C++ Includes
 #include <string>
 
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/StructuredData.h"
 #include "lldb/lldb-public.h"
@@ -27,9 +22,7 @@ class StopInfo {
   friend class ThreadPlanBase;
 
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   StopInfo(Thread &thread, uint64_t value);
 
   virtual ~StopInfo() {}
@@ -40,12 +33,10 @@ public:
 
   lldb::ThreadSP GetThread() const { return m_thread_wp.lock(); }
 
-  // The value of the StopInfo depends on the StopReason.
-  // StopReason                  Meaning
-  // ----------------------------------------------
-  // eStopReasonBreakpoint       BreakpointSiteID
-  // eStopReasonSignal           Signal number
-  // eStopReasonWatchpoint       WatchpointLocationID
+  // The value of the StopInfo depends on the StopReason. StopReason
+  // Meaning ----------------------------------------------
+  // eStopReasonBreakpoint       BreakpointSiteID eStopReasonSignal
+  // Signal number eStopReasonWatchpoint       WatchpointLocationID
   // eStopReasonPlanComplete     No significance
 
   uint64_t GetValue() const { return m_value; }
@@ -53,10 +44,8 @@ public:
   virtual lldb::StopReason GetStopReason() const = 0;
 
   // ShouldStopSynchronous will get called before any thread plans are
-  // consulted, and if it says we should
-  // resume the target, then we will just immediately resume.  This should not
-  // run any code in or resume the
-  // target.
+  // consulted, and if it says we should resume the target, then we will just
+  // immediately resume.  This should not run any code in or resume the target.
 
   virtual bool ShouldStopSynchronous(Event *event_ptr) { return true; }
 
@@ -88,14 +77,11 @@ public:
   virtual bool IsValidForOperatingSystemThread(Thread &thread) { return true; }
 
   // Sometimes the thread plan logic will know that it wants a given stop to
-  // stop or not,
-  // regardless of what the ordinary logic for that StopInfo would dictate.  The
-  // main example
-  // of this is the ThreadPlanCallFunction, which for instance knows - based on
-  // how that particular
-  // expression was executed - whether it wants all breakpoints to auto-continue
-  // or not.
-  // Use OverrideShouldStop on the StopInfo to implement this.
+  // stop or not, regardless of what the ordinary logic for that StopInfo would
+  // dictate.  The main example of this is the ThreadPlanCallFunction, which
+  // for instance knows - based on how that particular expression was executed
+  // - whether it wants all breakpoints to auto-continue or not. Use
+  // OverrideShouldStop on the StopInfo to implement this.
 
   void OverrideShouldStop(bool override_value) {
     m_override_should_stop = override_value ? eLazyBoolYes : eLazyBoolNo;
@@ -159,20 +145,16 @@ protected:
 
   virtual bool DoShouldNotify(Event *event_ptr) { return false; }
 
-  // Stop the thread by default. Subclasses can override this to allow
-  // the thread to continue if desired.  The ShouldStop method should not do
-  // anything
-  // that might run code.  If you need to run code when deciding whether to stop
-  // at this StopInfo, that must be done in the PerformAction.
+  // Stop the thread by default. Subclasses can override this to allow the
+  // thread to continue if desired.  The ShouldStop method should not do
+  // anything that might run code.  If you need to run code when deciding
+  // whether to stop at this StopInfo, that must be done in the PerformAction.
   // The PerformAction will always get called before the ShouldStop.  This is
-  // done by the
-  // ProcessEventData::DoOnRemoval, though the ThreadPlanBase needs to consult
-  // this later on.
+  // done by the ProcessEventData::DoOnRemoval, though the ThreadPlanBase needs
+  // to consult this later on.
   virtual bool ShouldStop(Event *event_ptr) { return true; }
 
-  //------------------------------------------------------------------
   // Classes that inherit from StackID can see and modify these
-  //------------------------------------------------------------------
   lldb::ThreadWP m_thread_wp; // The thread corresponding to the stop reason.
   uint32_t m_stop_id;   // The process stop ID for which this stop info is valid
   uint32_t m_resume_id; // This is the resume ID when we made this stop ID.
@@ -185,14 +167,13 @@ protected:
   StructuredData::ObjectSP
       m_extended_info; // The extended info for this stop info
 
-  // This determines whether the target has run since this stop info.
-  // N.B. running to evaluate a user expression does not count.
+  // This determines whether the target has run since this stop info. N.B.
+  // running to evaluate a user expression does not count.
   bool HasTargetRunSinceMe();
 
   // MakeStopInfoValid is necessary to allow saved stop infos to resurrect
-  // themselves as valid.
-  // It should only be used by Thread::RestoreThreadStateFromCheckpoint and to
-  // make sure the one-step
+  // themselves as valid. It should only be used by
+  // Thread::RestoreThreadStateFromCheckpoint and to make sure the one-step
   // needed for before-the-fact watchpoints does not prevent us from stopping
   void MakeStopInfoValid();
 

@@ -1,9 +1,8 @@
 //===-- MIDriverMain.cpp ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,13 +25,12 @@
 //                  MICmdBase.h / .cpp
 //                  MICmdCmd.h / .cpp
 
-#if defined(_MSC_VER)
-#define _INC_SIGNAL // Stop window's signal.h being included -
-                    // CODETAG_IOR_SIGNALS
-#endif              // _MSC_VER
-
 // Third party headers:
 #include "lldb/API/SBHostOS.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Signals.h"
+#include <atomic>
 #include <csignal>
 #include <stdio.h>
 
@@ -43,7 +41,7 @@
 #include "MIDriver.h"
 #include "MIDriverMgr.h"
 #include "MIUtilDebug.h"
-#include "Platform.h" // Define signals - CODETAG_IOR_SIGNALS
+#include "Platform.h"
 
 #if defined(_MSC_VER)
 #pragma warning(                                                               \
@@ -53,7 +51,6 @@
 
 // CODETAG_IOR_SIGNALS
 //++
-//------------------------------------------------------------------------------------
 // Details: The SIGINT signal is sent to a process by its controlling terminal
 // when a
 //          user wishes to interrupt the process. This is typically initiated by
@@ -72,14 +69,13 @@ void sigint_handler(int vSigno) {
 #ifdef _WIN32 // Restore handler as it is not persistent on Windows
   signal(SIGINT, sigint_handler);
 #endif
-  static bool g_interrupt_sent = false;
+  static std::atomic_flag g_interrupt_sent = ATOMIC_FLAG_INIT;
   CMIDriverMgr &rDriverMgr = CMIDriverMgr::Instance();
   lldb::SBDebugger *pDebugger = rDriverMgr.DriverGetTheDebugger();
   if (pDebugger != nullptr) {
-    if (!g_interrupt_sent) {
-      g_interrupt_sent = true;
+    if (!g_interrupt_sent.test_and_set()) {
       pDebugger->DispatchInputInterrupt();
-      g_interrupt_sent = false;
+      g_interrupt_sent.clear();
     }
   }
 
@@ -88,7 +84,6 @@ void sigint_handler(int vSigno) {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Init the MI driver system. Initialize the whole driver system which
 // includes
 //          both the original LLDB driver and the MI driver.
@@ -114,7 +109,6 @@ bool DriverSystemInit() {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: Shutdown the debugger system. Release / terminate resources external
 // to
 //          specifically the MI driver.
@@ -134,7 +128,6 @@ bool DriverSystemShutdown(const bool vbAppExitOk) {
 }
 
 //++
-//------------------------------------------------------------------------------------
 // Details: MI's application start point of execution. The application runs in
 // two modes.
 //          An LLDB native driver mode where it acts no different from the LLDB
@@ -167,12 +160,12 @@ bool DriverSystemShutdown(const bool vbAppExitOk) {
 //--
 int main(int argc, char const *argv[]) {
 #if MICONFIG_DEBUG_SHOW_ATTACH_DBG_DLG
-#ifdef _WIN32
-  CMIUtilDebug::ShowDlgWaitForDbgAttach();
-#else
   CMIUtilDebug::WaitForDbgAttachInfinteLoop();
-#endif //  _WIN32
 #endif // MICONFIG_DEBUG_SHOW_ATTACH_DBG_DLG
+
+  llvm::StringRef ToolName = argv[0];
+  llvm::sys::PrintStackTraceOnErrorSignal(ToolName);
+  llvm::PrettyStackTraceProgram X(argc, argv);
 
   // *** Order is important here ***
   bool bOk = DriverSystemInit();

@@ -1,21 +1,21 @@
 //===-- msan_linux.cc -----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 // This file is a part of MemorySanitizer.
 //
-// Linux- and FreeBSD-specific code.
+// Linux-, NetBSD- and FreeBSD-specific code.
 //===----------------------------------------------------------------------===//
 
 #include "sanitizer_common/sanitizer_platform.h"
-#if SANITIZER_FREEBSD || SANITIZER_LINUX
+#if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD
 
 #include "msan.h"
+#include "msan_report.h"
 #include "msan_thread.h"
 
 #include <elf.h>
@@ -120,7 +120,7 @@ bool InitShadow(bool init_origins) {
     return false;
   }
 
-  const uptr maxVirtualAddress = GetMaxVirtualAddress();
+  const uptr maxVirtualAddress = GetMaxUserVirtualAddress();
 
   for (unsigned i = 0; i < kMemoryLayoutSize; ++i) {
     uptr start = kMemoryLayout[i].start;
@@ -142,7 +142,7 @@ bool InitShadow(bool init_origins) {
     if (map) {
       if (!CheckMemoryRangeAvailability(start, size))
         return false;
-      if ((uptr)MmapFixedNoReserve(start, size, kMemoryLayout[i].name) != start)
+      if (!MmapFixedNoReserve(start, size, kMemoryLayout[i].name))
         return false;
       if (common_flags()->use_madv_dontdump)
         DontDumpShadowMemory(start, size);
@@ -174,6 +174,51 @@ void InstallAtExitHandler() {
 
 // ---------------------- TSD ---------------- {{{1
 
+#if SANITIZER_NETBSD || SANITIZER_FREEBSD
+// Thread Static Data cannot be used in early init on NetBSD and FreeBSD.
+// Reuse the MSan TSD API for compatibility with existing code
+// with an alternative implementation.
+
+static void (*tsd_destructor)(void *tsd) = nullptr;
+
+struct tsd_key {
+  tsd_key() : key(nullptr) {}
+  ~tsd_key() {
+    CHECK(tsd_destructor);
+    if (key)
+      (*tsd_destructor)(key);
+  }
+  MsanThread *key;
+};
+
+static thread_local struct tsd_key key;
+
+void MsanTSDInit(void (*destructor)(void *tsd)) {
+  CHECK(!tsd_destructor);
+  tsd_destructor = destructor;
+}
+
+MsanThread *GetCurrentThread() {
+  CHECK(tsd_destructor);
+  return key.key;
+}
+
+void SetCurrentThread(MsanThread *tsd) {
+  CHECK(tsd_destructor);
+  CHECK(tsd);
+  CHECK(!key.key);
+  key.key = tsd;
+}
+
+void MsanTSDDtor(void *tsd) {
+  CHECK(tsd_destructor);
+  CHECK_EQ(key.key, tsd);
+  key.key = nullptr;
+  // Make sure that signal handler can not see a stale current thread pointer.
+  atomic_signal_fence(memory_order_seq_cst);
+  MsanThread::TSDDtor(tsd);
+}
+#else
 static pthread_key_t tsd_key;
 static bool tsd_key_inited = false;
 
@@ -210,7 +255,8 @@ void MsanTSDDtor(void *tsd) {
   atomic_signal_fence(memory_order_seq_cst);
   MsanThread::TSDDtor(tsd);
 }
+#endif
 
 } // namespace __msan
 
-#endif // SANITIZER_FREEBSD || SANITIZER_LINUX
+#endif // SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD

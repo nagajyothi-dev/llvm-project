@@ -1,9 +1,8 @@
 //===- lib/ReaderWriter/MachO/MachONormalizedFileToAtoms.cpp --------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,8 +24,8 @@
 #include "File.h"
 #include "MachONormalizedFile.h"
 #include "MachONormalizedFileBinaryUtils.h"
+#include "lld/Common/LLVM.h"
 #include "lld/Core/Error.h"
-#include "lld/Core/LLVM.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
@@ -906,7 +905,7 @@ readCompUnit(const NormalizedFile &normalizedFile,
   abbrevData.getU8(&abbrevOffset);
   uint32_t name;
   llvm::dwarf::Form form;
-  llvm::DWARFFormParams formParams = {version, addrSize, Format};
+  llvm::dwarf::FormParams formParams = {version, addrSize, Format};
   TranslationUnitSource tu;
   while ((name = abbrevData.getULEB128(&abbrevOffset)) |
          (form = static_cast<llvm::dwarf::Form>(
@@ -1431,8 +1430,8 @@ llvm::Error
 normalizedObjectToAtoms(MachOFile *file,
                         const NormalizedFile &normalizedFile,
                         bool copyRefs) {
-  DEBUG(llvm::dbgs() << "******** Normalizing file to atoms: "
-                    << file->path() << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "******** Normalizing file to atoms: "
+                          << file->path() << "\n");
   bool scatterable = ((normalizedFile.flags & MH_SUBSECTIONS_VIA_SYMBOLS) != 0);
 
   // Create atoms from each section.

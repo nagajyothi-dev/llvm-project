@@ -4,7 +4,7 @@ include "llvm/Option/OptParser.td"
 // These options seem to be important for the tool
 // and should be implemented.
 
-def FILEOUT : Separate<[ "/", "-" ], "FO">,
+def FILEOUT : JoinedOrSeparate<[ "/", "-" ], "FO">,
               HelpText<"Change the output file location.">;
 
 def DEFINE : Separate<[ "/", "-" ], "D">,
@@ -32,6 +32,12 @@ def H : Flag<[ "/", "-" ], "H">,
         Alias<HELP>,
         HelpText<"Display this help and exit.">;
 
+def DRY_RUN : Flag<[ "/", "-" ], "dry-run">,
+              HelpText<"Don't compile the input; only try to parse it.">;
+
+def CODEPAGE : JoinedOrSeparate<[ "/", "-" ], "C">,
+               HelpText<"Set the codepage used for input strings.">;
+
 // Unused switches (at least for now). These will stay unimplemented
 // in an early stage of development and can be ignored. However, we need to
 // parse them in order to preserve the compatibility with the original tool.
@@ -41,7 +47,6 @@ def R : Flag<[ "/", "-" ], "R">;
 def SL : Flag<[ "/", "-" ], "SL">;
 
 // (Codepages support.)
-def C : Flag<[ "/", "-" ], "C">;
 def W : Flag<[ "/", "-" ], "W">;
 
 // (Support of MUI and similar.)

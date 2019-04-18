@@ -1,4 +1,3 @@
-// clang-format off
 // RUN: %clangxx -std=c++11 %s -o %t
 // RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=1 not %run %t 2>&1 | FileCheck %s
 // RUN: env LD_PRELOAD=%shared_libasan %env_asan_opts=handle_segv=2 not %run %t 2>&1 | FileCheck %s
@@ -16,8 +15,7 @@
 // REQUIRES: asan-dynamic-runtime
 
 // This way of setting LD_PRELOAD does not work with Android test runner.
-// REQUIRES: not-android
-// clang-format on
+// REQUIRES: !android
 
 #include <assert.h>
 #include <signal.h>
@@ -32,8 +30,14 @@ void SigHandler(int signum) { handler = "TestSigHandler"; }
 void SigAction(int, siginfo_t *, void *) { handler = "TestSigAction"; }
 
 struct KernelSigaction {
+
+#if defined(__mips__)
+  unsigned long flags;
+  __sighandler_t handler;
+#else
   __sighandler_t handler;
   unsigned long flags;
+#endif
   void (*restorer)();
   char unused[1024];
 };
@@ -98,10 +102,10 @@ int main(int argc, char *argv[]) {
 }
 
 // CHECK-NOT: TestSig
-// CHECK: ASAN:DEADLYSIGNAL
+// CHECK: AddressSanitizer:DEADLYSIGNAL
 
-// CHECK-HANDLER-NOT: ASAN:DEADLYSIGNAL
+// CHECK-HANDLER-NOT: AddressSanitizer:DEADLYSIGNAL
 // CHECK-HANDLER: TestSigHandler
 
-// CHECK-ACTION-NOT: ASAN:DEADLYSIGNAL
+// CHECK-ACTION-NOT: AddressSanitizer:DEADLYSIGNAL
 // CHECK-ACTION: TestSigAction

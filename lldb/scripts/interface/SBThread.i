@@ -1,9 +1,8 @@
 //===-- SWIG Interface for SBThread -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -74,6 +73,8 @@ public:
 
     bool
     IsValid() const;
+
+    explicit operator bool() const;
 
     void
     Clear ();
@@ -211,6 +212,11 @@ public:
     void
     StepOver (lldb::RunMode stop_other_threads = lldb::eOnlyDuringStepping);
 
+    %feature("autodoc",
+    "Do a source level single step over in the currently selected thread.") StepOver;
+    void
+    StepOver (lldb::RunMode stop_other_threads, SBError &error);
+
     void
     StepInto (lldb::RunMode stop_other_threads = lldb::eOnlyDuringStepping);
 
@@ -218,7 +224,7 @@ public:
     StepInto (const char *target_name, lldb::RunMode stop_other_threads = lldb::eOnlyDuringStepping);
 
     %feature("autodoc", "
-    Step  the current thread from the current source line to the line given by end_line, stopping if
+    Step the current thread from the current source line to the line given by end_line, stopping if
     the thread steps into the function given by target_name.  If target_name is None, then stepping will stop
     in any of the places we would normally stop.
     ") StepInto;
@@ -231,11 +237,27 @@ public:
     void
     StepOut ();
 
+    %feature("autodoc",
+    "Step out of the currently selected thread.") StepOut;
     void
-    StepOutOfFrame (lldb::SBFrame &frame);
+    StepOut (SBError &error);
+
+    void
+    StepOutOfFrame (SBFrame &frame);
+
+    %feature("autodoc",
+    "Step out of the specified frame.") StepOutOfFrame;
+    void
+    StepOutOfFrame (SBFrame &frame, SBError &error);
 
     void
     StepInstruction(bool step_over);
+
+    %feature("autodoc",
+    "Do an instruction level single step in the currently selected thread.
+    ") StepInstruction;
+    void
+    StepInstruction(bool step_over, SBError &error);
 
     SBError
     StepOverUntil (lldb::SBFrame &frame,
@@ -253,6 +275,9 @@ public:
 
     void
     RunToAddress (lldb::addr_t addr);
+
+    void
+    RunToAddress (lldb::addr_t addr, SBError &error);
 
     %feature("autodoc", "
     Force a return from the frame passed in (and any frames younger than it)
@@ -297,9 +322,15 @@ public:
     ") Suspend;
     bool
     Suspend();
+
+    bool
+    Suspend(SBError &error);
     
     bool
     Resume ();
+
+    bool
+    Resume (SBError &error);
     
     bool
     IsSuspended();
@@ -329,7 +360,7 @@ public:
     //--------------------------------------------------------------------------
     /// Get the description strings for this thread that match what the 
     /// lldb driver will present, using the thread-format (stop_format==false)
-    /// or thread-stop-format (stop_format = true). 
+    /// or thread-stop-format (stop_format = true).
     //--------------------------------------------------------------------------
     ") GetDescription;
     bool GetDescription(lldb::SBStream &description, bool stop_format) const;
@@ -367,6 +398,24 @@ public:
     ") GetExtendedBacktraceOriginatingIndexID;
     uint32_t
     GetExtendedBacktraceOriginatingIndexID();
+    
+    %feature("autodoc","
+    Returns an SBValue object represeting the current exception for the thread,
+    if there is any. Currently, this works for Obj-C code and returns an SBValue
+    representing the NSException object at the throw site or that's currently
+    being processes.
+    ") GetCurrentException;
+    lldb::SBValue
+    GetCurrentException();
+
+    %feature("autodoc","
+    Returns a historical (fake) SBThread representing the stack trace of an
+    exception, if there is one for the thread. Currently, this works for Obj-C
+    code, and can retrieve the throw-site backtrace of an NSException object
+    even when the program is no longer at the throw site.
+    ") GetCurrentExceptionBacktrace;
+    lldb::SBThread
+    GetCurrentExceptionBacktrace();
 
     %feature("autodoc","
     Takes no arguments, returns a bool.
@@ -379,6 +428,14 @@ public:
     SafeToCallFunctions ();
 
     %pythoncode %{
+        def __iter__(self):
+            '''Iterate over all frames in a lldb.SBThread object.'''
+            return lldb_iter(self, 'GetNumFrames', 'GetFrameAtIndex')
+
+        def __len__(self):
+            '''Return the number of frames in a lldb.SBThread object.'''
+            return self.GetNumFrames()
+
         class frames_access(object):
             '''A helper object that will lazily hand out frames for a thread when supplied an index.'''
             def __init__(self, sbthread):

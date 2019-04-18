@@ -1,9 +1,8 @@
 //===-- SingleStepCheck.cpp ----------------------------------- -*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -52,16 +51,18 @@ struct ChildDeleter {
 
   ~ChildDeleter() {
     int status;
-    kill(pid, SIGKILL);            // Kill the child.
-    waitpid(pid, &status, __WALL); // Pick up the remains.
+    // Kill the child.
+    kill(pid, SIGKILL);
+    // Pick up the remains.
+    llvm::sys::RetryAfterSignal(-1, waitpid, pid, &status, __WALL);
   }
 };
 
 bool WorkaroundNeeded() {
   // We shall spawn a child, and use it to verify the debug capabilities of the
-  // cpu. We shall iterate through the cpus, bind the child to each one in turn,
-  // and verify that single-stepping works on that cpu. A workaround is needed
-  // if we find at least one broken cpu.
+  // cpu. We shall iterate through the cpus, bind the child to each one in
+  // turn, and verify that single-stepping works on that cpu. A workaround is
+  // needed if we find at least one broken cpu.
 
   Log *log = ProcessPOSIXLog::GetLogIfAllCategoriesSet(POSIX_LOG_THREAD);
   ::pid_t child_pid = fork();
@@ -82,7 +83,8 @@ bool WorkaroundNeeded() {
   }
 
   int status;
-  ::pid_t wpid = waitpid(child_pid, &status, __WALL);
+  ::pid_t wpid = llvm::sys::RetryAfterSignal(-1, waitpid,
+      child_pid, &status, __WALL);
   if (wpid != child_pid || !WIFSTOPPED(status)) {
     LLDB_LOG(log, "waitpid() failed (status = {0:x}): {1}", status,
              Status(errno, eErrorTypePOSIX));
@@ -111,7 +113,8 @@ bool WorkaroundNeeded() {
       break;
     }
 
-    wpid = waitpid(child_pid, &status, __WALL);
+    wpid = llvm::sys::RetryAfterSignal(-1, waitpid,
+        child_pid, &status, __WALL);
     if (wpid != child_pid || !WIFSTOPPED(status)) {
       LLDB_LOG(log, "waitpid() failed (status = {0:x}): {1}", status,
                Status(errno, eErrorTypePOSIX));

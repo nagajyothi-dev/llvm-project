@@ -1,22 +1,31 @@
 llvm_canonicalize_cmake_booleans(
-  LLVM_TOOL_LTO_BUILD
+  BUILD_SHARED_LIBS
+  HAVE_LIBXAR
+  HAVE_LIBZ
   HAVE_OCAMLOPT
   HAVE_OCAML_OUNIT
-  LLVM_INCLUDE_GO_TESTS
-  LLVM_USE_INTEL_JITEVENTS
-  HAVE_LIBZ
-  HAVE_LIBXAR
   LLVM_ENABLE_DIA_SDK
   LLVM_ENABLE_FFI
-  BUILD_SHARED_LIBS)
+  LLVM_ENABLE_THREADS
+  LLVM_INCLUDE_GO_TESTS
+  LLVM_LIBXML2_ENABLED
+  LLVM_LINK_LLVM_DYLIB
+  LLVM_TOOL_LTO_BUILD
+  LLVM_USE_INTEL_JITEVENTS
+  LLVM_BUILD_EXAMPLES
+  )
 
 configure_lit_site_cfg(
-  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.in
-  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
   )
 configure_lit_site_cfg(
-  ${CMAKE_CURRENT_SOURCE_DIR}/Unit/lit.site.cfg.in
-  ${CMAKE_CURRENT_BINARY_DIR}/Unit/lit.site.cfg
+  ${CMAKE_CURRENT_SOURCE_DIR}/Unit/lit.site.cfg.py.in
+  ${CMAKE_CURRENT_BINARY_DIR}/Unit/lit.site.cfg.py
+  MAIN_CONFIG
+  ${CMAKE_CURRENT_SOURCE_DIR}/Unit/lit.cfg.py
   )
 
 # Don't include check-llvm into check-all without LLVM_BUILD_TOOLS.
@@ -41,28 +50,34 @@ set(LLVM_TEST_DEPENDS
           llvm-bcanalyzer
           llvm-c-test
           llvm-cat
-          llvm-cxxfilt
+          llvm-cfi-verify
           llvm-config
           llvm-cov
-          llvm-cxxdump
           llvm-cvtres
+          llvm-cxxdump
+          llvm-cxxfilt
+          llvm-cxxmap
           llvm-diff
           llvm-dis
           llvm-dlltool
-          llvm-dsymutil
+          dsymutil
           llvm-dwarfdump
           llvm-dwp
+          llvm-elfabi
+          llvm-exegesis
           llvm-extract
+          llvm-isel-fuzzer
           llvm-lib
           llvm-link
           llvm-lto2
           llvm-mc
-          llvm-mcmarkup
+          llvm-mca
           llvm-modextract
           llvm-mt
           llvm-nm
           llvm-objcopy
           llvm-objdump
+          llvm-opt-fuzzer
           llvm-opt-report
           llvm-pdbutil
           llvm-profdata
@@ -74,8 +89,10 @@ set(LLVM_TEST_DEPENDS
           llvm-size
           llvm-split
           llvm-strings
+          llvm-strip
           llvm-symbolizer
           llvm-tblgen
+          llvm-undname
           llvm-xray
           not
           obj2yaml
@@ -147,15 +164,11 @@ set_target_properties(llvm-test-depends PROPERTIES FOLDER "Tests")
 
 add_lit_testsuite(check-llvm "Running the LLVM regression tests"
   ${CMAKE_CURRENT_BINARY_DIR}
-  PARAMS llvm_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
-         llvm_unit_site_config=${CMAKE_CURRENT_BINARY_DIR}/Unit/lit.site.cfg
   DEPENDS ${LLVM_TEST_DEPENDS}
   )
 set_target_properties(check-llvm PROPERTIES FOLDER "Tests")
 
 add_lit_testsuites(LLVM ${CMAKE_CURRENT_SOURCE_DIR}
-  PARAMS llvm_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
-         llvm_unit_site_config=${CMAKE_CURRENT_BINARY_DIR}/Unit/lit.site.cfg
   DEPENDS ${LLVM_TEST_DEPENDS}
   )
 

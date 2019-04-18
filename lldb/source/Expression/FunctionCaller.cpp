@@ -1,20 +1,14 @@
 //===-- FunctionCaller.cpp ---------------------------------------*- C++-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
 
-// Project includes
 #include "lldb/Expression/FunctionCaller.h"
 #include "lldb/Core/Module.h"
-#include "lldb/Core/State.h"
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Core/ValueObjectList.h"
 #include "lldb/Expression/DiagnosticManager.h"
@@ -31,32 +25,31 @@
 #include "lldb/Target/ThreadPlanCallFunction.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/State.h"
 
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // FunctionCaller constructor
-//----------------------------------------------------------------------
 FunctionCaller::FunctionCaller(ExecutionContextScope &exe_scope,
                                const CompilerType &return_type,
                                const Address &functionAddress,
                                const ValueList &arg_value_list,
                                const char *name)
-    : Expression(exe_scope), m_execution_unit_sp(), m_parser(),
+    : Expression(exe_scope, eKindFunctionCaller),
+      m_execution_unit_sp(), m_parser(),
       m_jit_module_wp(), m_name(name ? name : "<unknown>"),
       m_function_ptr(NULL), m_function_addr(functionAddress),
       m_function_return_type(return_type),
       m_wrapper_function_name("__lldb_caller_function"),
       m_wrapper_struct_name("__lldb_caller_struct"), m_wrapper_args_addrs(),
-      m_arg_values(arg_value_list), m_compiled(false), m_JITted(false) {
+      m_struct_valid(false), m_arg_values(arg_value_list), m_compiled(false),
+      m_JITted(false) {
   m_jit_process_wp = lldb::ProcessWP(exe_scope.CalculateProcess());
   // Can't make a FunctionCaller without a process.
   assert(m_jit_process_wp.lock());
 }
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 FunctionCaller::~FunctionCaller() {
   lldb::ProcessSP process_sp(m_jit_process_wp.lock());
   if (process_sp) {
@@ -90,8 +83,12 @@ bool FunctionCaller::WriteFunctionWrapper(
       m_jit_start_addr, m_jit_end_addr, m_execution_unit_sp, exe_ctx,
       can_interpret, eExecutionPolicyAlways));
 
-  if (!jit_error.Success())
+  if (!jit_error.Success()) {
+    diagnostic_manager.Printf(eDiagnosticSeverityError,
+                              "Error in PrepareForExecution: %s.",
+                              jit_error.AsCString());
     return false;
+  }
 
   if (m_parser->GetGenerateDebugInfo()) {
     lldb::ModuleSP jit_module_sp(m_execution_unit_sp->GetJITModule());
@@ -102,7 +99,8 @@ bool FunctionCaller::WriteFunctionWrapper(
       jit_file.GetFilename() = const_func_name;
       jit_module_sp->SetFileSpecAndObjectName(jit_file, ConstString());
       m_jit_module_wp = jit_module_sp;
-      process->GetTarget().GetImages().Append(jit_module_sp);
+      process->GetTarget().GetImages().Append(jit_module_sp, 
+                                              true /* notify */);
     }
   }
   if (process && m_jit_start_addr)
@@ -318,9 +316,9 @@ lldb::ExpressionResults FunctionCaller::ExecuteFunction(
     DiagnosticManager &diagnostic_manager, Value &results) {
   lldb::ExpressionResults return_value = lldb::eExpressionSetupError;
 
-  // FunctionCaller::ExecuteFunction execution is always just to get the result.
-  // Do make sure we ignore
-  // breakpoints, unwind on error, and don't try to debug it.
+  // FunctionCaller::ExecuteFunction execution is always just to get the
+  // result. Do make sure we ignore breakpoints, unwind on error, and don't try
+  // to debug it.
   EvaluateExpressionOptions real_options = options;
   real_options.SetDebug(false);
   real_options.SetUnwindOnError(true);
@@ -355,9 +353,8 @@ lldb::ExpressionResults FunctionCaller::ExecuteFunction(
     return lldb::eExpressionSetupError;
 
   // We need to make sure we record the fact that we are running an expression
-  // here
-  // otherwise this fact will fail to be recorded when fetching an Objective-C
-  // object description
+  // here otherwise this fact will fail to be recorded when fetching an
+  // Objective-C object description
   if (exe_ctx.GetProcessPtr())
     exe_ctx.GetProcessPtr()->SetRunningUserExpression(true);
 

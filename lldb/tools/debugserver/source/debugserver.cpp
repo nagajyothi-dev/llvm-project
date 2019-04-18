@@ -1,19 +1,17 @@
 //===-- debugserver.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include <arpa/inet.h>
 #include <asl.h>
-#include <crt_externs.h> // for _NSGetEnviron()
+#include <crt_externs.h>
 #include <errno.h>
 #include <getopt.h>
 #include <netdb.h>
-#include <netinet/in.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <string>
@@ -21,8 +19,9 @@
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
-#include <sys/types.h>
 #include <sys/un.h>
+
+#include <memory>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -46,9 +45,7 @@ extern "C" int proc_set_wakemon_params(pid_t, int,
 // Global PID in case we get a signal and need to stop the process...
 nub_process_t g_pid = INVALID_NUB_PROCESS;
 
-//----------------------------------------------------------------------
 // Run loop modes which determine which run loop function will be called
-//----------------------------------------------------------------------
 typedef enum {
   eRNBRunLoopModeInvalid = 0,
   eRNBRunLoopModeGetStartModeFromRemoteProtocol,
@@ -59,9 +56,7 @@ typedef enum {
   eRNBRunLoopModeExit
 } RNBRunLoopMode;
 
-//----------------------------------------------------------------------
 // Global Variables
-//----------------------------------------------------------------------
 RNBRemoteSP g_remoteSP;
 static int g_lockdown_opt = 0;
 static int g_applist_opt = 0;
@@ -88,12 +83,10 @@ bool g_detach_on_error = true;
     }                                                                          \
   } while (0)
 
-//----------------------------------------------------------------------
 // Get our program path and arguments from the remote connection.
 // We will need to start up the remote connection without a PID, get the
 // arguments, wait for the new process to finish launching and hit its
 // entry point,  and then return the run loop mode that should come next.
-//----------------------------------------------------------------------
 RNBRunLoopMode RNBRunLoopGetStartModeFromRemote(RNBRemote *remote) {
   std::string packet;
 
@@ -163,12 +156,10 @@ RNBRunLoopMode RNBRunLoopGetStartModeFromRemote(RNBRemote *remote) {
   return eRNBRunLoopModeExit;
 }
 
-//----------------------------------------------------------------------
 // This run loop mode will wait for the process to launch and hit its
 // entry point. It will currently ignore all events except for the
 // process state changed event, where it watches for the process stopped
 // or crash process state.
-//----------------------------------------------------------------------
 RNBRunLoopMode RNBRunLoopLaunchInferior(RNBRemote *remote,
                                         const char *stdin_path,
                                         const char *stdout_path,
@@ -232,7 +223,7 @@ RNBRunLoopMode RNBRunLoopLaunchInferior(RNBRemote *remote,
   // were given and hope for the best
   if (!DNBResolveExecutablePath(inferior_argv[0], resolved_path,
                                 sizeof(resolved_path)))
-    ::strncpy(resolved_path, inferior_argv[0], sizeof(resolved_path));
+    ::strlcpy(resolved_path, inferior_argv[0], sizeof(resolved_path));
 
   char launch_err_str[PATH_MAX];
   launch_err_str[0] = '\0';
@@ -352,12 +343,10 @@ RNBRunLoopMode RNBRunLoopLaunchInferior(RNBRemote *remote,
   return eRNBRunLoopModeExit;
 }
 
-//----------------------------------------------------------------------
 // This run loop mode will wait for the process to launch and hit its
 // entry point. It will currently ignore all events except for the
 // process state changed event, where it watches for the process stopped
 // or crash process state.
-//----------------------------------------------------------------------
 RNBRunLoopMode RNBRunLoopLaunchAttaching(RNBRemote *remote,
                                          nub_process_t attach_pid,
                                          nub_process_t &pid) {
@@ -380,11 +369,9 @@ RNBRunLoopMode RNBRunLoopLaunchAttaching(RNBRemote *remote,
   }
 }
 
-//----------------------------------------------------------------------
 // Watch for signals:
 // SIGINT: so we can halt our inferior. (disabled for now)
 // SIGPIPE: in case our child process dies
-//----------------------------------------------------------------------
 int g_sigint_received = 0;
 int g_sigpipe_received = 0;
 void signal_handler(int signo) {
@@ -495,6 +482,7 @@ RNBRunLoopMode HandleProcessStateChange(RNBRemote *remote, bool initialize) {
 
   case eStateExited:
     remote->HandlePacket_last_signal(NULL);
+    return eRNBRunLoopModeExit;
   case eStateDetached:
     return eRNBRunLoopModeExit;
   }
@@ -654,10 +642,8 @@ RNBRunLoopMode RNBRunLoopPlatform(RNBRemote *remote) {
   return eRNBRunLoopModeExit;
 }
 
-//----------------------------------------------------------------------
 // Convenience function to set up the remote listening port
 // Returns 1 for success 0 for failure.
-//----------------------------------------------------------------------
 
 static void PortWasBoundCallbackUnixSocket(const void *baton, in_port_t port) {
   //::printf ("PortWasBoundCallbackUnixSocket (baton = %p, port = %u)\n", baton,
@@ -676,7 +662,7 @@ static void PortWasBoundCallbackUnixSocket(const void *baton, in_port_t port) {
     }
 
     saddr_un.sun_family = AF_UNIX;
-    ::strncpy(saddr_un.sun_path, unix_socket_name,
+    ::strlcpy(saddr_un.sun_path, unix_socket_name,
               sizeof(saddr_un.sun_path) - 1);
     saddr_un.sun_path[sizeof(saddr_un.sun_path) - 1] = '\0';
     saddr_un.sun_len = SUN_LEN(&saddr_un);
@@ -761,9 +747,7 @@ static int ConnectRemote(RNBRemote *remote, const char *host, int port,
   return 1;
 }
 
-//----------------------------------------------------------------------
 // ASL Logging callback that can be registered with DNBLogSetLogCallback
-//----------------------------------------------------------------------
 void ASLLogCallback(void *baton, uint32_t flags, const char *format,
                     va_list args) {
   if (format == NULL)
@@ -792,10 +776,8 @@ void ASLLogCallback(void *baton, uint32_t flags, const char *format,
   ::asl_vlog(NULL, g_aslmsg, asl_level, format, args);
 }
 
-//----------------------------------------------------------------------
 // FILE based Logging callback that can be registered with
 // DNBLogSetLogCallback
-//----------------------------------------------------------------------
 void FileLogCallback(void *baton, uint32_t flags, const char *format,
                      va_list args) {
   if (baton == NULL || format == NULL)
@@ -821,9 +803,7 @@ void show_usage_and_exit(int exit_code) {
   exit(exit_code);
 }
 
-//----------------------------------------------------------------------
 // option descriptors for getopt_long_only()
-//----------------------------------------------------------------------
 static struct option g_long_options[] = {
     {"attach", required_argument, NULL, 'a'},
     {"arch", required_argument, NULL, 'A'},
@@ -890,9 +870,7 @@ static struct option g_long_options[] = {
            // -F localhost:1234 -- /bin/ls"
     {NULL, 0, NULL, 0}};
 
-//----------------------------------------------------------------------
 // main
-//----------------------------------------------------------------------
 int main(int argc, char *argv[]) {
   // If debugserver is launched with DYLD_INSERT_LIBRARIES, unset it so we
   // don't spawn child processes with this enabled.
@@ -939,7 +917,7 @@ int main(int argc, char *argv[]) {
   sigaddset(&sigset, SIGCHLD);
   sigprocmask(SIG_BLOCK, &sigset, NULL);
 
-  g_remoteSP.reset(new RNBRemote());
+  g_remoteSP = std::make_shared<RNBRemote>();
 
   RNBRemote *remote = g_remoteSP.get();
   if (remote == NULL) {
@@ -1003,7 +981,8 @@ int main(int argc, char *argv[]) {
 
       case optional_argument:
         short_options[short_options_idx++] = ':';
-      // Fall through to required_argument case below...
+        short_options[short_options_idx++] = ':';
+        break;
       case required_argument:
         short_options[short_options_idx++] = ':';
         break;
@@ -1020,6 +999,7 @@ int main(int argc, char *argv[]) {
   optind = 1;
 #endif
 
+  bool forward_env = false;
   while ((ch = getopt_long_only(argc, argv, short_options, g_long_options,
                                 &long_option_index)) != -1) {
     DNBLogDebug("option: ch == %c (0x%2.2x) --%s%c%s\n", ch, (uint8_t)ch,
@@ -1251,14 +1231,7 @@ int main(int argc, char *argv[]) {
       break;
 
     case 'F':
-      // Pass the current environment down to the process that gets launched
-      {
-        char **host_env = *_NSGetEnviron();
-        char *env_entry;
-        size_t i;
-        for (i = 0; (env_entry = host_env[i]) != NULL; ++i)
-          remote->Context().PushEnvironment(env_entry);
-      }
+      forward_env = true;
       break;
 
     case '2':
@@ -1366,7 +1339,7 @@ int main(int argc, char *argv[]) {
         DNBLogDebug("host = '%s'  port = %i", host.c_str(), port);
       } else if (argv[0][0] == '/') {
         port = INT32_MAX;
-        strncpy(str, argv[0], sizeof(str));
+        strlcpy(str, argv[0], sizeof(str));
       } else {
         show_usage_and_exit(2);
       }
@@ -1419,6 +1392,18 @@ int main(int argc, char *argv[]) {
 
   if (start_mode == eRNBRunLoopModeExit)
     return -1;
+
+  if (forward_env || start_mode == eRNBRunLoopModeInferiorLaunching) {
+    // Pass the current environment down to the process that gets launched
+    // This happens automatically in the "launching" mode. For the rest, we
+    // only do that if the user explicitly requested this via --forward-env
+    // argument.
+    char **host_env = *_NSGetEnviron();
+    char *env_entry;
+    size_t i;
+    for (i = 0; (env_entry = host_env[i]) != NULL; ++i)
+      remote->Context().PushEnvironmentIfNeeded(env_entry);
+  }
 
   RNBRunLoopMode mode = start_mode;
   char err_str[1024] = {'\0'};
@@ -1667,6 +1652,7 @@ int main(int argc, char *argv[]) {
 
     default:
       mode = eRNBRunLoopModeExit;
+      break;
     case eRNBRunLoopModeExit:
       break;
     }

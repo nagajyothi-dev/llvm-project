@@ -1,9 +1,8 @@
 //===-- ProcessElfCore.h ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // Notes about Linux Process core dumps:
 //  1) Linux core dump is stored as ELF file.
@@ -17,26 +16,21 @@
 #ifndef liblldb_ProcessElfCore_h_
 #define liblldb_ProcessElfCore_h_
 
-// C Includes
-// C++ Includes
 #include <list>
 #include <vector>
 
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/Status.h"
 
 #include "Plugins/ObjectFile/ELF/ELFHeader.h"
+#include "Plugins/Process/elf-core/RegisterUtilities.h"
 
 struct ThreadData;
 
 class ProcessElfCore : public lldb_private::Process {
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   static lldb::ProcessSP
   CreateInstance(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp,
                  const lldb_private::FileSpec *crash_file_path);
@@ -49,49 +43,45 @@ public:
 
   static const char *GetPluginDescriptionStatic();
 
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   ProcessElfCore(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp,
                  const lldb_private::FileSpec &core_file);
 
   ~ProcessElfCore() override;
 
-  //------------------------------------------------------------------
   // Check if a given Process
-  //------------------------------------------------------------------
   bool CanDebug(lldb::TargetSP target_sp,
                 bool plugin_specified_by_name) override;
 
-  //------------------------------------------------------------------
   // Creating a new process, or attaching to an existing one
-  //------------------------------------------------------------------
   lldb_private::Status DoLoadCore() override;
 
   lldb_private::DynamicLoader *GetDynamicLoader() override;
 
-  //------------------------------------------------------------------
   // PluginInterface protocol
-  //------------------------------------------------------------------
   lldb_private::ConstString GetPluginName() override;
 
   uint32_t GetPluginVersion() override;
 
-  //------------------------------------------------------------------
   // Process Control
-  //------------------------------------------------------------------
   lldb_private::Status DoDestroy() override;
 
   void RefreshStateAfterStop() override;
 
-  //------------------------------------------------------------------
+  lldb_private::Status WillResume() override {
+    lldb_private::Status error;
+    error.SetErrorStringWithFormat(
+        "error: %s does not support resuming processes",
+        GetPluginName().GetCString());
+    return error;
+  }
+
   // Process Queries
-  //------------------------------------------------------------------
   bool IsAlive() override;
 
-  //------------------------------------------------------------------
+  bool WarnBeforeDetach() const override { return false; }
+
   // Process Memory
-  //------------------------------------------------------------------
   size_t ReadMemory(lldb::addr_t addr, void *buf, size_t size,
                     lldb_private::Status &error) override;
 
@@ -125,11 +115,9 @@ private:
     lldb_private::ConstString path;
   };
 
-  //------------------------------------------------------------------
   // For ProcessElfCore only
-  //------------------------------------------------------------------
   typedef lldb_private::Range<lldb::addr_t, lldb::addr_t> FileRange;
-  typedef lldb_private::RangeDataArray<lldb::addr_t, lldb::addr_t, FileRange, 1>
+  typedef lldb_private::RangeDataVector<lldb::addr_t, lldb::addr_t, FileRange>
       VMRangeToFileOffset;
   typedef lldb_private::RangeDataVector<lldb::addr_t, lldb::addr_t, uint32_t>
       VMRangeToPermissions;
@@ -139,10 +127,8 @@ private:
   std::string m_dyld_plugin_name;
   DISALLOW_COPY_AND_ASSIGN(ProcessElfCore);
 
-  llvm::Triple::OSType m_os;
-
   // True if m_thread_contexts contains valid entries
-  bool m_thread_data_valid;
+  bool m_thread_data_valid = false;
 
   // Contain thread data read from NOTE segments
   std::vector<ThreadData> m_thread_data;
@@ -160,8 +146,8 @@ private:
   std::vector<NT_FILE_Entry> m_nt_file_entries;
 
   // Parse thread(s) data structures(prstatus, prpsinfo) from given NOTE segment
-  lldb_private::Status ParseThreadContextsFromNoteSegment(
-      const elf::ELFProgramHeader *segment_header,
+  llvm::Error ParseThreadContextsFromNoteSegment(
+      const elf::ELFProgramHeader &segment_header,
       lldb_private::DataExtractor segment_data);
 
   // Returns number of thread contexts stored in the core file
@@ -169,7 +155,14 @@ private:
 
   // Parse a contiguous address range of the process from LOAD segment
   lldb::addr_t
-  AddAddressRangeFromLoadSegment(const elf::ELFProgramHeader *header);
+  AddAddressRangeFromLoadSegment(const elf::ELFProgramHeader &header);
+
+  llvm::Expected<std::vector<lldb_private::CoreNote>>
+  parseSegment(const lldb_private::DataExtractor &segment);
+  llvm::Error parseFreeBSDNotes(llvm::ArrayRef<lldb_private::CoreNote> notes);
+  llvm::Error parseNetBSDNotes(llvm::ArrayRef<lldb_private::CoreNote> notes);
+  llvm::Error parseOpenBSDNotes(llvm::ArrayRef<lldb_private::CoreNote> notes);
+  llvm::Error parseLinuxNotes(llvm::ArrayRef<lldb_private::CoreNote> notes);
 };
 
 #endif // liblldb_ProcessElfCore_h_

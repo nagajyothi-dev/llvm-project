@@ -1,9 +1,8 @@
 //===-- Log.h ---------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,8 +14,9 @@
 #include "lldb/lldb-defines.h"
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/StringMap.h" // for StringMap
-#include "llvm/ADT/StringRef.h" // for StringRef, StringLiteral
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/RWMutex.h"
@@ -24,16 +24,14 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
-#include <memory>      // for shared_ptr
-#include <string>      // for string
-#include <type_traits> // for forward
+#include <memory>
+#include <string>
+#include <type_traits>
 
 namespace llvm {
 class raw_ostream;
 }
-//----------------------------------------------------------------------
 // Logging Options
-//----------------------------------------------------------------------
 #define LLDB_LOG_OPTION_THREADSAFE (1u << 0)
 #define LLDB_LOG_OPTION_VERBOSE (1u << 1)
 #define LLDB_LOG_OPTION_PREPEND_SEQUENCE (1u << 3)
@@ -44,9 +42,7 @@ class raw_ostream;
 #define LLDB_LOG_OPTION_APPEND (1U << 8)
 #define LLDB_LOG_OPTION_PREPEND_FILE_FUNCTION (1U << 9)
 
-//----------------------------------------------------------------------
 // Logging Functions
-//----------------------------------------------------------------------
 namespace lldb_private {
 
 class Log final {
@@ -73,10 +69,10 @@ public:
         : log_ptr(nullptr), categories(categories),
           default_flags(default_flags) {}
 
-    // This function is safe to call at any time
-    // If the channel is disabled after (or concurrently with) this function
-    // returning a non-null Log pointer, it is still safe to attempt to write to
-    // the Log object -- the output will be discarded.
+    // This function is safe to call at any time If the channel is disabled
+    // after (or concurrently with) this function returning a non-null Log
+    // pointer, it is still safe to attempt to write to the Log object -- the
+    // output will be discarded.
     Log *GetLogIfAll(uint32_t mask) {
       Log *log = log_ptr.load(std::memory_order_relaxed);
       if (log && log->GetMask().AllSet(mask))
@@ -84,10 +80,10 @@ public:
       return nullptr;
     }
 
-    // This function is safe to call at any time
-    // If the channel is disabled after (or concurrently with) this function
-    // returning a non-null Log pointer, it is still safe to attempt to write to
-    // the Log object -- the output will be discarded.
+    // This function is safe to call at any time If the channel is disabled
+    // after (or concurrently with) this function returning a non-null Log
+    // pointer, it is still safe to attempt to write to the Log object -- the
+    // output will be discarded.
     Log *GetLogIfAny(uint32_t mask) {
       Log *log = log_ptr.load(std::memory_order_relaxed);
       if (log && log->GetMask().AnySet(mask))
@@ -96,9 +92,10 @@ public:
     }
   };
 
-  //------------------------------------------------------------------
+
+  static void Initialize();
+
   // Static accessors for logging channels
-  //------------------------------------------------------------------
   static void Register(llvm::StringRef name, Channel &channel);
   static void Unregister(llvm::StringRef name);
 
@@ -112,19 +109,18 @@ public:
                                 llvm::ArrayRef<const char *> categories,
                                 llvm::raw_ostream &error_stream);
 
-  static bool ListChannelCategories(llvm::StringRef channel, llvm::raw_ostream &stream);
+  static bool ListChannelCategories(llvm::StringRef channel,
+                                    llvm::raw_ostream &stream);
 
   static void DisableAllLogChannels();
 
   static void ListAllLogChannels(llvm::raw_ostream &stream);
 
-  //------------------------------------------------------------------
   // Member functions
   //
   // These functions are safe to call at any time you have a Log* obtained from
   // the Channel class. If logging is disabled between you obtaining the Log
   // object and writing to it, the output will be silently discarded.
-  //------------------------------------------------------------------
   Log(Channel &channel) : m_channel(channel) {}
   ~Log() = default;
 
@@ -135,6 +131,15 @@ public:
   void Format(llvm::StringRef file, llvm::StringRef function,
               const char *format, Args &&... args) {
     Format(file, function, llvm::formatv(format, std::forward<Args>(args)...));
+  }
+
+  template <typename... Args>
+  void FormatError(llvm::Error error, llvm::StringRef file,
+                   llvm::StringRef function, const char *format,
+                   Args &&... args) {
+    Format(file, function,
+           llvm::formatv(format, llvm::toString(std::move(error)),
+                         std::forward<Args>(args)...));
   }
 
   void Printf(const char *format, ...) __attribute__((format(printf, 2, 3)));
@@ -158,8 +163,8 @@ public:
 private:
   Channel &m_channel;
 
-  // The mutex makes sure enable/disable operations are thread-safe. The options
-  // and mask variables are atomic to enable their reading in
+  // The mutex makes sure enable/disable operations are thread-safe. The
+  // options and mask variables are atomic to enable their reading in
   // Channel::GetLogIfAny without taking the mutex to speed up the fast path.
   // Their modification however, is still protected by this mutex.
   llvm::sys::RWMutex m_mutex;
@@ -193,6 +198,8 @@ private:
   static uint32_t GetFlags(llvm::raw_ostream &stream, const ChannelMap::value_type &entry,
                            llvm::ArrayRef<const char *> categories);
 
+  static void DisableLoggingChild();
+
   Log(const Log &) = delete;
   void operator=(const Log &) = delete;
 };
@@ -203,14 +210,27 @@ private:
   do {                                                                         \
     ::lldb_private::Log *log_private = (log);                                  \
     if (log_private)                                                           \
-      log_private->Format(__FILE__, __FUNCTION__, __VA_ARGS__);                \
+      log_private->Format(__FILE__, __func__, __VA_ARGS__);                    \
   } while (0)
 
 #define LLDB_LOGV(log, ...)                                                    \
   do {                                                                         \
     ::lldb_private::Log *log_private = (log);                                  \
     if (log_private && log_private->GetVerbose())                              \
-      log_private->Format(__FILE__, __FUNCTION__, __VA_ARGS__);                \
+      log_private->Format(__FILE__, __func__, __VA_ARGS__);                    \
+  } while (0)
+
+// Write message to log, if error is set. In the log message refer to the error
+// with {0}. Error is cleared regardless of whether logging is enabled.
+#define LLDB_LOG_ERROR(log, error, ...)                                        \
+  do {                                                                         \
+    ::lldb_private::Log *log_private = (log);                                  \
+    ::llvm::Error error_private = (error);                                     \
+    if (log_private && error_private) {                                        \
+      log_private->FormatError(::std::move(error_private), __FILE__, __func__, \
+                               __VA_ARGS__);                                   \
+    } else                                                                     \
+      ::llvm::consumeError(::std::move(error_private));                        \
   } while (0)
 
 #endif // LLDB_UTILITY_LOG_H

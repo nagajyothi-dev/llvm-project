@@ -1,9 +1,8 @@
 //===-- RNBContext.cpp ------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -26,20 +25,35 @@
 #include "DNBLog.h"
 #include "RNBRemote.h"
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 RNBContext::~RNBContext() { SetProcessID(INVALID_NUB_PROCESS); }
 
-//----------------------------------------------------------------------
 // RNBContext constructor
-//----------------------------------------------------------------------
 
 const char *RNBContext::EnvironmentAtIndex(size_t index) {
   if (index < m_env_vec.size())
     return m_env_vec[index].c_str();
   else
     return NULL;
+}
+
+static std::string GetEnvironmentKey(const std::string &env) {
+  std::string key = env.substr(0, env.find('='));
+  if (!key.empty() && key.back() == '=')
+    key.pop_back();
+  return key;
+}
+
+void RNBContext::PushEnvironmentIfNeeded(const char *arg) {
+  if (!arg)
+    return;
+  std::string arg_key = GetEnvironmentKey(arg);
+
+  for (const std::string &entry: m_env_vec) {
+    if (arg_key == GetEnvironmentKey(entry))
+      return;
+  }
+  m_env_vec.push_back(arg);
 }
 
 const char *RNBContext::ArgumentAtIndex(size_t index) {
@@ -116,10 +130,8 @@ void RNBContext::StopProcessStatusThread() {
   }
 }
 
-//----------------------------------------------------------------------
 // This thread's sole purpose is to watch for any status changes in the
 // child process.
-//----------------------------------------------------------------------
 void *RNBContext::ThreadFunctionProcessStatus(void *arg) {
   RNBRemoteSP remoteSP(g_remoteSP);
   RNBRemote *remote = remoteSP.get();

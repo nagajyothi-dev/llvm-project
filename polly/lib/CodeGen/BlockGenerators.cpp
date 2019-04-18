@@ -1,9 +1,8 @@
 //===--- BlockGenerators.cpp - Generate code for statements -----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,26 +13,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "polly/CodeGen/BlockGenerators.h"
-#include "polly/CodeGen/CodeGeneration.h"
 #include "polly/CodeGen/IslExprBuilder.h"
 #include "polly/CodeGen/RuntimeDebugBuilder.h"
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
-#include "polly/Support/GICHelper.h"
-#include "polly/Support/SCEVValidator.h"
 #include "polly/Support/ScopHelper.h"
 #include "polly/Support/VirtualInstruction.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Local.h"
-#include "isl/aff.h"
 #include "isl/ast.h"
-#include "isl/ast_build.h"
-#include "isl/set.h"
 #include <deque>
 
 using namespace llvm;
@@ -50,6 +41,17 @@ static cl::opt<bool, true> DebugPrintingX(
     cl::desc("Add printf calls that show the values loaded/stored."),
     cl::location(PollyDebugPrinting), cl::Hidden, cl::init(false),
     cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<bool> TraceStmts(
+    "polly-codegen-trace-stmts",
+    cl::desc("Add printf calls that print the statement being executed"),
+    cl::Hidden, cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+
+static cl::opt<bool> TraceScalars(
+    "polly-codegen-trace-scalars",
+    cl::desc("Add printf calls that print the values of all scalar values "
+             "used in a statement. Requires -polly-codegen-trace-stmts."),
+    cl::Hidden, cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
 
 BlockGenerator::BlockGenerator(
     PollyIRBuilder &B, LoopInfo &LI, ScalarEvolution &SE, DominatorTree &DT,
@@ -436,6 +438,7 @@ BasicBlock *BlockGenerator::copyBB(ScopStmt &Stmt, BasicBlock *BB,
   BasicBlock *CopyBB = splitBB(BB);
   Builder.SetInsertPoint(&CopyBB->front());
   generateScalarLoads(Stmt, LTS, BBMap, NewAccesses);
+  generateBeginStmtTrace(Stmt, LTS, BBMap);
 
   copyBB(Stmt, BB, CopyBB, BBMap, LTS, NewAccesses);
 
@@ -450,7 +453,12 @@ void BlockGenerator::copyBB(ScopStmt &Stmt, BasicBlock *BB, BasicBlock *CopyBB,
                             isl_id_to_ast_expr *NewAccesses) {
   EntryBB = &CopyBB->getParent()->getEntryBlock();
 
-  if (Stmt.isBlockStmt())
+  // Block statements and the entry blocks of region statement are code
+  // generated from instruction lists. This allow us to optimize the
+  // instructions that belong to a certain scop statement. As the code
+  // structure of region statements might be arbitrary complex, optimizing the
+  // instruction list is not yet supported.
+  if (Stmt.isBlockStmt() || (Stmt.isRegionStmt() && Stmt.getEntryBlock() == BB))
     for (Instruction *Inst : Stmt.getInstructions())
       copyInstruction(Stmt, Inst, BBMap, LTS, NewAccesses);
   else
@@ -553,12 +561,11 @@ void BlockGenerator::generateScalarLoads(
       continue;
 
 #ifndef NDEBUG
-    auto *StmtDom = Stmt.getDomain().release();
-    auto *AccDom = isl_map_domain(MA->getAccessRelation().release());
-    assert(isl_set_is_subset(StmtDom, AccDom) &&
+    auto StmtDom =
+        Stmt.getDomain().intersect_params(Stmt.getParent()->getContext());
+    auto AccDom = MA->getAccessRelation().domain();
+    assert(!StmtDom.is_subset(AccDom).is_false() &&
            "Scalar must be loaded in all statement instances");
-    isl_set_free(StmtDom);
-    isl_set_free(AccDom);
 #endif
 
     auto *Address =
@@ -601,11 +608,6 @@ void BlockGenerator::generateConditionalExecution(
     const std::function<void()> &GenThenFunc) {
   isl::set StmtDom = Stmt.getDomain();
 
-  // Don't call GenThenFunc if it is never executed. An ast index expression
-  // might not be defined in this case.
-  if (Subdomain.is_empty())
-    return;
-
   // If the condition is a tautology, don't generate a condition around the
   // code.
   bool IsPartialWrite =
@@ -618,6 +620,13 @@ void BlockGenerator::generateConditionalExecution(
 
   // Generate the condition.
   Value *Cond = buildContainsCondition(Stmt, Subdomain);
+
+  // Don't call GenThenFunc if it is never executed. An ast index expression
+  // might not be defined in this case.
+  if (auto *Const = dyn_cast<ConstantInt>(Cond))
+    if (Const->isZero())
+      return;
+
   BasicBlock *HeadBlock = Builder.GetInsertBlock();
   StringRef BlockName = HeadBlock->getName();
 
@@ -639,6 +648,108 @@ void BlockGenerator::generateConditionalExecution(
   Builder.SetInsertPoint(ThenBlock, ThenBlock->getFirstInsertionPt());
   GenThenFunc();
   Builder.SetInsertPoint(TailBlock, TailBlock->getFirstInsertionPt());
+}
+
+static std::string getInstName(Value *Val) {
+  std::string Result;
+  raw_string_ostream OS(Result);
+  Val->printAsOperand(OS, false);
+  return OS.str();
+}
+
+void BlockGenerator::generateBeginStmtTrace(ScopStmt &Stmt, LoopToScevMapT &LTS,
+                                            ValueMapT &BBMap) {
+  if (!TraceStmts)
+    return;
+
+  Scop *S = Stmt.getParent();
+  const char *BaseName = Stmt.getBaseName();
+
+  isl::ast_build AstBuild = Stmt.getAstBuild();
+  isl::set Domain = Stmt.getDomain();
+
+  isl::union_map USchedule = AstBuild.get_schedule().intersect_domain(Domain);
+  isl::map Schedule = isl::map::from_union_map(USchedule);
+  assert(Schedule.is_empty().is_false() &&
+         "The stmt must have a valid instance");
+
+  isl::multi_pw_aff ScheduleMultiPwAff =
+      isl::pw_multi_aff::from_map(Schedule.reverse());
+  isl::ast_build RestrictedBuild = AstBuild.restrict(Schedule.range());
+
+  // Sequence of strings to print.
+  SmallVector<llvm::Value *, 8> Values;
+
+  // Print the name of the statement.
+  // TODO: Indent by the depth of the statement instance in the schedule tree.
+  Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, BaseName));
+  Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, "("));
+
+  // Add the coordinate of the statement instance.
+  int DomDims = ScheduleMultiPwAff.dim(isl::dim::out);
+  for (int i = 0; i < DomDims; i += 1) {
+    if (i > 0)
+      Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, ","));
+
+    isl::ast_expr IsInSet =
+        RestrictedBuild.expr_from(ScheduleMultiPwAff.get_pw_aff(i));
+    Values.push_back(ExprBuilder->create(IsInSet.copy()));
+  }
+
+  if (TraceScalars) {
+    Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, ")"));
+    DenseSet<Instruction *> Encountered;
+
+    // Add the value of each scalar (and the result of PHIs) used in the
+    // statement.
+    // TODO: Values used in region-statements.
+    for (Instruction *Inst : Stmt.insts()) {
+      if (!RuntimeDebugBuilder::isPrintable(Inst->getType()))
+        continue;
+
+      if (isa<PHINode>(Inst)) {
+        Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, " "));
+        Values.push_back(RuntimeDebugBuilder::getPrintableString(
+            Builder, getInstName(Inst)));
+        Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, "="));
+        Values.push_back(getNewValue(Stmt, Inst, BBMap, LTS,
+                                     LI.getLoopFor(Inst->getParent())));
+      } else {
+        for (Value *Op : Inst->operand_values()) {
+          // Do not print values that cannot change during the execution of the
+          // SCoP.
+          auto *OpInst = dyn_cast<Instruction>(Op);
+          if (!OpInst)
+            continue;
+          if (!S->contains(OpInst))
+            continue;
+
+          // Print each scalar at most once, and exclude values defined in the
+          // statement itself.
+          if (Encountered.count(OpInst))
+            continue;
+
+          Values.push_back(
+              RuntimeDebugBuilder::getPrintableString(Builder, " "));
+          Values.push_back(RuntimeDebugBuilder::getPrintableString(
+              Builder, getInstName(OpInst)));
+          Values.push_back(
+              RuntimeDebugBuilder::getPrintableString(Builder, "="));
+          Values.push_back(getNewValue(Stmt, OpInst, BBMap, LTS,
+                                       LI.getLoopFor(Inst->getParent())));
+          Encountered.insert(OpInst);
+        }
+      }
+
+      Encountered.insert(Inst);
+    }
+
+    Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, "\n"));
+  } else {
+    Values.push_back(RuntimeDebugBuilder::getPrintableString(Builder, ")\n"));
+  }
+
+  RuntimeDebugBuilder::createCPUPrinter(Builder, ArrayRef<Value *>(Values));
 }
 
 void BlockGenerator::generateScalarStores(
@@ -685,8 +796,14 @@ void BlockGenerator::generateScalarStores(
                   DT.dominates(cast<Instruction>(Address)->getParent(),
                                Builder.GetInsertBlock())) &&
                  "Domination violation");
-          Builder.CreateStore(Val, Address);
 
+          // The new Val might have a different type than the old Val due to
+          // ScalarEvolution looking through bitcasts.
+          if (Val->getType() != Address->getType()->getPointerElementType())
+            Address = Builder.CreateBitOrPointerCast(
+                Address, Val->getType()->getPointerTo());
+
+          Builder.CreateStore(Val, Address);
         });
   }
 }
@@ -1027,11 +1144,11 @@ void VectorBlockGenerator::generateLoad(
   extractScalarValues(Load, VectorMap, ScalarMaps);
 
   Value *NewLoad;
-  if (Access.isStrideZero(isl::manage(isl_map_copy(Schedule))))
+  if (Access.isStrideZero(isl::manage_copy(Schedule)))
     NewLoad = generateStrideZeroLoad(Stmt, Load, ScalarMaps[0], NewAccesses);
-  else if (Access.isStrideOne(isl::manage(isl_map_copy(Schedule))))
+  else if (Access.isStrideOne(isl::manage_copy(Schedule)))
     NewLoad = generateStrideOneLoad(Stmt, Load, ScalarMaps, NewAccesses);
-  else if (Access.isStrideX(isl::manage(isl_map_copy(Schedule)), -1))
+  else if (Access.isStrideX(isl::manage_copy(Schedule), -1))
     NewLoad = generateStrideOneLoad(Stmt, Load, ScalarMaps, NewAccesses, true);
   else
     NewLoad = generateUnknownStrideLoad(Stmt, Load, ScalarMaps, NewAccesses);
@@ -1082,7 +1199,7 @@ void VectorBlockGenerator::copyStore(
   // the data location.
   extractScalarValues(Store, VectorMap, ScalarMaps);
 
-  if (Access.isStrideOne(isl::manage(isl_map_copy(Schedule)))) {
+  if (Access.isStrideOne(isl::manage_copy(Schedule))) {
     Type *VectorPtrType = getVectorPtrTy(Pointer, getVectorWidth());
     Value *NewPointer = generateLocationAccessed(Stmt, Store, ScalarMaps[0],
                                                  VLTS[0], NewAccesses);
@@ -1363,6 +1480,7 @@ void RegionGenerator::copyStmt(ScopStmt &Stmt, LoopToScevMapT &LTS,
 
   ValueMapT &EntryBBMap = RegionMaps[EntryBBCopy];
   generateScalarLoads(Stmt, LTS, EntryBBMap, IdToAstExp);
+  generateBeginStmtTrace(Stmt, LTS, EntryBBMap);
 
   for (auto PI = pred_begin(EntryBB), PE = pred_end(EntryBB); PI != PE; ++PI)
     if (!R->contains(*PI)) {
@@ -1439,7 +1557,7 @@ void RegionGenerator::copyStmt(ScopStmt &Stmt, LoopToScevMapT &LTS,
 
     BasicBlock *BBCopyStart = StartBlockMap[BB];
     BasicBlock *BBCopyEnd = EndBlockMap[BB];
-    TerminatorInst *TI = BB->getTerminator();
+    Instruction *TI = BB->getTerminator();
     if (isa<UnreachableInst>(TI)) {
       while (!BBCopyEnd->empty())
         BBCopyEnd->begin()->eraseFromParent();
@@ -1583,7 +1701,6 @@ void RegionGenerator::generateScalarStores(
     std::string Subject = MA->getId().get_name();
     generateConditionalExecution(
         Stmt, AccDom, Subject.c_str(), [&, this, MA]() {
-
           Value *NewVal = getExitScalar(MA, LTS, BBMap);
           Value *Address = getImplicitAddress(*MA, getLoopForStmt(Stmt), LTS,
                                               BBMap, NewAccesses);

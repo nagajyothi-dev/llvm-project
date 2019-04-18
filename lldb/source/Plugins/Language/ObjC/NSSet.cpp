@@ -1,16 +1,11 @@
 //===-- NSSet.cpp -----------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "NSSet.h"
 
 #include "Plugins/LanguageRuntime/ObjC/AppleObjCRuntime/AppleObjCRuntime.h"
@@ -59,7 +54,7 @@ public:
 
   bool MightHaveChildren() override;
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override;
+  size_t GetIndexOfChildWithName(ConstString name) override;
 
 private:
   struct DataDescriptor_32 {
@@ -100,7 +95,7 @@ public:
 
   bool MightHaveChildren() override;
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override;
+  size_t GetIndexOfChildWithName(ConstString name) override;
 
 private:
 
@@ -159,28 +154,18 @@ namespace Foundation1437 {
     uint32_t _cow;
     // __table storage
     uint32_t _objs_addr;
-    union {
-      uint32_t _mutations;
-      struct {
-        uint32_t _muts;
-        uint32_t _used : 26;
-        uint32_t _szidx : 6;
-      };
-    };
+    uint32_t _muts;
+    uint32_t _used : 26;
+    uint32_t _szidx : 6;
   };
   
   struct DataDescriptor_64 {
     uint64_t _cow;
     // __Table storage
     uint64_t _objs_addr;
-    union {
-      uint64_t _mutations;
-      struct {
-        uint32_t _muts;
-        uint32_t _used : 26;
-        uint32_t _szidx : 6;
-      };
-    };
+    uint32_t _muts;
+    uint32_t _used : 26;
+    uint32_t _szidx : 6;
   };
   
   using NSSetMSyntheticFrontEnd =
@@ -226,7 +211,7 @@ public:
 
   bool MightHaveChildren() override;
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override;
+  size_t GetIndexOfChildWithName(ConstString name) override;
 };
 } // namespace formatters
 } // namespace lldb_private
@@ -269,7 +254,8 @@ bool lldb_private::formatters::NSSetSummaryProvider(
   if (!class_name || !*class_name)
     return false;
 
-  if (!strcmp(class_name, "__NSSetI")) {
+  if (!strcmp(class_name, "__NSSetI") ||
+      !strcmp(class_name, "__NSOrderedSetI")) {
     Status error;
     value = process_sp->ReadUnsignedIntegerFromMemory(valobj_addr + ptr_size,
                                                       ptr_size, 0, error);
@@ -289,32 +275,7 @@ bool lldb_private::formatters::NSSetSummaryProvider(
     }
     if (error.Fail())
       return false;
-  }
-  /*else if (!strcmp(class_name,"__NSCFSet"))
-   {
-   Status error;
-   value = process_sp->ReadUnsignedIntegerFromMemory(valobj_addr + (is_64bit ?
-   20 : 12), 4, 0, error);
-   if (error.Fail())
-   return false;
-   if (is_64bit)
-   value &= ~0x1fff000000000000UL;
-   }
-   else if (!strcmp(class_name,"NSCountedSet"))
-   {
-   Status error;
-   value = process_sp->ReadUnsignedIntegerFromMemory(valobj_addr + ptr_size,
-   ptr_size, 0, error);
-   if (error.Fail())
-   return false;
-   value = process_sp->ReadUnsignedIntegerFromMemory(value + (is_64bit ? 20 :
-   12), 4, 0, error);
-   if (error.Fail())
-   return false;
-   if (is_64bit)
-   value &= ~0x1fff000000000000UL;
-   }*/
-  else {
+  } else {
     auto &map(NSSet_Additionals::GetAdditionalSummaries());
     auto iter = map.find(class_name_cs), end = map.end();
     if (iter != end)
@@ -371,7 +332,8 @@ lldb_private::formatters::NSSetSyntheticFrontEndCreator(
   if (!class_name || !*class_name)
     return nullptr;
 
-  if (!strcmp(class_name, "__NSSetI")) {
+  if (!strcmp(class_name, "__NSSetI") ||
+      !strcmp(class_name, "__NSOrderedSetI")) {
     return (new NSSetISyntheticFrontEnd(valobj_sp));
   } else if (!strcmp(class_name, "__NSSetM")) {
     AppleObjCRuntime *apple_runtime =
@@ -412,7 +374,7 @@ lldb_private::formatters::NSSetISyntheticFrontEnd::~NSSetISyntheticFrontEnd() {
 
 size_t
 lldb_private::formatters::NSSetISyntheticFrontEnd::GetIndexOfChildWithName(
-    const ConstString &name) {
+    ConstString name) {
   const char *item_name = name.GetCString();
   uint32_t idx = ExtractIndexFromString(item_name);
   if (idx < UINT32_MAX && idx >= CalculateNumChildren())
@@ -567,7 +529,7 @@ template <typename D32, typename D64>
 size_t
 lldb_private::formatters::
   GenericNSSetMSyntheticFrontEnd<D32, D64>::GetIndexOfChildWithName(
-    const ConstString &name) {
+    ConstString name) {
   const char *item_name = name.GetCString();
   uint32_t idx = ExtractIndexFromString(item_name);
   if (idx < UINT32_MAX && idx >= CalculateNumChildren())

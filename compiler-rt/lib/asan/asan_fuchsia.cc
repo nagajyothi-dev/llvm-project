@@ -1,9 +1,8 @@
 //===-- asan_fuchsia.cc --------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===---------------------------------------------------------------------===//
 //
@@ -21,14 +20,14 @@
 #include "asan_thread.h"
 
 #include <limits.h>
-#include <magenta/sanitizer.h>
-#include <magenta/syscalls.h>
-#include <magenta/threads.h>
+#include <zircon/sanitizer.h>
+#include <zircon/syscalls.h>
+#include <zircon/threads.h>
 
 namespace __asan {
 
 // The system already set up the shadow memory for us.
-// __sanitizer::GetMaxVirtualAddress has already been called by
+// __sanitizer::GetMaxUserVirtualAddress has already been called by
 // AsanInitInternal->InitializeHighMemEnd (asan_rtl.cc).
 // Just do some additional sanity checks here.
 void InitializeShadowMemory() {
@@ -126,13 +125,13 @@ void AsanThread::SetThreadStackAndTls(const AsanThread::InitOptions *options) {
 // Called by __asan::AsanInitInternal (asan_rtl.c).
 AsanThread *CreateMainThread() {
   thrd_t self = thrd_current();
-  char name[MX_MAX_NAME_LEN];
+  char name[ZX_MAX_NAME_LEN];
   CHECK_NE(__sanitizer::MainThreadStackBase, 0);
   CHECK_GT(__sanitizer::MainThreadStackSize, 0);
   AsanThread *t = CreateAsanThread(
       nullptr, 0, reinterpret_cast<uptr>(self), true,
-      _mx_object_get_property(thrd_get_mx_handle(self), MX_PROP_NAME, name,
-                              sizeof(name)) == MX_OK
+      _zx_object_get_property(thrd_get_zx_handle(self), ZX_PROP_NAME, name,
+                              sizeof(name)) == ZX_OK
           ? name
           : nullptr,
       __sanitizer::MainThreadStackBase, __sanitizer::MainThreadStackSize);
@@ -179,7 +178,7 @@ static void ThreadStartHook(void *hook, uptr os_id) {
   SetCurrentThread(thread);
 
   // In lieu of AsanThread::ThreadStart.
-  asanThreadRegistry().StartThread(thread->tid(), os_id, /*workerthread*/ false,
+  asanThreadRegistry().StartThread(thread->tid(), os_id, ThreadType::Regular,
                                    nullptr);
 }
 
@@ -190,9 +189,16 @@ static void ThreadExitHook(void *hook, uptr os_id) {
   AsanThread::TSDDtor(per_thread);
 }
 
+bool HandleDlopenInit() {
+  // Not supported on this platform.
+  static_assert(!SANITIZER_SUPPORTS_INIT_FOR_DLOPEN,
+                "Expected SANITIZER_SUPPORTS_INIT_FOR_DLOPEN to be false");
+  return false;
+}
+
 }  // namespace __asan
 
-// These are declared (in extern "C") by <magenta/sanitizer.h>.
+// These are declared (in extern "C") by <zircon/sanitizer.h>.
 // The system runtime will call our definitions directly.
 
 void *__sanitizer_before_thread_create_hook(thrd_t thread, bool detached,

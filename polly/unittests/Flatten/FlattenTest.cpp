@@ -1,9 +1,8 @@
 //===- FlattenTest.cpp ----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,18 +24,18 @@ namespace {
 /// @result Whether the flattened schedule is the same as the expected schedule.
 bool checkFlatten(const char *ScheduleStr, const char *ExpectedStr) {
   auto *Ctx = isl_ctx_alloc();
-  isl_bool Success;
+  bool Success;
 
   {
-    auto Schedule = give(isl_union_map_read_from_str(Ctx, ScheduleStr));
-    auto Expected = give(isl_union_map_read_from_str(Ctx, ExpectedStr));
+    auto Schedule = isl::union_map(Ctx, ScheduleStr);
+    auto Expected = isl::union_map(Ctx, ExpectedStr);
 
     auto Result = flattenSchedule(std::move(Schedule));
-    Success = isl_union_map_is_equal(Result.keep(), Expected.keep());
+    Success = Result.is_equal(Expected);
   }
 
   isl_ctx_free(Ctx);
-  return Success == isl_bool_true;
+  return Success;
 }
 
 TEST(Flatten, FlattenTrivial) {
@@ -66,5 +65,4 @@ TEST(Flatten, FlattenLoop) {
       "{ A[i] -> [i, 0] : 0 <= i < 10; B[i] -> [i, 1] : 0 <= i < 10 }",
       "{ A[i] -> [2i] : 0 <= i < 10; B[i] -> [2i + 1] : 0 <= i < 10 }"));
 }
-
 } // anonymous namespace

@@ -1,9 +1,8 @@
 //===-- SIDefines.h - SI Helper Macros ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 /// \file
 //===----------------------------------------------------------------------===//
@@ -67,16 +66,39 @@ enum : uint64_t {
   SCALAR_STORE = UINT64_C(1) << 39,
   FIXED_SIZE = UINT64_C(1) << 40,
   VOPAsmPrefer32Bit = UINT64_C(1) << 41,
-  HasFPClamp = UINT64_C(1) << 42,
-  VOP3_OPSEL = UINT64_C(1) << 43,
-  maybeAtomic = UINT64_C(1) << 44,
-  F16_ZFILL = UINT64_C(1) << 45,
-  IntClamp = UINT64_C(1) << 46
+  VOP3_OPSEL = UINT64_C(1) << 42,
+  maybeAtomic = UINT64_C(1) << 43,
+  renamedInGFX9 = UINT64_C(1) << 44,
+
+  // Is a clamp on FP type.
+  FPClamp = UINT64_C(1) << 45,
+
+  // Is an integer clamp
+  IntClamp = UINT64_C(1) << 46,
+
+  // Clamps lo component of register.
+  ClampLo = UINT64_C(1) << 47,
+
+  // Clamps hi component of register.
+  // ClampLo and ClampHi set for packed clamp.
+  ClampHi = UINT64_C(1) << 48,
+
+  // Is a packed VOP3P instruction.
+  IsPacked = UINT64_C(1) << 49,
+
+  // Is a D16 buffer instruction.
+  D16Buf = UINT64_C(1) << 50,
+
+  // FLAT instruction accesses FLAT_GLBL or FLAT_SCRATCH segment.
+  IsNonFlatSeg = UINT64_C(1) << 51,
+
+  // Uses floating point double precision rounding mode
+  FPDPRounding = UINT64_C(1) << 52
 };
 
 // v_cmp_class_* etc. use a 10-bit mask for what operation is checked.
 // The result is true if any of these tests are true.
-enum ClassFlags {
+enum ClassFlags : unsigned {
   S_NAN = 1 << 0,        // Signaling NaN
   Q_NAN = 1 << 1,        // Quiet NaN
   N_INFINITY = 1 << 2,   // Negative infinity
@@ -91,7 +113,7 @@ enum ClassFlags {
 }
 
 namespace AMDGPU {
-  enum OperandType {
+  enum OperandType : unsigned {
     /// Operands with register or 32-bit immediate
     OPERAND_REG_IMM_INT32 = MCOI::OPERAND_FIRST_TARGET,
     OPERAND_REG_IMM_INT64,
@@ -123,7 +145,6 @@ namespace AMDGPU {
     OPERAND_INPUT_MODS,
 
     // Operand for SDWA instructions
-    OPERAND_SDWA_SRC,
     OPERAND_SDWA_VOPC_DST,
 
     /// Operand with 32-bit immediate that uses the constant bus.
@@ -132,10 +153,17 @@ namespace AMDGPU {
   };
 }
 
+namespace SIStackID {
+enum StackTypes : uint8_t {
+  SCRATCH = 0,
+  SGPR_SPILL = 1
+};
+}
+
 // Input operand modifiers bit-masks
 // NEG and SEXT share same bit-mask because they can't be set simultaneously.
 namespace SISrcMods {
-  enum {
+  enum : unsigned {
    NEG = 1 << 0,   // Floating-point negate modifier
    ABS = 1 << 1,   // Floating-point absolute modifier
    SEXT = 1 << 0,  // Integer sign-extend modifier
@@ -147,7 +175,7 @@ namespace SISrcMods {
 }
 
 namespace SIOutMods {
-  enum {
+  enum : unsigned {
     NONE = 0,
     MUL2 = 1,
     MUL4 = 2,
@@ -155,17 +183,33 @@ namespace SIOutMods {
   };
 }
 
+namespace AMDGPU {
 namespace VGPRIndexMode {
-  enum {
-    SRC0_ENABLE = 1 << 0,
-    SRC1_ENABLE = 1 << 1,
-    SRC2_ENABLE = 1 << 2,
-    DST_ENABLE = 1 << 3
-  };
-}
+
+enum Id : unsigned { // id of symbolic names
+  ID_SRC0 = 0,
+  ID_SRC1,
+  ID_SRC2,
+  ID_DST,
+
+  ID_MIN = ID_SRC0,
+  ID_MAX = ID_DST
+};
+
+enum EncBits : unsigned {
+  OFF = 0,
+  SRC0_ENABLE = 1 << ID_SRC0,
+  SRC1_ENABLE = 1 << ID_SRC1,
+  SRC2_ENABLE = 1 << ID_SRC2,
+  DST_ENABLE = 1 << ID_DST,
+  ENABLE_MASK = SRC0_ENABLE | SRC1_ENABLE | SRC2_ENABLE | DST_ENABLE
+};
+
+} // namespace VGPRIndexMode
+} // namespace AMDGPU
 
 namespace AMDGPUAsmVariants {
-  enum {
+  enum : unsigned {
     DEFAULT = 0,
     VOP3 = 1,
     SDWA = 2,
@@ -177,11 +221,13 @@ namespace AMDGPUAsmVariants {
 namespace AMDGPU {
 namespace EncValues { // Encoding values of enum9/8/7 operands
 
-enum {
+enum : unsigned {
   SGPR_MIN = 0,
   SGPR_MAX = 101,
-  TTMP_MIN = 112,
-  TTMP_MAX = 123,
+  TTMP_VI_MIN = 112,
+  TTMP_VI_MAX = 123,
+  TTMP_GFX9_MIN = 108,
+  TTMP_GFX9_MAX = 123,
   INLINE_INTEGER_C_MIN = 128,
   INLINE_INTEGER_C_POSITIVE_MAX = 192, // 64
   INLINE_INTEGER_C_MAX = 208,
@@ -234,7 +280,7 @@ enum Op { // Both GS and SYS operation IDs.
   OP_SYS_MASK_ = (((1 << OP_SYS_WIDTH_) - 1) << OP_SHIFT_)
 };
 
-enum StreamId { // Stream ID, (2) [9:8].
+enum StreamId : unsigned { // Stream ID, (2) [9:8].
   STREAM_ID_DEFAULT_ = 0,
   STREAM_ID_LAST_ = 4,
   STREAM_ID_FIRST_ = STREAM_ID_DEFAULT_,
@@ -257,14 +303,15 @@ enum Id { // HwRegCode, (6) [5:0]
   ID_GPR_ALLOC = 5,
   ID_LDS_ALLOC = 6,
   ID_IB_STS = 7,
-  ID_SYMBOLIC_LAST_ = 8,
   ID_MEM_BASES = 15,
+  ID_SYMBOLIC_FIRST_GFX9_ = ID_MEM_BASES,
+  ID_SYMBOLIC_LAST_ = 16,
   ID_SHIFT_ = 0,
   ID_WIDTH_ = 6,
   ID_MASK_ = (((1 << ID_WIDTH_) - 1) << ID_SHIFT_)
 };
 
-enum Offset { // Offset, (5) [10:6]
+enum Offset : unsigned { // Offset, (5) [10:6]
   OFFSET_DEFAULT_ = 0,
   OFFSET_SHIFT_ = 6,
   OFFSET_WIDTH_ = 5,
@@ -274,7 +321,7 @@ enum Offset { // Offset, (5) [10:6]
   OFFSET_SRC_PRIVATE_BASE = 0
 };
 
-enum WidthMinusOne { // WidthMinusOne, (5) [15:11]
+enum WidthMinusOne : unsigned { // WidthMinusOne, (5) [15:11]
   WIDTH_M1_DEFAULT_ = 31,
   WIDTH_M1_SHIFT_ = 11,
   WIDTH_M1_WIDTH_ = 5,
@@ -288,7 +335,7 @@ enum WidthMinusOne { // WidthMinusOne, (5) [15:11]
 
 namespace Swizzle { // Encoding of swizzle macro used in ds_swizzle_b32.
 
-enum Id { // id of symbolic names
+enum Id : unsigned { // id of symbolic names
   ID_QUAD_PERM = 0,
   ID_BITMASK_PERM,
   ID_SWAP,
@@ -296,7 +343,7 @@ enum Id { // id of symbolic names
   ID_BROADCAST
 };
 
-enum EncBits {
+enum EncBits : unsigned {
 
   // swizzle mode encodings
 
@@ -328,7 +375,7 @@ enum EncBits {
 
 namespace SDWA {
 
-enum SdwaSel {
+enum SdwaSel : unsigned {
   BYTE_0 = 0,
   BYTE_1 = 1,
   BYTE_2 = 2,
@@ -338,13 +385,13 @@ enum SdwaSel {
   DWORD = 6,
 };
 
-enum DstUnused {
+enum DstUnused : unsigned {
   UNUSED_PAD = 0,
   UNUSED_SEXT = 1,
   UNUSED_PRESERVE = 2,
 };
 
-enum SDWA9EncValues{
+enum SDWA9EncValues : unsigned {
   SRC_SGPR_MASK = 0x100,
   SRC_VGPR_MASK = 0xFF,
   VOPC_DST_VCC_MASK = 0x80,
@@ -354,9 +401,49 @@ enum SDWA9EncValues{
   SRC_VGPR_MAX = 255,
   SRC_SGPR_MIN = 256,
   SRC_SGPR_MAX = 357,
+  SRC_TTMP_MIN = 364,
+  SRC_TTMP_MAX = 379,
 };
 
 } // namespace SDWA
+
+namespace DPP {
+
+enum DppCtrl : unsigned {
+  QUAD_PERM_FIRST   = 0,
+  QUAD_PERM_LAST    = 0xFF,
+  DPP_UNUSED1       = 0x100,
+  ROW_SHL0          = 0x100,
+  ROW_SHL_FIRST     = 0x101,
+  ROW_SHL_LAST      = 0x10F,
+  DPP_UNUSED2       = 0x110,
+  ROW_SHR0          = 0x110,
+  ROW_SHR_FIRST     = 0x111,
+  ROW_SHR_LAST      = 0x11F,
+  DPP_UNUSED3       = 0x120,
+  ROW_ROR0          = 0x120,
+  ROW_ROR_FIRST     = 0x121,
+  ROW_ROR_LAST      = 0x12F,
+  WAVE_SHL1         = 0x130,
+  DPP_UNUSED4_FIRST = 0x131,
+  DPP_UNUSED4_LAST  = 0x133,
+  WAVE_ROL1         = 0x134,
+  DPP_UNUSED5_FIRST = 0x135,
+  DPP_UNUSED5_LAST  = 0x137,
+  WAVE_SHR1         = 0x138,
+  DPP_UNUSED6_FIRST = 0x139,
+  DPP_UNUSED6_LAST  = 0x13B,
+  WAVE_ROR1         = 0x13C,
+  DPP_UNUSED7_FIRST = 0x13D,
+  DPP_UNUSED7_LAST  = 0x13F,
+  ROW_MIRROR        = 0x140,
+  ROW_HALF_MIRROR   = 0x141,
+  BCAST15           = 0x142,
+  BCAST31           = 0x143,
+  DPP_LAST          = BCAST31
+};
+
+} // namespace DPP
 } // namespace AMDGPU
 
 #define R_00B028_SPI_SHADER_PGM_RSRC1_PS                                0x00B028
@@ -364,7 +451,9 @@ enum SDWA9EncValues{
 #define   S_00B02C_EXTRA_LDS_SIZE(x)                                  (((x) & 0xFF) << 8)
 #define R_00B128_SPI_SHADER_PGM_RSRC1_VS                                0x00B128
 #define R_00B228_SPI_SHADER_PGM_RSRC1_GS                                0x00B228
+#define R_00B328_SPI_SHADER_PGM_RSRC1_ES                                0x00B328
 #define R_00B428_SPI_SHADER_PGM_RSRC1_HS                                0x00B428
+#define R_00B528_SPI_SHADER_PGM_RSRC1_LS                                0x00B528
 #define R_00B848_COMPUTE_PGM_RSRC1                                      0x00B848
 #define   S_00B028_VGPRS(x)                                           (((x) & 0x3F) << 0)
 #define   S_00B028_SGPRS(x)                                           (((x) & 0x0F) << 6)

@@ -24,6 +24,7 @@ class AssertingInferiorTestCase(TestBase):
         archs=["arm"],
         bugnumber="llvm.org/pr25338")
     @expectedFailureAll(bugnumber="llvm.org/pr26592", triple='^mips')
+    @expectedFailureNetBSD
     def test_inferior_asserting(self):
         """Test that lldb reliably catches the inferior asserting (command)."""
         self.build()
@@ -52,6 +53,7 @@ class AssertingInferiorTestCase(TestBase):
             "arm"],
         bugnumber="llvm.org/pr25338")
     @expectedFailureAll(bugnumber="llvm.org/pr26592", triple='^mips')
+    @expectedFailureNetBSD
     def test_inferior_asserting_disassemble(self):
         """Test that lldb reliably disassembles frames after asserting (command)."""
         self.build()
@@ -76,6 +78,7 @@ class AssertingInferiorTestCase(TestBase):
             "arm"],
         bugnumber="llvm.org/pr25338")
     @expectedFailureAll(bugnumber="llvm.org/pr26592", triple='^mips')
+    @expectedFailureNetBSD
     def test_inferior_asserting_expr(self):
         """Test that the lldb expression interpreter can read from the inferior after asserting (command)."""
         self.build()
@@ -91,6 +94,7 @@ class AssertingInferiorTestCase(TestBase):
             "arm"],
         bugnumber="llvm.org/pr25338")
     @expectedFailureAll(bugnumber="llvm.org/pr26592", triple='^mips')
+    @expectedFailureNetBSD
     def test_inferior_asserting_step(self):
         """Test that lldb functions correctly after stepping through a call to assert()."""
         self.build()
@@ -125,7 +129,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting(self):
         """Inferior asserts upon launching; lldb should catch the event and stop."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -142,7 +146,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting_python(self):
         """Inferior asserts upon launching; lldb should catch the event and stop."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target, VALID_TARGET)
@@ -166,7 +170,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting_registers(self):
         """Test that lldb can read registers after asserting."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -178,7 +182,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting_disassemble(self):
         """Test that lldb can disassemble frames after asserting."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         # Create a target by the debugger.
         target = self.dbg.CreateTarget(exe)
@@ -248,7 +252,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting_expr(self):
         """Test that the lldb expression interpreter can read symbols after asserting."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         # Create a target by the debugger.
         target = self.dbg.CreateTarget(exe)
@@ -272,7 +276,7 @@ class AssertingInferiorTestCase(TestBase):
 
     def inferior_asserting_step(self):
         """Test that lldb functions correctly after stepping through a call to assert()."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         # Create a target by the debugger.
         target = self.dbg.CreateTarget(exe)

@@ -1,19 +1,14 @@
 //===-- ABI.h ---------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_ABI_h_
 #define liblldb_ABI_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/PluginInterface.h"
 #include "lldb/Symbol/UnwindPlan.h"
 #include "lldb/Utility/Status.h"
@@ -39,7 +34,7 @@ public:
     size_t size; /* size in bytes of this argument */
 
     lldb::addr_t value;                 /* literal value */
-    std::unique_ptr<uint8_t[]> data_ap; /* host data pointer */
+    std::unique_ptr<uint8_t[]> data_up; /* host data pointer */
   };
 
   ~ABI() override;
@@ -82,8 +77,7 @@ public:
 
 protected:
   // This is the method the ABI will call to actually calculate the return
-  // value.
-  // Don't put it in a persistent value object, that will be done by the
+  // value. Don't put it in a persistent value object, that will be done by the
   // ABI::GetReturnValueObject.
   virtual lldb::ValueObjectSP
   GetReturnValueObjectImpl(Thread &thread, CompilerType &ast_type) const = 0;
@@ -92,14 +86,12 @@ protected:
   virtual lldb::ValueObjectSP
   GetReturnValueObjectImpl(Thread &thread, llvm::Type &ir_type) const;
 
-  //------------------------------------------------------------------
   /// Request to get a Process shared pointer.
   ///
   /// This ABI object may not have been created with a Process object,
   /// or the Process object may no longer be alive.  Be sure to handle
   /// the case where the shared pointer returned does not have an
   /// object inside it.
-  //------------------------------------------------------------------
   lldb::ProcessSP GetProcessSP() const { return m_process_wp.lock(); }
 
 public:
@@ -118,23 +110,23 @@ public:
   // restrictions (4, 8 or 16 byte aligned), and zero is usually not allowed.
   // This function should return true if "cfa" is valid call frame address for
   // the ABI, and false otherwise. This is used by the generic stack frame
-  // unwinding
-  // code to help determine when a stack ends.
+  // unwinding code to help determine when a stack ends.
   virtual bool CallFrameAddressIsValid(lldb::addr_t cfa) = 0;
 
-  // Validates a possible PC value and returns true if an opcode can be at "pc".
+  // Validates a possible PC value and returns true if an opcode can be at
+  // "pc".
   virtual bool CodeAddressIsValid(lldb::addr_t pc) = 0;
 
   virtual lldb::addr_t FixCodeAddress(lldb::addr_t pc) {
-    // Some targets might use bits in a code address to indicate
-    // a mode switch. ARM uses bit zero to signify a code address is
-    // thumb, so any ARM ABI plug-ins would strip those bits.
+    // Some targets might use bits in a code address to indicate a mode switch.
+    // ARM uses bit zero to signify a code address is thumb, so any ARM ABI
+    // plug-ins would strip those bits.
     return pc;
   }
 
   virtual const RegisterInfo *GetRegisterInfoArray(uint32_t &count) = 0;
 
-  bool GetRegisterInfoByName(const ConstString &name, RegisterInfo &info);
+  bool GetRegisterInfoByName(ConstString name, RegisterInfo &info);
 
   bool GetRegisterInfoByKind(lldb::RegisterKind reg_kind, uint32_t reg_num,
                              RegisterInfo &info);
@@ -144,9 +136,7 @@ public:
   static lldb::ABISP FindPlugin(lldb::ProcessSP process_sp, const ArchSpec &arch);
 
 protected:
-  //------------------------------------------------------------------
   // Classes that inherit from ABI can see and modify these
-  //------------------------------------------------------------------
   ABI(lldb::ProcessSP process_sp) {
     if (process_sp.get())
         m_process_wp = process_sp;

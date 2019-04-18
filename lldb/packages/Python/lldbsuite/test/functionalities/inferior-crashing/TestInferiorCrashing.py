@@ -16,63 +16,48 @@ class CrashingInferiorTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
+    @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
+    @expectedFailureNetBSD
     def test_inferior_crashing(self):
         """Test that lldb reliably catches the inferior crashing (command)."""
         self.build()
         self.inferior_crashing()
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
+    @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
     def test_inferior_crashing_register(self):
         """Test that lldb reliably reads registers from the inferior after crashing (command)."""
         self.build()
         self.inferior_crashing_registers()
 
     @add_test_categories(['pyapi'])
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
     def test_inferior_crashing_python(self):
         """Test that lldb reliably catches the inferior crashing (Python API)."""
         self.build()
         self.inferior_crashing_python()
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
     def test_inferior_crashing_expr(self):
         """Test that the lldb expression interpreter can read from the inferior after crashing (command)."""
         self.build()
         self.inferior_crashing_expr()
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
+    @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
     def test_inferior_crashing_step(self):
         """Test that stepping after a crash behaves correctly."""
         self.build()
         self.inferior_crashing_step()
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
     @skipIfTargetAndroid()  # debuggerd interferes with this test on Android
+    @expectedFailureAll(oslist=["windows"], bugnumber="llvm.org/pr24778")
     def test_inferior_crashing_step_after_break(self):
         """Test that lldb functions correctly after stepping through a crash."""
         self.build()
         self.inferior_crashing_step_after_break()
 
-    @expectedFailureAll(
-        oslist=["windows"],
-        bugnumber="llvm.org/pr24778, This actually works, but the test relies on the output format instead of the API")
     # Inferior exits after stepping after a segfault. This is working as
     # intended IMHO.
     @skipIfLinux
     @skipIfFreeBSD
+    @expectedFailureNetBSD
     def test_inferior_crashing_expr_step_and_expr(self):
         """Test that lldb expressions work before and after stepping after a crash."""
         self.build()
@@ -100,7 +85,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing(self):
         """Inferior crashes upon launching; lldb should catch the event and stop."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -122,7 +107,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_python(self):
         """Inferior crashes upon launching; lldb should catch the event and stop."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
 
         target = self.dbg.CreateTarget(exe)
         self.assertTrue(target, VALID_TARGET)
@@ -148,7 +133,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_registers(self):
         """Test that lldb can read registers after crashing."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -160,7 +145,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_expr(self):
         """Test that the lldb expression interpreter can read symbols after crashing."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -176,7 +161,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_step(self):
         """Test that lldb functions correctly after stepping through a crash."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.set_breakpoint(self.line)
@@ -206,7 +191,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_step_after_break(self):
         """Test that lldb behaves correctly when stepping after a crash."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)
@@ -231,7 +216,7 @@ class CrashingInferiorTestCase(TestBase):
 
     def inferior_crashing_expr_step_expr(self):
         """Test that lldb expressions work before and after stepping after a crash."""
-        exe = os.path.join(os.getcwd(), "a.out")
+        exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         self.runCmd("run", RUN_SUCCEEDED)

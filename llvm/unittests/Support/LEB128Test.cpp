@@ -1,9 +1,8 @@
 //===- llvm/unittest/Support/LEB128Test.cpp - LEB128 function tests -------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,16 +45,17 @@ TEST(LEB128Test, EncodeSLEB128) {
   EXPECT_SLEB128_EQ("\xc0\x00", 64, 0);
 
   // Encode SLEB128 with some extra padding bytes
-  EXPECT_SLEB128_EQ("\x80\x00", 0, 1);
-  EXPECT_SLEB128_EQ("\x80\x80\x00", 0, 2);
-  EXPECT_SLEB128_EQ("\xff\x80\x00", 0x7f, 1);
-  EXPECT_SLEB128_EQ("\xff\x80\x80\x00", 0x7f, 2);
-  EXPECT_SLEB128_EQ("\x80\x81\x00", 0x80, 1);
-  EXPECT_SLEB128_EQ("\x80\x81\x80\x00", 0x80, 2);
-  EXPECT_SLEB128_EQ("\xc0\x7f", -0x40, 1);
-  EXPECT_SLEB128_EQ("\xc0\xff\x7f", -0x40, 2);
-  EXPECT_SLEB128_EQ("\x80\xff\x7f", -0x80, 1);
-  EXPECT_SLEB128_EQ("\x80\xff\xff\x7f", -0x80, 2);
+  EXPECT_SLEB128_EQ("\x80\x00", 0, 2);
+  EXPECT_SLEB128_EQ("\x80\x80\x00", 0, 3);
+  EXPECT_SLEB128_EQ("\xff\x80\x00", 0x7f, 3);
+  EXPECT_SLEB128_EQ("\xff\x80\x80\x00", 0x7f, 4);
+  EXPECT_SLEB128_EQ("\x80\x81\x00", 0x80, 3);
+  EXPECT_SLEB128_EQ("\x80\x81\x80\x00", 0x80, 4);
+  EXPECT_SLEB128_EQ("\xc0\x7f", -0x40, 2);
+
+  EXPECT_SLEB128_EQ("\xc0\xff\x7f", -0x40, 3);
+  EXPECT_SLEB128_EQ("\x80\xff\x7f", -0x80, 3);
+  EXPECT_SLEB128_EQ("\x80\xff\xff\x7f", -0x80, 4);
 
 #undef EXPECT_SLEB128_EQ
 }
@@ -93,12 +93,12 @@ TEST(LEB128Test, EncodeULEB128) {
   EXPECT_ULEB128_EQ("\x81\x02", 0x101, 0);
 
   // Encode ULEB128 with some extra padding bytes
-  EXPECT_ULEB128_EQ("\x80\x00", 0, 1);
-  EXPECT_ULEB128_EQ("\x80\x80\x00", 0, 2);
-  EXPECT_ULEB128_EQ("\xff\x00", 0x7f, 1);
-  EXPECT_ULEB128_EQ("\xff\x80\x00", 0x7f, 2);
-  EXPECT_ULEB128_EQ("\x80\x81\x00", 0x80, 1);
-  EXPECT_ULEB128_EQ("\x80\x81\x80\x00", 0x80, 2);
+  EXPECT_ULEB128_EQ("\x80\x00", 0, 2);
+  EXPECT_ULEB128_EQ("\x80\x80\x00", 0, 3);
+  EXPECT_ULEB128_EQ("\xff\x00", 0x7f, 2);
+  EXPECT_ULEB128_EQ("\xff\x80\x00", 0x7f, 3);
+  EXPECT_ULEB128_EQ("\x80\x81\x00", 0x80, 3);
+  EXPECT_ULEB128_EQ("\x80\x81\x80\x00", 0x80, 4);
 
 #undef EXPECT_ULEB128_EQ
 }

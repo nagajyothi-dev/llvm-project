@@ -1,23 +1,17 @@
 //===-- PlatformRemoteAppleWatch.cpp ----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
 #include <string>
 #include <vector>
 
-// Other libraries and framework includes
-// Project includes
 #include "PlatformRemoteAppleWatch.h"
 
 #include "lldb/Breakpoint/BreakpointLocation.h"
-#include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleList.h"
 #include "lldb/Core/ModuleSpec.h"
@@ -25,6 +19,7 @@
 #include "lldb/Host/Host.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Status.h"
@@ -33,14 +28,10 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//------------------------------------------------------------------
 // Static Variables
-//------------------------------------------------------------------
 static uint32_t g_initialize_count = 0;
 
-//------------------------------------------------------------------
 // Static Functions
-//------------------------------------------------------------------
 void PlatformRemoteAppleWatch::Initialize() {
   PlatformDarwin::Initialize();
 
@@ -94,9 +85,9 @@ PlatformSP PlatformRemoteAppleWatch::CreateInstance(bool force,
 
 #if defined(__APPLE__)
       // Only accept "unknown" for the vendor if the host is Apple and
-      // it "unknown" wasn't specified (it was just returned because it
-      // was NOT specified)
-      case llvm::Triple::UnknownArch:
+      // "unknown" wasn't specified (it was just returned because it was NOT
+      // specified)
+      case llvm::Triple::UnknownVendor:
         create = !arch->TripleVendorWasSpecified();
         break;
 
@@ -123,8 +114,8 @@ PlatformSP PlatformRemoteAppleWatch::CreateInstance(bool force,
 
 #if defined(__APPLE__) &&                                                      \
     (defined(__arm__) || defined(__arm64__) || defined(__aarch64__))
-  // If lldb is running on a watch, this isn't a RemoteWatch environment; it's a
-  // local system environment.
+  // If lldb is running on a watch, this isn't a RemoteWatch environment; it's
+  // a local system environment.
   if (force == false) {
     create = false;
   }
@@ -154,9 +145,7 @@ const char *PlatformRemoteAppleWatch::GetDescriptionStatic() {
   return "Remote Apple Watch platform plug-in.";
 }
 
-//------------------------------------------------------------------
 /// Default Constructor
-//------------------------------------------------------------------
 PlatformRemoteAppleWatch::PlatformRemoteAppleWatch()
     : PlatformRemoteDarwinDevice() {}
 

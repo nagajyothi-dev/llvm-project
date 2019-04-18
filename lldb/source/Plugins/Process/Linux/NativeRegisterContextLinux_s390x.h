@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextLinux_s390x.h ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,8 +23,7 @@ class NativeProcessLinux;
 class NativeRegisterContextLinux_s390x : public NativeRegisterContextLinux {
 public:
   NativeRegisterContextLinux_s390x(const ArchSpec &target_arch,
-                                   NativeThreadProtocol &native_thread,
-                                   uint32_t concrete_frame_idx);
+                                   NativeThreadProtocol &native_thread);
 
   uint32_t GetRegisterSetCount() const override;
 

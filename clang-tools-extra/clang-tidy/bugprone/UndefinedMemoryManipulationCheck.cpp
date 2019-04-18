@@ -1,9 +1,8 @@
 //===--- UndefinedMemoryManipulationCheck.cpp - clang-tidy-----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,7 +25,8 @@ AST_MATCHER(CXXRecordDecl, isNotTriviallyCopyable) {
 
 void UndefinedMemoryManipulationCheck::registerMatchers(MatchFinder *Finder) {
   const auto NotTriviallyCopyableObject =
-      hasType(pointsTo(cxxRecordDecl(isNotTriviallyCopyable())));
+      hasType(ast_matchers::hasCanonicalType(
+          pointsTo(cxxRecordDecl(isNotTriviallyCopyable()))));
 
   // Check whether destination object is not TriviallyCopyable.
   // Applicable to all three memory manipulation functions.
@@ -47,13 +47,21 @@ void UndefinedMemoryManipulationCheck::registerMatchers(MatchFinder *Finder) {
 
 void UndefinedMemoryManipulationCheck::check(
     const MatchFinder::MatchResult &Result) {
-  if (const auto *Destination = Result.Nodes.getNodeAs<CallExpr>("dest")) {
-    diag(Destination->getLocStart(), "undefined behavior, destination "
-                                     "object is not TriviallyCopyable");
+  if (const auto *Call = Result.Nodes.getNodeAs<CallExpr>("dest")) {
+    QualType DestType = Call->getArg(0)->IgnoreImplicit()->getType();
+    if (!DestType->getPointeeType().isNull())
+      DestType = DestType->getPointeeType();
+    diag(Call->getBeginLoc(), "undefined behavior, destination object type %0 "
+                              "is not TriviallyCopyable")
+        << DestType;
   }
-  if (const auto *Source = Result.Nodes.getNodeAs<CallExpr>("src")) {
-    diag(Source->getLocStart(), "undefined behavior, source object is not "
-                                "TriviallyCopyable");
+  if (const auto *Call = Result.Nodes.getNodeAs<CallExpr>("src")) {
+    QualType SourceType = Call->getArg(1)->IgnoreImplicit()->getType();
+    if (!SourceType->getPointeeType().isNull())
+      SourceType = SourceType->getPointeeType();
+    diag(Call->getBeginLoc(),
+         "undefined behavior, source object type %0 is not TriviallyCopyable")
+        << SourceType;
   }
 }
 

@@ -23,6 +23,7 @@ set(ASAN_UNITTEST_HEADERS
 set(ASAN_UNITTEST_COMMON_CFLAGS
   ${COMPILER_RT_UNITTEST_CFLAGS}
   ${COMPILER_RT_GTEST_CFLAGS}
+  ${COMPILER_RT_ASAN_SHADOW_SCALE_LLVM_FLAG}
   -I${COMPILER_RT_SOURCE_DIR}/include
   -I${COMPILER_RT_SOURCE_DIR}/lib
   -I${COMPILER_RT_SOURCE_DIR}/lib/asan
@@ -52,6 +53,7 @@ list(APPEND ASAN_UNITTEST_COMMON_LINK_FLAGS -g)
 
 # Use -D instead of definitions to please custom compile command.
 list(APPEND ASAN_UNITTEST_COMMON_CFLAGS
+  ${COMPILER_RT_ASAN_SHADOW_SCALE_FLAG}
   -DASAN_HAS_BLACKLIST=1
   -DASAN_HAS_EXCEPTIONS=1
   -DASAN_UAR=0)
@@ -66,21 +68,12 @@ if(APPLE)
   list(APPEND ASAN_UNITTEST_COMMON_LINK_FLAGS ${WEAK_SYMBOL_LINK_FLAGS})
 endif()
 
-if(MSVC)
-  # Disable exceptions on Windows until they work reliably.
-  list(APPEND ASAN_UNITTEST_COMMON_CFLAGS -fno-exceptions -DGTEST_HAS_SEH=0)
-endif()
-
 set(ASAN_BLACKLIST_FILE "${CMAKE_CURRENT_SOURCE_DIR}/asan_test.ignore")
 set(ASAN_UNITTEST_INSTRUMENTED_CFLAGS
   ${ASAN_UNITTEST_COMMON_CFLAGS}
   -fsanitize=address
   "-fsanitize-blacklist=${ASAN_BLACKLIST_FILE}"
 )
-if(CAN_TARGET_x86_64 OR CAN_TARGET_i386)
-  list(APPEND ASAN_UNITTEST_INSTRUMENTED_CFLAGS -mllvm -asan-instrument-assembly)
-endif()
-
 if(NOT MSVC)
   list(APPEND ASAN_UNITTEST_COMMON_LINK_FLAGS --driver-mode=g++)
 endif()
@@ -145,7 +138,6 @@ set(ASAN_NOINST_TEST_SOURCES
 
 set(ASAN_INST_TEST_SOURCES
   ${COMPILER_RT_GTEST_SOURCE}
-  asan_asm_test.cc
   asan_globals_test.cc
   asan_interface_test.cc
   asan_internal_interface_test.cc
@@ -205,7 +197,7 @@ function(add_asan_tests arch test_runtime)
       add_compiler_rt_test(AsanDynamicUnitTests "${dynamic_test_name}" "${arch}"
         SUBDIR "dynamic"
         OBJECTS ${ASAN_INST_TEST_OBJECTS}
-        DEPS gtest asan ${ASAN_INST_TEST_OBJECTS}
+        DEPS asan ${ASAN_INST_TEST_OBJECTS}
         LINK_FLAGS ${ASAN_DYNAMIC_UNITTEST_INSTRUMENTED_LINK_FLAGS}
         )
     endif()
@@ -235,6 +227,9 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
   if(APPLE)
     darwin_filter_host_archs(ASAN_SUPPORTED_ARCH ASAN_TEST_ARCH)
   endif()
+  if(OS_NAME MATCHES "SunOS")
+    list(REMOVE_ITEM ASAN_TEST_ARCH x86_64)
+  endif()
 
   foreach(arch ${ASAN_TEST_ARCH})
 
@@ -246,6 +241,8 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
         $<TARGET_OBJECTS:RTInterception.osx>
         $<TARGET_OBJECTS:RTSanitizerCommon.osx>
         $<TARGET_OBJECTS:RTSanitizerCommonLibc.osx>
+        $<TARGET_OBJECTS:RTSanitizerCommonCoverage.osx>
+        $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.osx>
         $<TARGET_OBJECTS:RTLSanCommon.osx>
         $<TARGET_OBJECTS:RTUbsan.osx>)
     else()
@@ -255,6 +252,8 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
         $<TARGET_OBJECTS:RTInterception.${arch}>
         $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
         $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
+        $<TARGET_OBJECTS:RTSanitizerCommonCoverage.${arch}>
+        $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>
         $<TARGET_OBJECTS:RTLSanCommon.${arch}>
         $<TARGET_OBJECTS:RTUbsan.${arch}>
         $<TARGET_OBJECTS:RTUbsan_cxx.${arch}>)
@@ -265,7 +264,7 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
       FOLDER "Compiler-RT Runtime tests")
 
     add_asan_tests(${arch} ${ASAN_TEST_RUNTIME} KIND "-inline")
-    add_asan_tests(${arch} ${ASAN_TEST_RUNTIME} KIND "-with-calls"
+    add_asan_tests(${arch} ${ASAN_TEST_RUNTIME} KIND "-calls"
       CFLAGS -mllvm -asan-instrumentation-with-call-threshold=0)
   endforeach()
 endif()
@@ -278,6 +277,8 @@ if(ANDROID)
       $<TARGET_OBJECTS:RTInterception.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
+      $<TARGET_OBJECTS:RTSanitizerCommonCoverage.${arch}>
+      $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>
       $<TARGET_OBJECTS:RTUbsan.${arch}>
       $<TARGET_OBJECTS:RTUbsan_cxx.${arch}>
       ${COMPILER_RT_GTEST_SOURCE}

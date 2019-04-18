@@ -1,9 +1,8 @@
 //===-- ubsan_init_standalone.cc ------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -18,18 +17,17 @@
 
 #include "sanitizer_common/sanitizer_internal_defs.h"
 #include "ubsan_init.h"
+#include "ubsan_signals_standalone.h"
 
-#if SANITIZER_CAN_USE_PREINIT_ARRAY
-__attribute__((section(".preinit_array"), used))
-void (*__local_ubsan_preinit)(void) = __ubsan::InitAsStandalone;
-#else
-// Use a dynamic initializer.
+namespace __ubsan {
+
 class UbsanStandaloneInitializer {
  public:
   UbsanStandaloneInitializer() {
-    __ubsan::InitAsStandalone();
+    InitAsStandalone();
+    InitializeDeadlySignals();
   }
 };
 static UbsanStandaloneInitializer ubsan_standalone_initializer;
-#endif  // SANITIZER_CAN_USE_PREINIT_ARRAY
 
+} // namespace __ubsan

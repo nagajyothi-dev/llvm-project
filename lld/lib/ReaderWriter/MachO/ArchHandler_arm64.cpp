@@ -1,9 +1,8 @@
 //===- lib/FileFormat/MachO/ArchHandler_arm64.cpp -------------------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -125,6 +124,10 @@ public:
 
   Reference::KindValue pointerKind() override {
     return pointer64;
+  }
+
+  Reference::KindValue lazyImmediateLocationKind() override {
+    return lazyImmediateLocation;
   }
 
   uint32_t dwarfCompactUnwindType() override {

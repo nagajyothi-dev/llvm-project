@@ -1,3 +1,4 @@
+// REQUIRES: x86
 // RUN: llvm-mc -filetype=obj -triple=x86_64-unknown-linux %s -o %t.o
 // RUN: llvm-mc -filetype=obj -triple=x86_64-unknown-linux %p/Inputs/relocation-size-shared.s -o %tso.o
 // RUN: ld.lld -shared %tso.o -o %tso
@@ -27,20 +28,7 @@
 // DISASM-NEXT: 20100c: 00 00
 // DISASM-NEXT: 20100e: 00 00
 // DISASM-NEXT: 201010: 1b 00
-// DISASM-NEXT: 201012: 00 00
-// DISASM-NEXT: 201014: 00 00
-// DISASM-NEXT: 201016: 00 00
-// DISASM-NEXT: 201018: 00 00
-// DISASM-NEXT: 20101a: 00 00
-// DISASM-NEXT: 20101c: 00 00
-// DISASM-NEXT: 20101e: 00 00
-// DISASM-NEXT: 201020: 00 00
-// DISASM-NEXT: 201022: 00 00
-// DISASM-NEXT: 201024: 00 00
-// DISASM-NEXT: 201026: 00 00
-// DISASM-NEXT: 201028: 00 00
-// DISASM-NEXT: 20102a: 00 00
-// DISASM-NEXT: 20102c: 00 00
+// DISASM-NEXT: ...
 // DISASM-NEXT: 20102e: 00 00
 // DISASM:      _start:
 // DISASM-NEXT: 201030: 8b 04 25 19 00 00 00 movl 25, %eax

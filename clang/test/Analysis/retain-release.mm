@@ -461,3 +461,57 @@ void	radar13722286::PrepareBitmap() {
 	}
 }
 
+// rdar://34210609
+void _() { _(); }; // no-warning
+
+// Do not assume that IOBSDNameMatching increments a reference counter,
+// unless return type is CFMutableDictionaryRef.
+void* IOBSDNameMatching();
+void rdar33832412() {
+  void* x = IOBSDNameMatching(); // no-warning
+}
+
+namespace member_CFRetains {
+class Foo {
+public:
+  void CFRetain(const Foo &) {}
+  void CFRetain(int) {}
+};
+
+void bar() {
+  Foo foo;
+  foo.CFRetain(foo); // no-warning
+  foo.CFRetain(0); // no-warning
+}
+}
+
+namespace cxx_method_escaping {
+
+struct S {
+  static CFArrayRef testGetNoTracking();
+  CFArrayRef testGetNoTrackingMember();
+};
+
+void test_cxx_static_method_escaping() {
+  CFArrayRef arr = S::testGetNoTracking();
+  CFRelease(arr);
+}
+
+void test_cxx_method_escaping(S *s) {
+  CFArrayRef arr = s->testGetNoTrackingMember();
+  CFRelease(arr);
+}
+
+}
+
+namespace yet_another_unexpected_signature_crash {
+
+CFTypeRef CFSomethingSomethingRetain();
+CFTypeRef CFSomethingSomethingAutorelease();
+
+void foo() {
+  CFSomethingSomethingRetain(); // no-crash
+  CFSomethingSomethingAutorelease(); // no-crash
+}
+
+}

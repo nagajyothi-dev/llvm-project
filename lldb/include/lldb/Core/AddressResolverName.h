@@ -1,9 +1,8 @@
 //===-- AddressResolverName.h -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,10 +10,10 @@
 #define liblldb_AddressResolverName_h_
 
 #include "lldb/Core/AddressResolver.h"
-#include "lldb/Core/SearchFilter.h"   // for Searcher, Searcher::Call...
-#include "lldb/Utility/ConstString.h" // for ConstString
+#include "lldb/Core/SearchFilter.h"
+#include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/RegularExpression.h"
-#include "lldb/lldb-defines.h" // for DISALLOW_COPY_AND_ASSIGN
+#include "lldb/lldb-defines.h"
 
 namespace lldb_private {
 class Address;
@@ -28,21 +27,17 @@ class SymbolContext;
 
 namespace lldb_private {
 
-//----------------------------------------------------------------------
-/// @class AddressResolverName AddressResolverName.h
-/// "lldb/Core/AddressResolverName.h"
-/// @brief This class finds addresses for a given function name, either by exact
-/// match
-/// or by regular expression.
-//----------------------------------------------------------------------
+/// \class AddressResolverName AddressResolverName.h
+/// "lldb/Core/AddressResolverName.h" This class finds addresses for a given
+/// function name, either by exact match or by regular expression.
 
 class AddressResolverName : public AddressResolver {
 public:
   AddressResolverName(const char *func_name,
                       AddressResolver::MatchType type = Exact);
 
-  // Creates a function breakpoint by regular expression.  Takes over control of
-  // the lifespan of func_regex.
+  // Creates a function breakpoint by regular expression.  Takes over control
+  // of the lifespan of func_regex.
   AddressResolverName(RegularExpression &func_regex);
 
   AddressResolverName(const char *class_name, const char *method,
@@ -54,7 +49,7 @@ public:
                                           SymbolContext &context, Address *addr,
                                           bool containing) override;
 
-  Searcher::Depth GetDepth() override;
+  lldb::SearchDepth GetDepth() override;
 
   void GetDescription(Stream *s) override;
 

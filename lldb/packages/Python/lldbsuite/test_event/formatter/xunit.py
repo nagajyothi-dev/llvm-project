@@ -1,8 +1,7 @@
 """
-                     The LLVM Compiler Infrastructure
-
-This file is distributed under the University of Illinois Open Source
-License. See LICENSE.TXT for details.
+Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+See https://llvm.org/LICENSE.txt for license information.
+SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 Provides an xUnit ResultsFormatter for integrating the LLDB
 test suite with the Jenkins xUnit aggregator and other xUnit-compliant
@@ -84,7 +83,9 @@ class XunitFormatter(ResultsFormatter):
         """
         # Get the content into unicode
         if isinstance(str_or_unicode, str):
-            unicode_content = str_or_unicode.decode('utf-8')
+            # If we hit decoding errors due to data corruption, replace the
+            # invalid characters with U+FFFD REPLACEMENT CHARACTER.
+            unicode_content = str_or_unicode.decode('utf-8', 'replace')
         else:
             unicode_content = str_or_unicode
         return self.invalid_xml_re.sub(

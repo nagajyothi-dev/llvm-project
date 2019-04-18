@@ -1,9 +1,8 @@
 //===-- sanitizer_mac.cc --------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -59,7 +58,9 @@ extern "C" {
 #include <libkern/OSAtomic.h>
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <mach/vm_statistics.h>
+#include <malloc/malloc.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -100,9 +101,26 @@ extern "C" void *__mmap(void *addr, size_t len, int prot, int flags, int fildes,
 extern "C" int __munmap(void *, size_t) SANITIZER_WEAK_ATTRIBUTE;
 
 // ---------------------- sanitizer_libc.h
+
+// From <mach/vm_statistics.h>, but not on older OSs.
+#ifndef VM_MEMORY_SANITIZER
+#define VM_MEMORY_SANITIZER 99
+#endif
+
+// XNU on Darwin provides a mmap flag that optimizes allocation/deallocation of
+// giant memory regions (i.e. shadow memory regions).
+#define kXnuFastMmapFd 0x4
+static size_t kXnuFastMmapThreshold = 2 << 30; // 2 GB
+static bool use_xnu_fast_mmap = false;
+
 uptr internal_mmap(void *addr, size_t length, int prot, int flags,
                    int fd, u64 offset) {
-  if (fd == -1) fd = VM_MAKE_TAG(VM_MEMORY_ANALYSIS_TOOL);
+  if (fd == -1) {
+    fd = VM_MAKE_TAG(VM_MEMORY_SANITIZER);
+    if (length >= kXnuFastMmapThreshold) {
+      if (use_xnu_fast_mmap) fd |= kXnuFastMmapFd;
+    }
+  }
   if (&__mmap) return (uptr)__mmap(addr, length, prot, flags, fd, offset);
   return (uptr)mmap(addr, length, prot, flags, fd, offset);
 }
@@ -155,6 +173,10 @@ uptr internal_filesize(fd_t fd) {
   return (uptr)st.st_size;
 }
 
+uptr internal_dup(int oldfd) {
+  return dup(oldfd);
+}
+
 uptr internal_dup2(int oldfd, int newfd) {
   return dup2(oldfd, newfd);
 }
@@ -185,7 +207,7 @@ uptr internal_getpid() {
 
 int internal_sigaction(int signum, const void *act, void *oldact) {
   return sigaction(signum,
-                   (struct sigaction *)act, (struct sigaction *)oldact);
+                   (const struct sigaction *)act, (struct sigaction *)oldact);
 }
 
 void internal_sigfillset(__sanitizer_sigset_t *set) { sigfillset(set); }
@@ -205,25 +227,37 @@ int internal_fork() {
   return fork();
 }
 
-int internal_forkpty(int *amaster) {
-  int master, slave;
-  if (openpty(&master, &slave, nullptr, nullptr, nullptr) == -1) return -1;
+int internal_sysctl(const int *name, unsigned int namelen, void *oldp,
+                    uptr *oldlenp, const void *newp, uptr newlen) {
+  return sysctl(const_cast<int *>(name), namelen, oldp, (size_t *)oldlenp,
+                const_cast<void *>(newp), (size_t)newlen);
+}
+
+int internal_sysctlbyname(const char *sname, void *oldp, uptr *oldlenp,
+                          const void *newp, uptr newlen) {
+  return sysctlbyname(sname, oldp, (size_t *)oldlenp, const_cast<void *>(newp),
+                      (size_t)newlen);
+}
+
+int internal_forkpty(int *aparent) {
+  int parent, worker;
+  if (openpty(&parent, &worker, nullptr, nullptr, nullptr) == -1) return -1;
   int pid = internal_fork();
   if (pid == -1) {
-    close(master);
-    close(slave);
+    close(parent);
+    close(worker);
     return -1;
   }
   if (pid == 0) {
-    close(master);
-    if (login_tty(slave) != 0) {
+    close(parent);
+    if (login_tty(worker) != 0) {
       // We already forked, there's not much we can do.  Let's quit.
       Report("login_tty failed (errno %d)\n", errno);
       internal__exit(1);
     }
   } else {
-    *amaster = master;
-    close(slave);
+    *aparent = parent;
+    close(worker);
   }
   return pid;
 }
@@ -247,6 +281,8 @@ uptr internal_waitpid(int pid, int *status, int options) {
 
 // ----------------- sanitizer_common.h
 bool FileExists(const char *filename) {
+  if (ShouldMockFailureToOpen(filename))
+    return false;
   struct stat st;
   if (stat(filename, &st))
     return false;
@@ -338,8 +374,39 @@ void ReExec() {
   UNIMPLEMENTED();
 }
 
+void CheckASLR() {
+  // Do nothing
+}
+
+void CheckMPROTECT() {
+  // Do nothing
+}
+
 uptr GetPageSize() {
   return sysconf(_SC_PAGESIZE);
+}
+
+extern "C" unsigned malloc_num_zones;
+extern "C" malloc_zone_t **malloc_zones;
+malloc_zone_t sanitizer_zone;
+
+// We need to make sure that sanitizer_zone is registered as malloc_zones[0]. If
+// libmalloc tries to set up a different zone as malloc_zones[0], it will call
+// mprotect(malloc_zones, ..., PROT_READ).  This interceptor will catch that and
+// make sure we are still the first (default) zone.
+void MprotectMallocZones(void *addr, int prot) {
+  if (addr == malloc_zones && prot == PROT_READ) {
+    if (malloc_num_zones > 1 && malloc_zones[0] != &sanitizer_zone) {
+      for (unsigned i = 1; i < malloc_num_zones; i++) {
+        if (malloc_zones[i] == &sanitizer_zone) {
+          // Swap malloc_zones[0] and malloc_zones[i].
+          malloc_zones[i] = malloc_zones[0];
+          malloc_zones[0] = &sanitizer_zone;
+          break;
+        }
+      }
+    }
+  }
 }
 
 BlockingMutex::BlockingMutex() {
@@ -362,7 +429,17 @@ void BlockingMutex::CheckLocked() {
 }
 
 u64 NanoTime() {
-  return 0;
+  timeval tv;
+  internal_memset(&tv, 0, sizeof(tv));
+  gettimeofday(&tv, 0);
+  return (u64)tv.tv_sec * 1000*1000*1000 + tv.tv_usec * 1000;
+}
+
+// This needs to be called during initialization to avoid being racy.
+u64 MonotonicNanoTime() {
+  static mach_timebase_info_data_t timebase_info;
+  if (timebase_info.denom == 0) mach_timebase_info(&timebase_info);
+  return (mach_absolute_time() * timebase_info.numer) / timebase_info.denom;
 }
 
 uptr GetTlsSize() {
@@ -411,10 +488,12 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
 }
 
 void ListOfModules::init() {
-  clear();
+  clearOrInit();
   MemoryMappingLayout memory_mapping(false);
   memory_mapping.DumpListOfModules(&modules_);
 }
+
+void ListOfModules::fallbackInit() { clear(); }
 
 static HandleSignalMode GetHandleSignalModeImpl(int signum) {
   switch (signum) {
@@ -422,6 +501,8 @@ static HandleSignalMode GetHandleSignalModeImpl(int signum) {
       return common_flags()->handle_abort;
     case SIGILL:
       return common_flags()->handle_sigill;
+    case SIGTRAP:
+      return common_flags()->handle_sigtrap;
     case SIGFPE:
       return common_flags()->handle_sigfpe;
     case SIGSEGV:
@@ -450,26 +531,38 @@ MacosVersion GetMacosVersionInternal() {
   uptr len = 0, maxlen = sizeof(version) / sizeof(version[0]);
   for (uptr i = 0; i < maxlen; i++) version[i] = '\0';
   // Get the version length.
-  CHECK_NE(sysctl(mib, 2, 0, &len, 0, 0), -1);
+  CHECK_NE(internal_sysctl(mib, 2, 0, &len, 0, 0), -1);
   CHECK_LT(len, maxlen);
-  CHECK_NE(sysctl(mib, 2, version, &len, 0, 0), -1);
-  switch (version[0]) {
-    case '9': return MACOS_VERSION_LEOPARD;
-    case '1': {
-      switch (version[1]) {
-        case '0': return MACOS_VERSION_SNOW_LEOPARD;
-        case '1': return MACOS_VERSION_LION;
-        case '2': return MACOS_VERSION_MOUNTAIN_LION;
-        case '3': return MACOS_VERSION_MAVERICKS;
-        case '4': return MACOS_VERSION_YOSEMITE;
-        default:
-          if (IsDigit(version[1]))
-            return MACOS_VERSION_UNKNOWN_NEWER;
-          else
-            return MACOS_VERSION_UNKNOWN;
-      }
-    }
-    default: return MACOS_VERSION_UNKNOWN;
+  CHECK_NE(internal_sysctl(mib, 2, version, &len, 0, 0), -1);
+
+  // Expect <major>.<minor>(.<patch>)
+  CHECK_GE(len, 3);
+  const char *p = version;
+  int major = internal_simple_strtoll(p, &p, /*base=*/10);
+  if (*p != '.') return MACOS_VERSION_UNKNOWN;
+  p += 1;
+  int minor = internal_simple_strtoll(p, &p, /*base=*/10);
+  if (*p != '.') return MACOS_VERSION_UNKNOWN;
+
+  switch (major) {
+    case 9: return MACOS_VERSION_LEOPARD;
+    case 10: return MACOS_VERSION_SNOW_LEOPARD;
+    case 11: return MACOS_VERSION_LION;
+    case 12: return MACOS_VERSION_MOUNTAIN_LION;
+    case 13: return MACOS_VERSION_MAVERICKS;
+    case 14: return MACOS_VERSION_YOSEMITE;
+    case 15: return MACOS_VERSION_EL_CAPITAN;
+    case 16: return MACOS_VERSION_SIERRA;
+    case 17:
+      // Not a typo, 17.5 Darwin Kernel Version maps to High Sierra 10.13.4.
+      if (minor >= 5)
+        return MACOS_VERSION_HIGH_SIERRA_DOT_RELEASE_4;
+      return MACOS_VERSION_HIGH_SIERRA;
+    case 18:
+      return MACOS_VERSION_MOJAVE;
+    default:
+      if (major < 9) return MACOS_VERSION_UNKNOWN;
+      return MACOS_VERSION_UNKNOWN_NEWER;
   }
 }
 
@@ -574,7 +667,7 @@ void LogFullErrorReport(const char *buffer) {
 #endif
 }
 
-SignalContext::WriteFlag SignalContext::GetWriteFlag(void *context) {
+SignalContext::WriteFlag SignalContext::GetWriteFlag() const {
 #if defined(__x86_64__) || defined(__i386__)
   ucontext_t *ucontext = static_cast<ucontext_t*>(context);
   return ucontext->uc_mcontext->__es.__err & 2 /*T_PF_WRITE*/ ? WRITE : READ;
@@ -583,7 +676,7 @@ SignalContext::WriteFlag SignalContext::GetWriteFlag(void *context) {
 #endif
 }
 
-void GetPcSpBp(void *context, uptr *pc, uptr *sp, uptr *bp) {
+static void GetPcSpBp(void *context, uptr *pc, uptr *sp, uptr *bp) {
   ucontext_t *ucontext = (ucontext_t*)context;
 # if defined(__aarch64__)
   *pc = ucontext->uc_mcontext->__ss.__pc;
@@ -608,6 +701,18 @@ void GetPcSpBp(void *context, uptr *pc, uptr *sp, uptr *bp) {
 # else
 # error "Unknown architecture"
 # endif
+}
+
+void SignalContext::InitPcSpBp() { GetPcSpBp(context, &pc, &sp, &bp); }
+
+void InitializePlatformEarly() {
+  // Only use xnu_fast_mmap when on x86_64 and the OS supports it.
+  use_xnu_fast_mmap =
+#if defined(__x86_64__)
+      GetMacosVersion() >= MACOS_VERSION_HIGH_SIERRA_DOT_RELEASE_4;
+#else
+      false;
+#endif
 }
 
 #if !SANITIZER_GO
@@ -665,6 +770,9 @@ bool DyldNeedsEnvVariable() {
 }
 
 void MaybeReexec() {
+  // FIXME: This should really live in some "InitializePlatform" method.
+  MonotonicNanoTime();
+
   if (ReexecDisabled()) return;
 
   // Make sure the dynamic runtime library is preloaded so that the
@@ -735,6 +843,9 @@ void MaybeReexec() {
   }
 
   if (!lib_is_in_env)
+    return;
+
+  if (!common_flags()->strip_env)
     return;
 
   // DYLD_INSERT_LIBRARIES is set and contains the runtime library. Let's remove
@@ -833,10 +944,10 @@ struct __sanitizer_task_vm_info {
     (sizeof(__sanitizer_task_vm_info) / sizeof(natural_t)))
 
 uptr GetTaskInfoMaxAddress() {
-  __sanitizer_task_vm_info vm_info = {};
+  __sanitizer_task_vm_info vm_info = {} /* zero initialize */;
   mach_msg_type_number_t count = __SANITIZER_TASK_VM_INFO_COUNT;
   int err = task_info(mach_task_self(), TASK_VM_INFO, (int *)&vm_info, &count);
-  if (err == 0) {
+  if (err == 0 && vm_info.max_address != 0) {
     return vm_info.max_address - 1;
   } else {
     // xnu cannot provide vm address limit
@@ -845,7 +956,7 @@ uptr GetTaskInfoMaxAddress() {
 }
 #endif
 
-uptr GetMaxVirtualAddress() {
+uptr GetMaxUserVirtualAddress() {
 #if SANITIZER_WORDSIZE == 64
 # if defined(__aarch64__) && SANITIZER_IOS && !SANITIZER_IOSSIM
   // Get the maximum VM address
@@ -860,10 +971,13 @@ uptr GetMaxVirtualAddress() {
 #endif  // SANITIZER_WORDSIZE
 }
 
-uptr FindAvailableMemoryRange(uptr shadow_size,
-                              uptr alignment,
-                              uptr left_padding,
-                              uptr *largest_gap_found) {
+uptr GetMaxVirtualAddress() {
+  return GetMaxUserVirtualAddress();
+}
+
+uptr FindAvailableMemoryRange(uptr size, uptr alignment, uptr left_padding,
+                              uptr *largest_gap_found,
+                              uptr *max_occupied_addr) {
   typedef vm_region_submap_short_info_data_64_t RegionInfo;
   enum { kRegionInfoSize = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 };
   // Start searching for available memory region past PAGEZERO, which is
@@ -875,6 +989,7 @@ uptr FindAvailableMemoryRange(uptr shadow_size,
   mach_vm_address_t free_begin = start_address;
   kern_return_t kr = KERN_SUCCESS;
   if (largest_gap_found) *largest_gap_found = 0;
+  if (max_occupied_addr) *max_occupied_addr = 0;
   while (kr == KERN_SUCCESS) {
     mach_vm_size_t vmsize = 0;
     natural_t depth = 0;
@@ -882,12 +997,19 @@ uptr FindAvailableMemoryRange(uptr shadow_size,
     mach_msg_type_number_t count = kRegionInfoSize;
     kr = mach_vm_region_recurse(mach_task_self(), &address, &vmsize, &depth,
                                 (vm_region_info_t)&vminfo, &count);
+    if (kr == KERN_INVALID_ADDRESS) {
+      // No more regions beyond "address", consider the gap at the end of VM.
+      address = GetMaxVirtualAddress() + 1;
+      vmsize = 0;
+    } else {
+      if (max_occupied_addr) *max_occupied_addr = address + vmsize;
+    }
     if (free_begin != address) {
       // We found a free region [free_begin..address-1].
       uptr gap_start = RoundUpTo((uptr)free_begin + left_padding, alignment);
       uptr gap_end = RoundDownTo((uptr)address, alignment);
       uptr gap_size = gap_end > gap_start ? gap_end - gap_start : 0;
-      if (shadow_size < gap_size) {
+      if (size < gap_size) {
         return gap_start;
       }
 
@@ -974,9 +1096,10 @@ void FormatUUID(char *out, uptr size, const u8 *uuid) {
 void PrintModuleMap() {
   Printf("Process module map:\n");
   MemoryMappingLayout memory_mapping(false);
-  InternalMmapVector<LoadedModule> modules(/*initial_capacity*/ 128);
+  InternalMmapVector<LoadedModule> modules;
+  modules.reserve(128);
   memory_mapping.DumpListOfModules(&modules);
-  InternalSort(&modules, modules.size(), CompareBaseAddress);
+  Sort(modules.data(), modules.size(), CompareBaseAddress);
   for (uptr i = 0; i < modules.size(); ++i) {
     char uuid_str[128];
     FormatUUID(uuid_str, sizeof(uuid_str), modules[i].uuid());
@@ -991,9 +1114,16 @@ void CheckNoDeepBind(const char *filename, int flag) {
   // Do nothing.
 }
 
-// FIXME: implement on this platform.
 bool GetRandom(void *buffer, uptr length, bool blocking) {
-  UNIMPLEMENTED();
+  if (!buffer || !length || length > 256)
+    return false;
+  // arc4random never fails.
+  arc4random_buf(buffer, length);
+  return true;
+}
+
+u32 GetNumberOfCPUs() {
+  return (u32)sysconf(_SC_NPROCESSORS_ONLN);
 }
 
 }  // namespace __sanitizer

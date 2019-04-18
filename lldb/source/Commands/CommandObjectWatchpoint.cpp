@@ -1,23 +1,18 @@
 //===-- CommandObjectWatchpoint.cpp -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "CommandObjectWatchpoint.h"
 #include "CommandObjectWatchpointCommand.h"
 
-// C Includes
-// C++ Includes
 #include <vector>
 
-// Other libraries and framework includes
 #include "llvm/ADT/StringRef.h"
 
-// Project includes
 #include "lldb/Breakpoint/Watchpoint.h"
 #include "lldb/Breakpoint/WatchpointList.h"
 #include "lldb/Core/ValueObject.h"
@@ -74,8 +69,8 @@ static int32_t WithRSAIndex(llvm::StringRef Arg) {
   return -1;
 }
 
-// Return true if wp_ids is successfully populated with the watch ids.
-// False otherwise.
+// Return true if wp_ids is successfully populated with the watch ids. False
+// otherwise.
 bool CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(
     Target *target, Args &args, std::vector<uint32_t> &wp_ids) {
   // Pre-condition: args.GetArgumentCount() > 0.
@@ -111,8 +106,8 @@ bool CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(
     if (!second.empty())
       StrRefArgs.push_back(second);
   }
-  // Now process the canonical list and fill in the vector of uint32_t's.
-  // If there is any error, return false and the client should ignore wp_ids.
+  // Now process the canonical list and fill in the vector of uint32_t's. If
+  // there is any error, return false and the client should ignore wp_ids.
   uint32_t beg, end, id;
   size_t size = StrRefArgs.size();
   bool in_range = false;
@@ -142,27 +137,21 @@ bool CommandObjectMultiwordWatchpoint::VerifyWatchpointIDs(
       return false;
     wp_ids.push_back(beg);
   }
-  // It is an error if after the loop, we're still in_range.
-  if (in_range)
-    return false;
 
-  return true; // Success!
+  // It is an error if after the loop, we're still in_range.
+  return !in_range;
 }
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointList
-//-------------------------------------------------------------------------
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointList::Options
-//-------------------------------------------------------------------------
 #pragma mark List::CommandOptions
 
-static OptionDefinition g_watchpoint_list_options[] = {
+static constexpr OptionDefinition g_watchpoint_list_options[] = {
     // clang-format off
-  { LLDB_OPT_SET_1, false, "brief",   'b', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Give a brief description of the watchpoint (no location info)." },
-  { LLDB_OPT_SET_2, false, "full",    'f', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Give a full description of the watchpoint and its locations." },
-  { LLDB_OPT_SET_3, false, "verbose", 'v', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Explain everything we know about the watchpoint (for debugging debugger bugs)." }
+  { LLDB_OPT_SET_1, false, "brief",   'b', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Give a brief description of the watchpoint (no location info)." },
+  { LLDB_OPT_SET_2, false, "full",    'f', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Give a full description of the watchpoint and its locations." },
+  { LLDB_OPT_SET_3, false, "verbose", 'v', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Explain everything we know about the watchpoint (for debugging debugger bugs)." }
     // clang-format on
 };
 
@@ -302,9 +291,7 @@ private:
   CommandOptions m_options;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointEnable
-//-------------------------------------------------------------------------
 #pragma mark Enable
 
 class CommandObjectWatchpointEnable : public CommandObjectParsed {
@@ -373,9 +360,7 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointDisable
-//-------------------------------------------------------------------------
 #pragma mark Disable
 
 class CommandObjectWatchpointDisable : public CommandObjectParsed {
@@ -448,9 +433,7 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointDelete
-//-------------------------------------------------------------------------
 #pragma mark Delete
 
 class CommandObjectWatchpointDelete : public CommandObjectParsed {
@@ -524,14 +507,12 @@ protected:
   }
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointIgnore
-//-------------------------------------------------------------------------
 
 #pragma mark Ignore::CommandOptions
-static OptionDefinition g_watchpoint_ignore_options[] = {
+static constexpr OptionDefinition g_watchpoint_ignore_options[] = {
     // clang-format off
-  { LLDB_OPT_SET_ALL, true, "ignore-count", 'i', OptionParser::eRequiredArgument, nullptr, nullptr, 0, eArgTypeCount, "Set the number of times this watchpoint is skipped before stopping." }
+  { LLDB_OPT_SET_ALL, true, "ignore-count", 'i', OptionParser::eRequiredArgument, nullptr, {}, 0, eArgTypeCount, "Set the number of times this watchpoint is skipped before stopping." }
     // clang-format on
 };
 
@@ -645,15 +626,13 @@ private:
   CommandOptions m_options;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointModify
-//-------------------------------------------------------------------------
 
 #pragma mark Modify::CommandOptions
 
-static OptionDefinition g_watchpoint_modify_options[] = {
+static constexpr OptionDefinition g_watchpoint_modify_options[] = {
     // clang-format off
-  { LLDB_OPT_SET_ALL, false, "condition", 'c', OptionParser::eRequiredArgument, nullptr, nullptr, 0, eArgTypeExpression, "The watchpoint stops only if this condition expression evaluates to true." }
+  { LLDB_OPT_SET_ALL, false, "condition", 'c', OptionParser::eRequiredArgument, nullptr, {}, 0, eArgTypeExpression, "The watchpoint stops only if this condition expression evaluates to true." }
     // clang-format on
 };
 
@@ -776,9 +755,7 @@ private:
   CommandOptions m_options;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointSetVariable
-//-------------------------------------------------------------------------
 #pragma mark SetVariable
 
 class CommandObjectWatchpointSetVariable : public CommandObjectParsed {
@@ -838,7 +815,7 @@ protected:
                                     VariableList &variable_list) {
     Target *target = static_cast<Target *>(baton);
     if (target) {
-      return target->GetImages().FindGlobalVariables(ConstString(name), true,
+      return target->GetImages().FindGlobalVariables(ConstString(name),
                                                      UINT32_MAX, variable_list);
     }
     return 0;
@@ -848,8 +825,8 @@ protected:
     Target *target = m_interpreter.GetDebugger().GetSelectedTarget().get();
     StackFrame *frame = m_exe_ctx.GetFramePtr();
 
-    // If no argument is present, issue an error message.  There's no way to set
-    // a watchpoint.
+    // If no argument is present, issue an error message.  There's no way to
+    // set a watchpoint.
     if (command.GetArgumentCount() <= 0) {
       result.GetErrorStream().Printf("error: required argument missing; "
                                      "specify your program variable to watch "
@@ -863,8 +840,8 @@ protected:
       m_option_watchpoint.watch_type = OptionGroupWatchpoint::eWatchWrite;
     }
 
-    // We passed the sanity check for the command.
-    // Proceed to set the watchpoint now.
+    // We passed the sanity check for the command. Proceed to set the
+    // watchpoint now.
     lldb::addr_t addr = 0;
     size_t size = 0;
 
@@ -966,9 +943,7 @@ private:
   OptionGroupWatchpoint m_option_watchpoint;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointSetExpression
-//-------------------------------------------------------------------------
 #pragma mark Set
 
 class CommandObjectWatchpointSetExpression : public CommandObjectRaw {
@@ -1026,7 +1001,7 @@ Examples:
   Options *GetOptions() override { return &m_option_group; }
 
 protected:
-  bool DoExecute(const char *raw_command,
+  bool DoExecute(llvm::StringRef raw_command,
                  CommandReturnObject &result) override {
     auto exe_ctx = GetCommandInterpreter().GetExecutionContext();
     m_option_group.NotifyOptionParsingStarting(
@@ -1035,46 +1010,18 @@ protected:
     Target *target = m_interpreter.GetDebugger().GetSelectedTarget().get();
     StackFrame *frame = m_exe_ctx.GetFramePtr();
 
-    Args command(raw_command);
-    const char *expr = nullptr;
-    if (raw_command[0] == '-') {
-      // We have some options and these options MUST end with --.
-      const char *end_options = nullptr;
-      const char *s = raw_command;
-      while (s && s[0]) {
-        end_options = ::strstr(s, "--");
-        if (end_options) {
-          end_options += 2; // Get past the "--"
-          if (::isspace(end_options[0])) {
-            expr = end_options;
-            while (::isspace(*expr))
-              ++expr;
-            break;
-          }
-        }
-        s = end_options;
-      }
+    OptionsWithRaw args(raw_command);
 
-      if (end_options) {
-        Args args(llvm::StringRef(raw_command, end_options - raw_command));
-        if (!ParseOptions(args, result))
-          return false;
+    llvm::StringRef expr = args.GetRawPart();
 
-        Status error(m_option_group.NotifyOptionParsingFinished(&exe_ctx));
-        if (error.Fail()) {
-          result.AppendError(error.AsCString());
-          result.SetStatus(eReturnStatusFailed);
-          return false;
-        }
-      }
-    }
+    if (args.HasArgs())
+      if (!ParseOptionsAndNotify(args.GetArgs(), result, m_option_group,
+                                 exe_ctx))
+        return false;
 
-    if (expr == nullptr)
-      expr = raw_command;
-
-    // If no argument is present, issue an error message.  There's no way to set
-    // a watchpoint.
-    if (command.GetArgumentCount() == 0) {
+    // If no argument is present, issue an error message.  There's no way to
+    // set a watchpoint.
+    if (raw_command.trim().empty()) {
       result.GetErrorStream().Printf("error: required argument missing; "
                                      "specify an expression to evaulate into "
                                      "the address to watch for\n");
@@ -1087,8 +1034,8 @@ protected:
       m_option_watchpoint.watch_type = OptionGroupWatchpoint::eWatchWrite;
     }
 
-    // We passed the sanity check for the command.
-    // Proceed to set the watchpoint now.
+    // We passed the sanity check for the command. Proceed to set the
+    // watchpoint now.
     lldb::addr_t addr = 0;
     size_t size = 0;
 
@@ -1107,7 +1054,7 @@ protected:
     if (expr_result != eExpressionCompleted) {
       result.GetErrorStream().Printf(
           "error: expression evaluation of address to watch failed\n");
-      result.GetErrorStream().Printf("expression evaluated: %s\n", expr);
+      result.GetErrorStream() << "expression evaluated: \n" << expr << "\n";
       result.SetStatus(eReturnStatusFailed);
       return false;
     }
@@ -1162,9 +1109,7 @@ private:
   OptionGroupWatchpoint m_option_watchpoint;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectWatchpointSet
-//-------------------------------------------------------------------------
 #pragma mark Set
 
 class CommandObjectWatchpointSet : public CommandObjectMultiword {
@@ -1185,9 +1130,7 @@ public:
   ~CommandObjectWatchpointSet() override = default;
 };
 
-//-------------------------------------------------------------------------
 // CommandObjectMultiwordWatchpoint
-//-------------------------------------------------------------------------
 #pragma mark MultiwordWatchpoint
 
 CommandObjectMultiwordWatchpoint::CommandObjectMultiwordWatchpoint(

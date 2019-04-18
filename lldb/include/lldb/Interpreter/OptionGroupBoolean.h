@@ -1,32 +1,25 @@
 //===-- OptionGroupBoolean.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_OptionGroupBoolean_h_
 #define liblldb_OptionGroupBoolean_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Interpreter/OptionValueBoolean.h"
 #include "lldb/Interpreter/Options.h"
 
 namespace lldb_private {
-//-------------------------------------------------------------------------
 // OptionGroupBoolean
-//-------------------------------------------------------------------------
 
 class OptionGroupBoolean : public OptionGroup {
 public:
-  // When 'no_argument_toggle_default' is true, then setting the option
-  // value does NOT require an argument, it sets the boolean value to the
-  // inverse of the default value
+  // When 'no_argument_toggle_default' is true, then setting the option value
+  // does NOT require an argument, it sets the boolean value to the inverse of
+  // the default value
   OptionGroupBoolean(uint32_t usage_mask, bool required,
                      const char *long_option, int short_option,
                      const char *usage_text, bool default_value,

@@ -1,9 +1,8 @@
 //===-- sanitizer_win.cc --------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -23,15 +22,27 @@
 #include <stdlib.h>
 
 #include "sanitizer_common.h"
-#include "sanitizer_dbghelp.h"
 #include "sanitizer_file.h"
 #include "sanitizer_libc.h"
 #include "sanitizer_mutex.h"
 #include "sanitizer_placement_new.h"
-#include "sanitizer_procmaps.h"
-#include "sanitizer_stacktrace.h"
-#include "sanitizer_symbolizer.h"
 #include "sanitizer_win_defs.h"
+
+#if defined(PSAPI_VERSION) && PSAPI_VERSION == 1
+#pragma comment(lib, "psapi")
+#endif
+#if SANITIZER_WIN_TRACE
+#include <traceloggingprovider.h>
+//  Windows trace logging provider init
+#pragma comment(lib, "advapi32.lib")
+TRACELOGGING_DECLARE_PROVIDER(g_asan_provider);
+// GUID must be the same in utils/AddressSanitizerLoggingProvider.wprp
+TRACELOGGING_DEFINE_PROVIDER(g_asan_provider, "AddressSanitizerLoggingProvider",
+                             (0x6c6c766d, 0x3846, 0x4e6a, 0xa4, 0xfb, 0x5b,
+                              0x53, 0x0b, 0xd0, 0xf3, 0xfa));
+#else
+#define TraceLoggingUnregister(x)
+#endif
 
 // A macro to tell the compiler that this part of the code cannot be reached,
 // if the compiler supports this feature. Since we're using this in
@@ -65,10 +76,14 @@ uptr GetMmapGranularity() {
   return si.dwAllocationGranularity;
 }
 
-uptr GetMaxVirtualAddress() {
+uptr GetMaxUserVirtualAddress() {
   SYSTEM_INFO si;
   GetSystemInfo(&si);
   return (uptr)si.lpMaximumApplicationAddress;
+}
+
+uptr GetMaxVirtualAddress() {
+  return GetMaxUserVirtualAddress();
 }
 
 bool FileExists(const char *filename) {
@@ -202,7 +217,7 @@ void *MmapAlignedOrDieOnFatalError(uptr size, uptr alignment,
   return (void *)mapped_addr;
 }
 
-void *MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
+bool MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
   // FIXME: is this really "NoReserve"? On Win32 this does not matter much,
   // but on Win64 it does.
   (void)name;  // unsupported
@@ -215,16 +230,18 @@ void *MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
   void *p = VirtualAlloc((LPVOID)fixed_addr, size, MEM_RESERVE | MEM_COMMIT,
                          PAGE_READWRITE);
 #endif
-  if (p == 0)
+  if (p == 0) {
     Report("ERROR: %s failed to "
            "allocate %p (%zd) bytes at %p (error code: %d)\n",
            SanitizerToolName, size, size, fixed_addr, GetLastError());
-  return p;
+    return false;
+  }
+  return true;
 }
 
 // Memory space mapped by 'MmapFixedOrDie' must have been reserved by
 // 'MmapFixedNoAccess'.
-void *MmapFixedOrDie(uptr fixed_addr, uptr size) {
+void *MmapFixedOrDie(uptr fixed_addr, uptr size, const char *name) {
   void *p = VirtualAlloc((LPVOID)fixed_addr, size,
       MEM_COMMIT, PAGE_READWRITE);
   if (p == 0) {
@@ -236,7 +253,27 @@ void *MmapFixedOrDie(uptr fixed_addr, uptr size) {
   return p;
 }
 
-void *MmapFixedOrDieOnFatalError(uptr fixed_addr, uptr size) {
+// Uses fixed_addr for now.
+// Will use offset instead once we've implemented this function for real.
+uptr ReservedAddressRange::Map(uptr fixed_addr, uptr size, const char *name) {
+  return reinterpret_cast<uptr>(MmapFixedOrDieOnFatalError(fixed_addr, size));
+}
+
+uptr ReservedAddressRange::MapOrDie(uptr fixed_addr, uptr size,
+                                    const char *name) {
+  return reinterpret_cast<uptr>(MmapFixedOrDie(fixed_addr, size));
+}
+
+void ReservedAddressRange::Unmap(uptr addr, uptr size) {
+  // Only unmap if it covers the entire range.
+  CHECK((addr == reinterpret_cast<uptr>(base_)) && (size == size_));
+  // We unmap the whole range, just null out the base.
+  base_ = nullptr;
+  size_ = 0;
+  UnmapOrDie(reinterpret_cast<void*>(addr), size);
+}
+
+void *MmapFixedOrDieOnFatalError(uptr fixed_addr, uptr size, const char *name) {
   void *p = VirtualAlloc((LPVOID)fixed_addr, size,
       MEM_COMMIT, PAGE_READWRITE);
   if (p == 0) {
@@ -252,6 +289,15 @@ void *MmapNoReserveOrDie(uptr size, const char *mem_type) {
   // FIXME: make this really NoReserve?
   return MmapOrDie(size, mem_type);
 }
+
+uptr ReservedAddressRange::Init(uptr size, const char *name, uptr fixed_addr) {
+  base_ = fixed_addr ? MmapFixedNoAccess(fixed_addr, size) : MmapNoAccess(size);
+  size_ = size;
+  name_ = name;
+  (void)os_handle_;  // unsupported
+  return reinterpret_cast<uptr>(base_);
+}
+
 
 void *MmapFixedNoAccess(uptr fixed_addr, uptr size, const char *name) {
   (void)name; // unsupported
@@ -283,17 +329,20 @@ void ReleaseMemoryPagesToOS(uptr beg, uptr end) {
   // FIXME: add madvise-analog when we move to 64-bits.
 }
 
-void NoHugePagesInRegion(uptr addr, uptr size) {
+bool NoHugePagesInRegion(uptr addr, uptr size) {
   // FIXME: probably similar to ReleaseMemoryToOS.
+  return true;
 }
 
-void DontDumpShadowMemory(uptr addr, uptr length) {
+bool DontDumpShadowMemory(uptr addr, uptr length) {
   // This is almost useless on 32-bits.
   // FIXME: add madvise-analog when we move to 64-bits.
+  return true;
 }
 
 uptr FindAvailableMemoryRange(uptr size, uptr alignment, uptr left_padding,
-                              uptr *largest_gap_found) {
+                              uptr *largest_gap_found,
+                              uptr *max_occupied_addr) {
   uptr address = 0;
   while (true) {
     MEMORY_BASIC_INFORMATION info;
@@ -380,7 +429,7 @@ struct ModuleInfo {
 
 #if !SANITIZER_GO
 int CompareModulesBase(const void *pl, const void *pr) {
-  const ModuleInfo *l = (ModuleInfo *)pl, *r = (ModuleInfo *)pr;
+  const ModuleInfo *l = (const ModuleInfo *)pl, *r = (const ModuleInfo *)pr;
   if (l->base_address < r->base_address)
     return -1;
   return l->base_address > r->base_address;
@@ -395,7 +444,7 @@ void DumpProcessMap() {
   modules.init();
   uptr num_modules = modules.size();
 
-  InternalScopedBuffer<ModuleInfo> module_infos(num_modules);
+  InternalMmapVector<ModuleInfo> module_infos(num_modules);
   for (size_t i = 0; i < num_modules; ++i) {
     module_infos[i].filepath = modules[i].full_name();
     module_infos[i].base_address = modules[i].ranges().front()->beg;
@@ -428,8 +477,7 @@ void ReExec() {
   UNIMPLEMENTED();
 }
 
-void PrepareForSandboxing(__sanitizer_sandbox_arguments *args) {
-}
+void PlatformPrepareForSandboxing(__sanitizer_sandbox_arguments *args) {}
 
 bool StackSizeIsUnlimited() {
   UNIMPLEMENTED();
@@ -451,8 +499,14 @@ bool IsPathSeparator(const char c) {
   return c == '\\' || c == '/';
 }
 
+static bool IsAlpha(char c) {
+  c = ToLower(c);
+  return c >= 'a' && c <= 'z';
+}
+
 bool IsAbsolutePath(const char *path) {
-  UNIMPLEMENTED();
+  return path != nullptr && IsAlpha(path[0]) && path[1] == ':' &&
+         IsPathSeparator(path[2]);
 }
 
 void SleepForSeconds(int seconds) {
@@ -464,8 +518,19 @@ void SleepForMillis(int millis) {
 }
 
 u64 NanoTime() {
-  return 0;
+  static LARGE_INTEGER frequency = {};
+  LARGE_INTEGER counter;
+  if (UNLIKELY(frequency.QuadPart == 0)) {
+    QueryPerformanceFrequency(&frequency);
+    CHECK_NE(frequency.QuadPart, 0);
+  }
+  QueryPerformanceCounter(&counter);
+  counter.QuadPart *= 1000ULL * 1000000ULL;
+  counter.QuadPart /= frequency.QuadPart;
+  return counter.QuadPart;
 }
+
+u64 MonotonicNanoTime() { return NanoTime(); }
 
 void Abort() {
   internal__exit(3);
@@ -525,7 +590,7 @@ static uptr GetPreferredBase(const char *modname) {
 }
 
 void ListOfModules::init() {
-  clear();
+  clearOrInit();
   HANDLE cur_process = GetCurrentProcess();
 
   // Query the list of modules.  Start by assuming there are no more than 256
@@ -584,7 +649,9 @@ void ListOfModules::init() {
     modules_.push_back(cur_module);
   }
   UnmapOrDie(hmodules, modules_buffer_size);
-};
+}
+
+void ListOfModules::fallbackInit() { clear(); }
 
 // We can't use atexit() directly at __asan_init time as the CRT is not fully
 // initialized at this point.  Place the functions into a vector and use
@@ -597,6 +664,7 @@ int Atexit(void (*function)(void)) {
 }
 
 static int RunAtexit() {
+  TraceLoggingUnregister(g_asan_provider);
   int ret = 0;
   for (uptr i = 0; i < atexit_functions.size(); ++i) {
     ret |= atexit(atexit_functions[i]);
@@ -688,16 +756,13 @@ bool WriteToFile(fd_t fd, const void *buff, uptr buff_size, uptr *bytes_written,
   }
 }
 
-bool RenameFile(const char *oldpath, const char *newpath, error_t *error_p) {
-  UNIMPLEMENTED();
-}
-
 uptr internal_sched_yield() {
   Sleep(0);
   return 0;
 }
 
 void internal__exit(int exitcode) {
+  TraceLoggingUnregister(g_asan_provider);
   // ExitProcess runs some finalizers, so use TerminateProcess to avoid that.
   // The debugger doesn't stop on TerminateProcess like it does on ExitProcess,
   // so add our own breakpoint here.
@@ -712,50 +777,32 @@ uptr internal_ftruncate(fd_t fd, uptr size) {
 }
 
 uptr GetRSS() {
-  return 0;
+  PROCESS_MEMORY_COUNTERS counters;
+  if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters)))
+    return 0;
+  return counters.WorkingSetSize;
 }
 
 void *internal_start_thread(void (*func)(void *arg), void *arg) { return 0; }
 void internal_join_thread(void *th) { }
 
 // ---------------------- BlockingMutex ---------------- {{{1
-const uptr LOCK_UNINITIALIZED = 0;
-const uptr LOCK_READY = (uptr)-1;
-
-BlockingMutex::BlockingMutex(LinkerInitialized li) {
-  // FIXME: see comments in BlockingMutex::Lock() for the details.
-  CHECK(li == LINKER_INITIALIZED || owner_ == LOCK_UNINITIALIZED);
-
-  CHECK(sizeof(CRITICAL_SECTION) <= sizeof(opaque_storage_));
-  InitializeCriticalSection((LPCRITICAL_SECTION)opaque_storage_);
-  owner_ = LOCK_READY;
-}
 
 BlockingMutex::BlockingMutex() {
-  CHECK(sizeof(CRITICAL_SECTION) <= sizeof(opaque_storage_));
-  InitializeCriticalSection((LPCRITICAL_SECTION)opaque_storage_);
-  owner_ = LOCK_READY;
+  CHECK(sizeof(SRWLOCK) <= sizeof(opaque_storage_));
+  internal_memset(this, 0, sizeof(*this));
 }
 
 void BlockingMutex::Lock() {
-  if (owner_ == LOCK_UNINITIALIZED) {
-    // FIXME: hm, global BlockingMutex objects are not initialized?!?
-    // This might be a side effect of the clang+cl+link Frankenbuild...
-    new(this) BlockingMutex((LinkerInitialized)(LINKER_INITIALIZED + 1));
-
-    // FIXME: If it turns out the linker doesn't invoke our
-    // constructors, we should probably manually Lock/Unlock all the global
-    // locks while we're starting in one thread to avoid double-init races.
-  }
-  EnterCriticalSection((LPCRITICAL_SECTION)opaque_storage_);
-  CHECK_EQ(owner_, LOCK_READY);
+  AcquireSRWLockExclusive((PSRWLOCK)opaque_storage_);
+  CHECK_EQ(owner_, 0);
   owner_ = GetThreadSelf();
 }
 
 void BlockingMutex::Unlock() {
-  CHECK_EQ(owner_, GetThreadSelf());
-  owner_ = LOCK_READY;
-  LeaveCriticalSection((LPCRITICAL_SECTION)opaque_storage_);
+  CheckLocked();
+  owner_ = 0;
+  ReleaseSRWLockExclusive((PSRWLOCK)opaque_storage_);
 }
 
 void BlockingMutex::CheckLocked() {
@@ -785,54 +832,6 @@ void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
   *tls_size = 0;
 #endif
 }
-
-#if !SANITIZER_GO
-void BufferedStackTrace::SlowUnwindStack(uptr pc, u32 max_depth) {
-  CHECK_GE(max_depth, 2);
-  // FIXME: CaptureStackBackTrace might be too slow for us.
-  // FIXME: Compare with StackWalk64.
-  // FIXME: Look at LLVMUnhandledExceptionFilter in Signals.inc
-  size = CaptureStackBackTrace(1, Min(max_depth, kStackTraceMax),
-                               (void**)trace, 0);
-  if (size == 0)
-    return;
-
-  // Skip the RTL frames by searching for the PC in the stacktrace.
-  uptr pc_location = LocatePcInTrace(pc);
-  PopStackFrames(pc_location);
-}
-
-void BufferedStackTrace::SlowUnwindStackWithContext(uptr pc, void *context,
-                                                    u32 max_depth) {
-  CONTEXT ctx = *(CONTEXT *)context;
-  STACKFRAME64 stack_frame;
-  memset(&stack_frame, 0, sizeof(stack_frame));
-
-  InitializeDbgHelpIfNeeded();
-
-  size = 0;
-#if defined(_WIN64)
-  int machine_type = IMAGE_FILE_MACHINE_AMD64;
-  stack_frame.AddrPC.Offset = ctx.Rip;
-  stack_frame.AddrFrame.Offset = ctx.Rbp;
-  stack_frame.AddrStack.Offset = ctx.Rsp;
-#else
-  int machine_type = IMAGE_FILE_MACHINE_I386;
-  stack_frame.AddrPC.Offset = ctx.Eip;
-  stack_frame.AddrFrame.Offset = ctx.Ebp;
-  stack_frame.AddrStack.Offset = ctx.Esp;
-#endif
-  stack_frame.AddrPC.Mode = AddrModeFlat;
-  stack_frame.AddrFrame.Mode = AddrModeFlat;
-  stack_frame.AddrStack.Mode = AddrModeFlat;
-  while (StackWalk64(machine_type, GetCurrentProcess(), GetCurrentThread(),
-                     &stack_frame, &ctx, NULL, SymFunctionTableAccess64,
-                     SymGetModuleBase64, NULL) &&
-         size < Min(max_depth, kStackTraceMax)) {
-    trace_buffer[size++] = (uptr)stack_frame.AddrPC.Offset;
-  }
-}
-#endif  // #if !SANITIZER_GO
 
 void ReportFile::Write(const char *buffer, uptr length) {
   SpinMutexLock l(mu);
@@ -890,32 +889,6 @@ bool IsHandledDeadlyException(DWORD exceptionCode) {
   return false;
 }
 
-const char *DescribeSignalOrException(int signo) {
-  unsigned code = signo;
-  // Get the string description of the exception if this is a known deadly
-  // exception.
-  switch (code) {
-    case EXCEPTION_ACCESS_VIOLATION: return "access-violation";
-    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "array-bounds-exceeded";
-    case EXCEPTION_STACK_OVERFLOW: return "stack-overflow";
-    case EXCEPTION_DATATYPE_MISALIGNMENT: return "datatype-misalignment";
-    case EXCEPTION_IN_PAGE_ERROR: return "in-page-error";
-    case EXCEPTION_ILLEGAL_INSTRUCTION: return "illegal-instruction";
-    case EXCEPTION_PRIV_INSTRUCTION: return "priv-instruction";
-    case EXCEPTION_BREAKPOINT: return "breakpoint";
-    case EXCEPTION_FLT_DENORMAL_OPERAND: return "flt-denormal-operand";
-    case EXCEPTION_FLT_DIVIDE_BY_ZERO: return "flt-divide-by-zero";
-    case EXCEPTION_FLT_INEXACT_RESULT: return "flt-inexact-result";
-    case EXCEPTION_FLT_INVALID_OPERATION: return "flt-invalid-operation";
-    case EXCEPTION_FLT_OVERFLOW: return "flt-overflow";
-    case EXCEPTION_FLT_STACK_CHECK: return "flt-stack-check";
-    case EXCEPTION_FLT_UNDERFLOW: return "flt-underflow";
-    case EXCEPTION_INT_DIVIDE_BY_ZERO: return "int-divide-by-zero";
-    case EXCEPTION_INT_OVERFLOW: return "int-overflow";
-  }
-  return "unknown exception";
-}
-
 bool IsAccessibleMemoryRange(uptr beg, uptr size) {
   SYSTEM_INFO si;
   GetNativeSystemInfo(&si);
@@ -941,37 +914,99 @@ bool IsAccessibleMemoryRange(uptr beg, uptr size) {
   return true;
 }
 
-SignalContext SignalContext::Create(void *siginfo, void *context) {
+bool SignalContext::IsStackOverflow() const {
+  return (DWORD)GetType() == EXCEPTION_STACK_OVERFLOW;
+}
+
+void SignalContext::InitPcSpBp() {
   EXCEPTION_RECORD *exception_record = (EXCEPTION_RECORD *)siginfo;
   CONTEXT *context_record = (CONTEXT *)context;
 
-  uptr pc = (uptr)exception_record->ExceptionAddress;
+  pc = (uptr)exception_record->ExceptionAddress;
 #ifdef _WIN64
-  uptr bp = (uptr)context_record->Rbp;
-  uptr sp = (uptr)context_record->Rsp;
+  bp = (uptr)context_record->Rbp;
+  sp = (uptr)context_record->Rsp;
 #else
-  uptr bp = (uptr)context_record->Ebp;
-  uptr sp = (uptr)context_record->Esp;
+  bp = (uptr)context_record->Ebp;
+  sp = (uptr)context_record->Esp;
 #endif
-  uptr access_addr = exception_record->ExceptionInformation[1];
+}
 
+uptr SignalContext::GetAddress() const {
+  EXCEPTION_RECORD *exception_record = (EXCEPTION_RECORD *)siginfo;
+  return exception_record->ExceptionInformation[1];
+}
+
+bool SignalContext::IsMemoryAccess() const {
+  return GetWriteFlag() != SignalContext::UNKNOWN;
+}
+
+SignalContext::WriteFlag SignalContext::GetWriteFlag() const {
+  EXCEPTION_RECORD *exception_record = (EXCEPTION_RECORD *)siginfo;
   // The contents of this array are documented at
   // https://msdn.microsoft.com/en-us/library/windows/desktop/aa363082(v=vs.85).aspx
   // The first element indicates read as 0, write as 1, or execute as 8.  The
   // second element is the faulting address.
-  WriteFlag write_flag = SignalContext::UNKNOWN;
   switch (exception_record->ExceptionInformation[0]) {
-  case 0: write_flag = SignalContext::READ; break;
-  case 1: write_flag = SignalContext::WRITE; break;
-  case 8: write_flag = SignalContext::UNKNOWN; break;
+    case 0:
+      return SignalContext::READ;
+    case 1:
+      return SignalContext::WRITE;
+    case 8:
+      return SignalContext::UNKNOWN;
   }
-  bool is_memory_access = write_flag != SignalContext::UNKNOWN;
-  return SignalContext(context, access_addr, pc, sp, bp, is_memory_access,
-                       write_flag);
+  return SignalContext::UNKNOWN;
 }
 
 void SignalContext::DumpAllRegisters(void *context) {
   // FIXME: Implement this.
+}
+
+int SignalContext::GetType() const {
+  return static_cast<const EXCEPTION_RECORD *>(siginfo)->ExceptionCode;
+}
+
+const char *SignalContext::Describe() const {
+  unsigned code = GetType();
+  // Get the string description of the exception if this is a known deadly
+  // exception.
+  switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+      return "access-violation";
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+      return "array-bounds-exceeded";
+    case EXCEPTION_STACK_OVERFLOW:
+      return "stack-overflow";
+    case EXCEPTION_DATATYPE_MISALIGNMENT:
+      return "datatype-misalignment";
+    case EXCEPTION_IN_PAGE_ERROR:
+      return "in-page-error";
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+      return "illegal-instruction";
+    case EXCEPTION_PRIV_INSTRUCTION:
+      return "priv-instruction";
+    case EXCEPTION_BREAKPOINT:
+      return "breakpoint";
+    case EXCEPTION_FLT_DENORMAL_OPERAND:
+      return "flt-denormal-operand";
+    case EXCEPTION_FLT_DIVIDE_BY_ZERO:
+      return "flt-divide-by-zero";
+    case EXCEPTION_FLT_INEXACT_RESULT:
+      return "flt-inexact-result";
+    case EXCEPTION_FLT_INVALID_OPERATION:
+      return "flt-invalid-operation";
+    case EXCEPTION_FLT_OVERFLOW:
+      return "flt-overflow";
+    case EXCEPTION_FLT_STACK_CHECK:
+      return "flt-stack-check";
+    case EXCEPTION_FLT_UNDERFLOW:
+      return "flt-underflow";
+    case EXCEPTION_INT_DIVIDE_BY_ZERO:
+      return "int-divide-by-zero";
+    case EXCEPTION_INT_OVERFLOW:
+      return "int-overflow";
+  }
+  return "unknown exception";
 }
 
 uptr ReadBinaryName(/*out*/char *buf, uptr buf_len) {
@@ -989,11 +1024,28 @@ void CheckVMASize() {
   // Do nothing.
 }
 
+void InitializePlatformEarly() {
+  // Do nothing.
+}
+
 void MaybeReexec() {
   // No need to re-exec on Windows.
 }
 
+void CheckASLR() {
+  // Do nothing
+}
+
+void CheckMPROTECT() {
+  // Do nothing
+}
+
 char **GetArgv() {
+  // FIXME: Actually implement this function.
+  return 0;
+}
+
+char **GetEnviron() {
   // FIXME: Actually implement this function.
   return 0;
 }
@@ -1025,6 +1077,38 @@ void CheckNoDeepBind(const char *filename, int flag) {
 bool GetRandom(void *buffer, uptr length, bool blocking) {
   UNIMPLEMENTED();
 }
+
+u32 GetNumberOfCPUs() {
+  SYSTEM_INFO sysinfo = {};
+  GetNativeSystemInfo(&sysinfo);
+  return sysinfo.dwNumberOfProcessors;
+}
+
+#if SANITIZER_WIN_TRACE
+// TODO(mcgov): Rename this project-wide to PlatformLogInit
+void AndroidLogInit(void) {
+  HRESULT hr = TraceLoggingRegister(g_asan_provider);
+  if (!SUCCEEDED(hr))
+    return;
+}
+
+void SetAbortMessage(const char *) {}
+
+void LogFullErrorReport(const char *buffer) {
+  if (common_flags()->log_to_syslog) {
+    InternalMmapVector<wchar_t> filename;
+    DWORD filename_length = 0;
+    do {
+      filename.resize(filename.size() + 0x100);
+      filename_length =
+          GetModuleFileNameW(NULL, filename.begin(), filename.size());
+    } while (filename_length >= filename.size());
+    TraceLoggingWrite(g_asan_provider, "AsanReportEvent",
+                      TraceLoggingValue(filename.begin(), "ExecutableName"),
+                      TraceLoggingValue(buffer, "AsanReportContents"));
+  }
+}
+#endif // SANITIZER_WIN_TRACE
 
 }  // namespace __sanitizer
 

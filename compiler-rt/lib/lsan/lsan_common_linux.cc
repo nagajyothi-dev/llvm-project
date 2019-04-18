@@ -1,9 +1,8 @@
 //=-- lsan_common_linux.cc ------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,6 +19,7 @@
 
 #include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_flags.h"
+#include "sanitizer_common/sanitizer_getauxval.h"
 #include "sanitizer_common/sanitizer_linux.h"
 #include "sanitizer_common/sanitizer_stackdepot.h"
 
@@ -30,8 +30,12 @@ static const char kLinkerName[] = "ld";
 static char linker_placeholder[sizeof(LoadedModule)] ALIGNED(64);
 static LoadedModule *linker = nullptr;
 
-static bool IsLinker(const char* full_name) {
-  return LibraryNameIs(full_name, kLinkerName);
+static bool IsLinker(const LoadedModule& module) {
+#if SANITIZER_USE_GETAUXVAL
+  return module.base_address() == getauxval(AT_BASE);
+#else
+  return LibraryNameIs(module.full_name(), kLinkerName);
+#endif  // SANITIZER_USE_GETAUXVAL
 }
 
 __attribute__((tls_model("initial-exec")))
@@ -49,22 +53,25 @@ void InitializePlatformSpecificModules() {
   ListOfModules modules;
   modules.init();
   for (LoadedModule &module : modules) {
-    if (!IsLinker(module.full_name())) continue;
+    if (!IsLinker(module))
+      continue;
     if (linker == nullptr) {
       linker = reinterpret_cast<LoadedModule *>(linker_placeholder);
       *linker = module;
       module = LoadedModule();
     } else {
       VReport(1, "LeakSanitizer: Multiple modules match \"%s\". "
-              "TLS will not be handled correctly.\n", kLinkerName);
+              "TLS and other allocations originating from linker might be "
+              "falsely reported as leaks.\n", kLinkerName);
       linker->clear();
       linker = nullptr;
       return;
     }
   }
   if (linker == nullptr) {
-    VReport(1, "LeakSanitizer: Dynamic linker not found. "
-               "TLS will not be handled correctly.\n");
+    VReport(1, "LeakSanitizer: Dynamic linker not found. TLS and other "
+               "allocations originating from linker might be falsely reported "
+                "as leaks.\n");
   }
 }
 

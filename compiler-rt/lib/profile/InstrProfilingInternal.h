@@ -1,17 +1,17 @@
 /*===- InstrProfiling.h- Support library for PGO instrumentation ----------===*\
 |*
-|*                     The LLVM Compiler Infrastructure
-|*
-|* This file is distributed under the University of Illinois Open Source
-|* License. See LICENSE.TXT for details.
+|* Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+|* See https://llvm.org/LICENSE.txt for license information.
+|* SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 |*
 \*===----------------------------------------------------------------------===*/
 
 #ifndef PROFILE_INSTRPROFILING_INTERNALH_
 #define PROFILE_INSTRPROFILING_INTERNALH_
 
+#include <stddef.h>
+
 #include "InstrProfiling.h"
-#include "stddef.h"
 
 /*!
  * \brief Write instrumentation data to the given buffer, given explicit

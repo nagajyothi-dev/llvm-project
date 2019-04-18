@@ -1,9 +1,8 @@
 //===-- RegularExpression.cpp -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -13,11 +12,8 @@
 
 #include <string>
 
-//----------------------------------------------------------------------
-// Enable enhanced mode if it is available. This allows for things like
-// \d for digit, \s for space, and many more, but it isn't available
-// everywhere.
-//----------------------------------------------------------------------
+// Enable enhanced mode if it is available. This allows for things like \d for
+// digit, \s for space, and many more, but it isn't available everywhere.
 #if defined(REG_ENHANCED)
 #define DEFAULT_COMPILE_FLAGS (REG_ENHANCED | REG_EXTENDED)
 #else
@@ -30,10 +26,8 @@ RegularExpression::RegularExpression() : m_re(), m_comp_err(1), m_preg() {
   memset(&m_preg, 0, sizeof(m_preg));
 }
 
-//----------------------------------------------------------------------
-// Constructor that compiles "re" using "flags" and stores the
-// resulting compiled regular expression into this object.
-//----------------------------------------------------------------------
+// Constructor that compiles "re" using "flags" and stores the resulting
+// compiled regular expression into this object.
 RegularExpression::RegularExpression(llvm::StringRef str)
     : m_re(), m_comp_err(1), m_preg() {
   memset(&m_preg, 0, sizeof(m_preg));
@@ -52,44 +46,36 @@ operator=(const RegularExpression &rhs) {
   return *this;
 }
 
-//----------------------------------------------------------------------
 // Destructor
 //
-// Any previously compiled regular expression contained in this
-// object will be freed.
-//----------------------------------------------------------------------
+// Any previously compiled regular expression contained in this object will be
+// freed.
 RegularExpression::~RegularExpression() { Free(); }
 
-//----------------------------------------------------------------------
-// Compile a regular expression using the supplied regular
-// expression text and flags. The compiled regular expression lives
-// in this object so that it can be readily used for regular
-// expression matches. Execute() can be called after the regular
-// expression is compiled. Any previously compiled regular
+// Compile a regular expression using the supplied regular expression text and
+// flags. The compiled regular expression lives in this object so that it can
+// be readily used for regular expression matches. Execute() can be called
+// after the regular expression is compiled. Any previously compiled regular
 // expression contained in this object will be freed.
 //
 // RETURNS
 //  True if the regular expression compiles successfully, false
 //  otherwise.
-//----------------------------------------------------------------------
 bool RegularExpression::Compile(llvm::StringRef str) {
   Free();
 
-  // regcomp() on darwin does not recognize "" as a valid regular expression, so
-  // we substitute it with an equivalent non-empty one.
+  // regcomp() on darwin does not recognize "" as a valid regular expression,
+  // so we substitute it with an equivalent non-empty one.
   m_re = str.empty() ? "()" : str;
   m_comp_err = ::regcomp(&m_preg, m_re.c_str(), DEFAULT_COMPILE_FLAGS);
   return m_comp_err == 0;
 }
 
-//----------------------------------------------------------------------
-// Execute a regular expression match using the compiled regular
-// expression that is already in this object against the match
-// string "s". If any parens are used for regular expression
-// matches "match_count" should indicate the number of regmatch_t
-// values that are present in "match_ptr". The regular expression
-// will be executed using the "execute_flags".
-//---------------------------------------------------------------------
+// Execute a regular expression match using the compiled regular expression
+// that is already in this object against the match string "s". If any parens
+// are used for regular expression matches "match_count" should indicate the
+// number of regmatch_t values that are present in "match_ptr". The regular
+// expression will be executed using the "execute_flags".
 bool RegularExpression::Execute(llvm::StringRef str, Match *match) const {
   int err = 1;
   if (m_comp_err == 0) {
@@ -158,21 +144,13 @@ bool RegularExpression::Match::GetMatchSpanningIndices(
   return false;
 }
 
-//----------------------------------------------------------------------
-// Returns true if the regular expression compiled and is ready
-// for execution.
-//----------------------------------------------------------------------
+// Returns true if the regular expression compiled and is ready for execution.
 bool RegularExpression::IsValid() const { return m_comp_err == 0; }
 
-//----------------------------------------------------------------------
-// Returns the text that was used to compile the current regular
-// expression.
-//----------------------------------------------------------------------
+// Returns the text that was used to compile the current regular expression.
 llvm::StringRef RegularExpression::GetText() const { return m_re; }
 
-//----------------------------------------------------------------------
 // Free any contained compiled regular expressions.
-//----------------------------------------------------------------------
 void RegularExpression::Free() {
   if (m_comp_err == 0) {
     m_re.clear();

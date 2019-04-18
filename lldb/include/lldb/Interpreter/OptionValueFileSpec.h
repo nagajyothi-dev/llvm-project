@@ -1,9 +1,8 @@
 //===-- OptionValueFileSpec.h -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,9 +27,7 @@ public:
 
   ~OptionValueFileSpec() override {}
 
-  //---------------------------------------------------------------------
   // Virtual subclass pure virtual overrides
-  //---------------------------------------------------------------------
 
   OptionValue::Type GetType() const override { return eTypeFileSpec; }
 
@@ -54,13 +51,10 @@ public:
 
   lldb::OptionValueSP DeepCopy() const override;
 
-  size_t AutoComplete(CommandInterpreter &interpreter, llvm::StringRef s,
-                      int match_start_point, int max_return_elements,
-                      bool &word_complete, StringList &matches) override;
+  size_t AutoComplete(CommandInterpreter &interpreter,
+                      CompletionRequest &request) override;
 
-  //---------------------------------------------------------------------
   // Subclass specific functions
-  //---------------------------------------------------------------------
 
   FileSpec &GetCurrentValue() { return m_current_value; }
 
@@ -77,7 +71,7 @@ public:
 
   void SetDefaultValue(const FileSpec &value) { m_default_value = value; }
 
-  const lldb::DataBufferSP &GetFileContents(bool null_terminate);
+  const lldb::DataBufferSP &GetFileContents();
 
   void SetCompletionMask(uint32_t mask) { m_completion_mask = mask; }
 

@@ -1,9 +1,8 @@
 //===-- DNBDataRef.cpp ------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,33 +16,25 @@
 #include <ctype.h>
 #include <libkern/OSByteOrder.h>
 
-//----------------------------------------------------------------------
 // Constructor
-//----------------------------------------------------------------------
 
 DNBDataRef::DNBDataRef()
     : m_start(NULL), m_end(NULL), m_swap(false), m_ptrSize(0),
       m_addrPCRelative(INVALID_NUB_ADDRESS), m_addrTEXT(INVALID_NUB_ADDRESS),
       m_addrDATA(INVALID_NUB_ADDRESS) {}
 
-//----------------------------------------------------------------------
 // Constructor
-//----------------------------------------------------------------------
 
 DNBDataRef::DNBDataRef(const uint8_t *start, size_t size, bool swap)
     : m_start(start), m_end(start + size), m_swap(swap), m_ptrSize(0),
       m_addrPCRelative(INVALID_NUB_ADDRESS), m_addrTEXT(INVALID_NUB_ADDRESS),
       m_addrDATA(INVALID_NUB_ADDRESS) {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 
 DNBDataRef::~DNBDataRef() {}
 
-//----------------------------------------------------------------------
 // Get8
-//----------------------------------------------------------------------
 uint8_t DNBDataRef::Get8(offset_t *offset_ptr) const {
   uint8_t val = 0;
   if (ValidOffsetForDataOfSize(*offset_ptr, sizeof(val))) {
@@ -53,14 +44,12 @@ uint8_t DNBDataRef::Get8(offset_t *offset_ptr) const {
   return val;
 }
 
-//----------------------------------------------------------------------
 // Get16
-//----------------------------------------------------------------------
 uint16_t DNBDataRef::Get16(offset_t *offset_ptr) const {
   uint16_t val = 0;
   if (ValidOffsetForDataOfSize(*offset_ptr, sizeof(val))) {
     const uint8_t *p = m_start + *offset_ptr;
-    val = *(uint16_t *)p;
+    memcpy(&val, p, sizeof(uint16_t));
 
     if (m_swap)
       val = OSSwapInt16(val);
@@ -71,14 +60,12 @@ uint16_t DNBDataRef::Get16(offset_t *offset_ptr) const {
   return val;
 }
 
-//----------------------------------------------------------------------
 // Get32
-//----------------------------------------------------------------------
 uint32_t DNBDataRef::Get32(offset_t *offset_ptr) const {
   uint32_t val = 0;
   if (ValidOffsetForDataOfSize(*offset_ptr, sizeof(val))) {
     const uint8_t *p = m_start + *offset_ptr;
-    val = *(uint32_t *)p;
+    memcpy(&val, p, sizeof(uint32_t));
     if (m_swap)
       val = OSSwapInt32(val);
 
@@ -88,14 +75,12 @@ uint32_t DNBDataRef::Get32(offset_t *offset_ptr) const {
   return val;
 }
 
-//----------------------------------------------------------------------
 // Get64
-//----------------------------------------------------------------------
 uint64_t DNBDataRef::Get64(offset_t *offset_ptr) const {
   uint64_t val = 0;
   if (ValidOffsetForDataOfSize(*offset_ptr, sizeof(val))) {
     const uint8_t *p = m_start + *offset_ptr;
-    val = *(uint64_t *)p;
+    memcpy(&val, p, sizeof(uint64_t));
     if (m_swap)
       val = OSSwapInt64(val);
 
@@ -105,12 +90,10 @@ uint64_t DNBDataRef::Get64(offset_t *offset_ptr) const {
   return val;
 }
 
-//----------------------------------------------------------------------
 // GetMax32
 //
 // Used for calls when the size can vary. Fill in extra cases if they
 // are ever needed.
-//----------------------------------------------------------------------
 uint32_t DNBDataRef::GetMax32(offset_t *offset_ptr, uint32_t byte_size) const {
   switch (byte_size) {
   case 1:
@@ -123,18 +106,16 @@ uint32_t DNBDataRef::GetMax32(offset_t *offset_ptr, uint32_t byte_size) const {
     return Get32(offset_ptr);
     break;
   default:
-    assert(!"GetMax32 unhandled case!");
+    assert(false && "GetMax32 unhandled case!");
     break;
   }
   return 0;
 }
 
-//----------------------------------------------------------------------
 // GetMax64
 //
 // Used for calls when the size can vary. Fill in extra cases if they
 // are ever needed.
-//----------------------------------------------------------------------
 uint64_t DNBDataRef::GetMax64(offset_t *offset_ptr, uint32_t size) const {
   switch (size) {
   case 1:
@@ -150,31 +131,27 @@ uint64_t DNBDataRef::GetMax64(offset_t *offset_ptr, uint32_t size) const {
     return Get64(offset_ptr);
     break;
   default:
-    assert(!"GetMax64 unhandled case!");
+    assert(false && "GetMax64 unhandled case!");
     break;
   }
   return 0;
 }
 
-//----------------------------------------------------------------------
 // GetPointer
 //
 // Extract a pointer value from the buffer. The pointer size must be
 // set prior to using this using one of the SetPointerSize functions.
-//----------------------------------------------------------------------
 uint64_t DNBDataRef::GetPointer(offset_t *offset_ptr) const {
   // Must set pointer size prior to using this call
   assert(m_ptrSize != 0);
   return GetMax64(offset_ptr, m_ptrSize);
 }
-//----------------------------------------------------------------------
 // GetCStr
-//----------------------------------------------------------------------
 const char *DNBDataRef::GetCStr(offset_t *offset_ptr,
                                 uint32_t fixed_length) const {
   const char *s = NULL;
   if (m_start < m_end) {
-    s = (char *)m_start + *offset_ptr;
+    s = (const char *)m_start + *offset_ptr;
 
     // Advance the offset
     if (fixed_length)
@@ -185,9 +162,7 @@ const char *DNBDataRef::GetCStr(offset_t *offset_ptr,
   return s;
 }
 
-//----------------------------------------------------------------------
 // GetData
-//----------------------------------------------------------------------
 const uint8_t *DNBDataRef::GetData(offset_t *offset_ptr,
                                    uint32_t length) const {
   const uint8_t *data = NULL;
@@ -198,9 +173,7 @@ const uint8_t *DNBDataRef::GetData(offset_t *offset_ptr,
   return data;
 }
 
-//----------------------------------------------------------------------
 // Get_ULEB128
-//----------------------------------------------------------------------
 uint64_t DNBDataRef::Get_ULEB128(offset_t *offset_ptr) const {
   uint64_t result = 0;
   if (m_start < m_end) {
@@ -223,9 +196,7 @@ uint64_t DNBDataRef::Get_ULEB128(offset_t *offset_ptr) const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // Get_SLEB128
-//----------------------------------------------------------------------
 int64_t DNBDataRef::Get_SLEB128(offset_t *offset_ptr) const {
   int64_t result = 0;
 
@@ -255,11 +226,9 @@ int64_t DNBDataRef::Get_SLEB128(offset_t *offset_ptr) const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // Skip_LEB128
 //
 // Skips past ULEB128 and SLEB128 numbers (just updates the offset)
-//----------------------------------------------------------------------
 void DNBDataRef::Skip_LEB128(offset_t *offset_ptr) const {
   if (m_start < m_end) {
     const uint8_t *start = m_start + *offset_ptr;

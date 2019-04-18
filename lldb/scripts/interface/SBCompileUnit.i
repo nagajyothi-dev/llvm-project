@@ -1,9 +1,8 @@
 //===-- SWIG Interface for SBCompileUnit ------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,6 +55,8 @@ public:
 
     bool
     IsValid () const;
+
+    explicit operator bool() const;
 
     lldb::SBFileSpec
     GetFileSpec () const;
@@ -119,6 +120,15 @@ public:
     operator != (const lldb::SBCompileUnit &rhs) const;
     
     %pythoncode %{
+        def __iter__(self):
+            '''Iterate over all line entries in a lldb.SBCompileUnit object.'''
+            return lldb_iter(self, 'GetNumLineEntries', 'GetLineEntryAtIndex')
+
+        def __len__(self):
+            '''Return the number of line entries in a lldb.SBCompileUnit
+            object.'''
+            return self.GetNumLineEntries()
+
         __swig_getmethods__["file"] = GetFileSpec
         if _newclass: file = property(GetFileSpec, None, doc='''A read only property that returns the same result an lldb object that represents the source file (lldb.SBFileSpec) for the compile unit.''')
         

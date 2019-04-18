@@ -1,16 +1,11 @@
 //===-- CommandObjectHelp.cpp -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "CommandObjectHelp.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandObjectMultiword.h"
@@ -20,13 +15,12 @@
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
 // CommandObjectHelp
-//-------------------------------------------------------------------------
 
 void CommandObjectHelp::GenerateAdditionalHelpAvenuesMessage(
-    Stream *s, llvm::StringRef command, llvm::StringRef prefix, llvm::StringRef subcommand,
-    bool include_apropos, bool include_type_lookup) {
+    Stream *s, llvm::StringRef command, llvm::StringRef prefix,
+    llvm::StringRef subcommand, bool include_upropos,
+    bool include_type_lookup) {
   if (!s || command.empty())
     return;
 
@@ -37,7 +31,7 @@ void CommandObjectHelp::GenerateAdditionalHelpAvenuesMessage(
   s->Printf("'%s' is not a known command.\n", command_str.c_str());
   s->Printf("Try '%shelp' to see a current list of commands.\n",
             prefix.str().c_str());
-  if (include_apropos) {
+  if (include_upropos) {
     s->Printf("Try '%sapropos %s' for a list of related commands.\n",
       prefix_str.c_str(), lookup_str.c_str());
   }
@@ -71,11 +65,11 @@ CommandObjectHelp::CommandObjectHelp(CommandInterpreter &interpreter)
 
 CommandObjectHelp::~CommandObjectHelp() = default;
 
-static OptionDefinition g_help_options[] = {
+static constexpr OptionDefinition g_help_options[] = {
     // clang-format off
-  {LLDB_OPT_SET_ALL, false, "hide-aliases",         'a', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Hide aliases in the command list."},
-  {LLDB_OPT_SET_ALL, false, "hide-user-commands",   'u', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Hide user-defined commands from the list."},
-  {LLDB_OPT_SET_ALL, false, "show-hidden-commands", 'h', OptionParser::eNoArgument, nullptr, nullptr, 0, eArgTypeNone, "Include commands prefixed with an underscore."},
+  {LLDB_OPT_SET_ALL, false, "hide-aliases",         'a', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Hide aliases in the command list."},
+  {LLDB_OPT_SET_ALL, false, "hide-user-commands",   'u', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Hide user-defined commands from the list."},
+  {LLDB_OPT_SET_ALL, false, "show-hidden-commands", 'h', OptionParser::eNoArgument, nullptr, {}, 0, eArgTypeNone, "Include commands prefixed with an underscore."},
     // clang-format on
 };
 
@@ -89,10 +83,9 @@ bool CommandObjectHelp::DoExecute(Args &command, CommandReturnObject &result) {
   CommandObject *cmd_obj;
   const size_t argc = command.GetArgumentCount();
 
-  // 'help' doesn't take any arguments, other than command names.  If argc is 0,
-  // we show the user
-  // all commands (aliases and user commands if asked for).  Otherwise every
-  // argument must be the name of a command or a sub-command.
+  // 'help' doesn't take any arguments, other than command names.  If argc is
+  // 0, we show the user all commands (aliases and user commands if asked for).
+  // Otherwise every argument must be the name of a command or a sub-command.
   if (argc == 0) {
     uint32_t cmd_types = CommandInterpreter::eCommandTypesBuiltin;
     if (m_options.m_show_aliases)
@@ -172,10 +165,13 @@ bool CommandObjectHelp::DoExecute(Args &command, CommandReturnObject &result) {
       }
 
       sub_cmd_obj->GenerateHelpText(result);
-
-      if (m_interpreter.AliasExists(command_name)) {
+      std::string alias_full_name;
+      // Don't use AliasExists here, that only checks exact name matches.  If
+      // the user typed a shorter unique alias name, we should still tell them
+      // it was an alias.
+      if (m_interpreter.GetAliasFullName(command_name, alias_full_name)) {
         StreamString sstr;
-        m_interpreter.GetAlias(command_name)->GetAliasExpansion(sstr);
+        m_interpreter.GetAlias(alias_full_name)->GetAliasExpansion(sstr);
         result.GetOutputStream().Printf("\n'%s' is an abbreviation for %s\n",
                                         command[0].c_str(), sstr.GetData());
       }
@@ -210,34 +206,24 @@ bool CommandObjectHelp::DoExecute(Args &command, CommandReturnObject &result) {
   return result.Succeeded();
 }
 
-int CommandObjectHelp::HandleCompletion(Args &input, int &cursor_index,
-                                        int &cursor_char_position,
-                                        int match_start_point,
-                                        int max_return_elements,
-                                        bool &word_complete,
-                                        StringList &matches) {
+int CommandObjectHelp::HandleCompletion(CompletionRequest &request) {
   // Return the completions of the commands in the help system:
-  if (cursor_index == 0) {
-    return m_interpreter.HandleCompletionMatches(
-        input, cursor_index, cursor_char_position, match_start_point,
-        max_return_elements, word_complete, matches);
+  if (request.GetCursorIndex() == 0) {
+    return m_interpreter.HandleCompletionMatches(request);
   } else {
-    CommandObject *cmd_obj = m_interpreter.GetCommandObject(input[0].ref);
+    CommandObject *cmd_obj =
+        m_interpreter.GetCommandObject(request.GetParsedLine()[0].ref);
 
     // The command that they are getting help on might be ambiguous, in which
-    // case we should complete that,
-    // otherwise complete with the command the user is getting help on...
+    // case we should complete that, otherwise complete with the command the
+    // user is getting help on...
 
     if (cmd_obj) {
-      input.Shift();
-      cursor_index--;
-      return cmd_obj->HandleCompletion(
-          input, cursor_index, cursor_char_position, match_start_point,
-          max_return_elements, word_complete, matches);
+      request.GetParsedLine().Shift();
+      request.SetCursorIndex(request.GetCursorIndex() - 1);
+      return cmd_obj->HandleCompletion(request);
     } else {
-      return m_interpreter.HandleCompletionMatches(
-          input, cursor_index, cursor_char_position, match_start_point,
-          max_return_elements, word_complete, matches);
+      return m_interpreter.HandleCompletionMatches(request);
     }
   }
 }

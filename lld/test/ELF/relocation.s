@@ -1,10 +1,10 @@
+// REQUIRES: x86
 // RUN: llvm-mc -filetype=obj -triple=x86_64-pc-linux %s -o %t
 // RUN: llvm-mc -filetype=obj -triple=x86_64-pc-linux %p/Inputs/shared.s -o %t2
-// RUN: ld.lld %t2 -o %t2.so -shared
-// RUN: ld.lld %t %t2.so -o %t3
+// RUN: ld.lld %t2 -soname fixed-length-string.so -o %t2.so -shared
+// RUN: ld.lld --hash-style=sysv %t %t2.so -o %t3
 // RUN: llvm-readobj -s  %t3 | FileCheck --check-prefix=SEC %s
 // RUN: llvm-objdump -s -d %t3 | FileCheck %s
-// REQUIRES: x86
 
 // SEC:      Name: .plt
 // SEC-NEXT: Type: SHT_PROGBITS
@@ -16,28 +16,13 @@
 // SEC-NEXT: Offset: 0x1030
 // SEC-NEXT: Size: 48
 
-// SEC:        Name: .got.plt
-// SEC-NEXT:   Type: SHT_PROGBITS
-// SEC-NEXT:   Flags [
-// SEC-NEXT:     SHF_ALLOC
-// SEC-NEXT:     SHF_WRITE
-// SEC-NEXT:   ]
-// SEC-NEXT:   Address: 0x202000
-// SEC-NEXT:   Offset: 0x2000
-// SEC-NEXT:   Size: 40
-// SEC-NEXT:   Link: 0
-// SEC-NEXT:   Info: 0
-// SEC-NEXT:   AddressAlignment: 8
-// SEC-NEXT:   EntrySize: 0
-// SEC-NEXT:   }
-
 // SEC:         Name: .got
 // SEC-NEXT:   Type: SHT_PROGBITS
 // SEC-NEXT:   Flags [
 // SEC-NEXT:     SHF_ALLOC
 // SEC-NEXT:     SHF_WRITE
 // SEC-NEXT:   ]
-// SEC-NEXT:   Address: 0x2030F0
+// SEC-NEXT:   Address: 0x2020F0
 // SEC-NEXT:   Offset:
 // SEC-NEXT:   Size: 8
 // SEC-NEXT:   Link: 0
@@ -45,6 +30,21 @@
 // SEC-NEXT:   AddressAlignment: 8
 // SEC-NEXT:   EntrySize: 0
 // SEC-NEXT: }
+
+// SEC:        Name: .got.plt
+// SEC-NEXT:   Type: SHT_PROGBITS
+// SEC-NEXT:   Flags [
+// SEC-NEXT:     SHF_ALLOC
+// SEC-NEXT:     SHF_WRITE
+// SEC-NEXT:   ]
+// SEC-NEXT:   Address: 0x203000
+// SEC-NEXT:   Offset: 0x3000
+// SEC-NEXT:   Size: 40
+// SEC-NEXT:   Link: 0
+// SEC-NEXT:   Info: 0
+// SEC-NEXT:   AddressAlignment: 8
+// SEC-NEXT:   EntrySize: 0
+// SEC-NEXT:   }
 
 .section       .text,"ax",@progbits,unique,1
 .global _start
@@ -113,17 +113,16 @@ R_X86_64_64:
  .quad R_X86_64_64
 
 // CHECK:      Contents of section .R_X86_64_64:
-// CHECK-NEXT:   2001c8 c8012000 00000000
+// CHECK-NEXT:   2002f8 f8022000 00000000
 
 .section .R_X86_64_GOTPCREL,"a",@progbits
 .global R_X86_64_GOTPCREL
 R_X86_64_GOTPCREL:
  .long zed@gotpcrel
 
-// 0x2020F8 - 0x2001D8 = 7952
-// 7952 = 0x101f0000 in little endian
+// 0x2020F0(.got) - 0x2002c8(.R_X86_64_GOTPCREL) = 0x1e28
 // CHECK:      Contents of section .R_X86_64_GOTPCREL
-// CHECK-NEXT:   2001d0 202f0000
+// CHECK-NEXT:   200300 f01d0000
 
 .section .R_X86_64_GOT32,"a",@progbits
 .global R_X86_64_GOT32
@@ -131,11 +130,11 @@ R_X86_64_GOT32:
         .long zed@got
 
 // CHECK: Contents of section .R_X86_64_GOT32:
-// CHECK-NEXT: f8ffffff
+// CHECK-NEXT: f0f0ffff
 
 
 // CHECK: Contents of section .R_X86_64_GOT64:
-// CHECK-NEXT: f8ffffff ffffffff
+// CHECK-NEXT: f0f0ffff ffffffff
 .section .R_X86_64_GOT64,"a",@progbits
 .global R_X86_64_GOT64
 R_X86_64_GOT64:

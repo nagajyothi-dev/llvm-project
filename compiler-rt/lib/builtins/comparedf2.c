@@ -1,9 +1,8 @@
 //===-- lib/comparedf2.c - Double-precision comparisons -----------*- C -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -143,8 +142,11 @@ __gtdf2(fp_t a, fp_t b) {
 }
 
 #if defined(__ARM_EABI__)
+#if defined(COMPILER_RT_ARMHF_TARGET)
 AEABI_RTABI int __aeabi_dcmpun(fp_t a, fp_t b) {
   return __unorddf2(a, b);
 }
+#else
+AEABI_RTABI int __aeabi_dcmpun(fp_t a, fp_t b) COMPILER_RT_ALIAS(__unorddf2);
 #endif
-
+#endif

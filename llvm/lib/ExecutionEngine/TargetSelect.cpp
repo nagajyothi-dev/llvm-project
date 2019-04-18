@@ -1,9 +1,8 @@
 //===-- TargetSelect.cpp - Target Chooser Code ----------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -95,7 +94,10 @@ TargetMachine *EngineBuilder::selectTarget(const Triple &TargetTriple,
   TargetMachine *Target =
       TheTarget->createTargetMachine(TheTriple.getTriple(), MCPU, FeaturesStr,
                                      Options, RelocModel, CMModel, OptLevel,
-                                     /*JIT*/ true);
+				     /*JIT*/ true);
+  Target->Options.EmulatedTLS = EmulatedTLS;
+  Target->Options.ExplicitEmulatedTLS = true;
+
   assert(Target && "Could not allocate target machine!");
   return Target;
 }

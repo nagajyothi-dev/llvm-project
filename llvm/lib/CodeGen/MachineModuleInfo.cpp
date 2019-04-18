@@ -1,9 +1,8 @@
 //===-- llvm/CodeGen/MachineModuleInfo.cpp ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,7 +15,6 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/BasicBlock.h"
-#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
@@ -195,7 +193,7 @@ void MMIAddrLabelMapCallbackPtr::allUsesReplacedWith(Value *V2) {
   Map->UpdateForRAUWBlock(cast<BasicBlock>(getValPtr()), cast<BasicBlock>(V2));
 }
 
-MachineModuleInfo::MachineModuleInfo(const TargetMachine *TM)
+MachineModuleInfo::MachineModuleInfo(const LLVMTargetMachine *TM)
   : ImmutablePass(ID), TM(*TM),
     Context(TM->getMCAsmInfo(), TM->getMCRegisterInfo(),
             TM->getObjFileLowering(), nullptr, false) {
@@ -207,11 +205,11 @@ MachineModuleInfo::~MachineModuleInfo() = default;
 bool MachineModuleInfo::doInitialization(Module &M) {
   ObjFileMMI = nullptr;
   CurCallSite = 0;
-  DbgInfoAvailable = UsesVAFloatArgument = UsesMorestackAddr = false;
+  UsesMSVCFloatingPoint = UsesMorestackAddr = false;
+  HasSplitStack = HasNosplitStack = false;
   AddrLabelSymbols = nullptr;
   TheModule = &M;
-  if (getDebugMetadataVersionFromModule(M))
-    M.getOrInsertNamedMetadata("llvm.dbg.mir");
+  DbgInfoAvailable = !empty(M.debug_compile_units());
   return false;
 }
 
@@ -278,7 +276,8 @@ MachineModuleInfo::getOrCreateMachineFunction(const Function &F) {
   MachineFunction *MF;
   if (I.second) {
     // No pre-existing machine function, create a new one.
-    MF = new MachineFunction(&F, TM, NextFnNum++, *this);
+    const TargetSubtargetInfo &STI = *TM.getSubtargetImpl(F);
+    MF = new MachineFunction(F, TM, STI, NextFnNum++, *this);
     // Update the set entry.
     I.first->second.reset(MF);
   } else {
@@ -315,10 +314,10 @@ public:
     MMI.deleteMachineFunctionFor(F);
     return true;
   }
-  
+
   StringRef getPassName() const override {
     return "Free MachineFunction";
-  } 
+  }
 };
 
 } // end anonymous namespace
@@ -327,23 +326,4 @@ char FreeMachineFunction::ID;
 
 FunctionPass *llvm::createFreeMachineFunctionPass() {
   return new FreeMachineFunction();
-}
-
-//===- MMI building helpers -----------------------------------------------===//
-
-void llvm::computeUsesVAFloatArgument(const CallInst &I,
-                                      MachineModuleInfo &MMI) {
-  FunctionType *FT =
-      cast<FunctionType>(I.getCalledValue()->getType()->getContainedType(0));
-  if (FT->isVarArg() && !MMI.usesVAFloatArgument()) {
-    for (unsigned i = 0, e = I.getNumArgOperands(); i != e; ++i) {
-      Type *T = I.getArgOperand(i)->getType();
-      for (auto i : post_order(T)) {
-        if (i->isFloatingPointTy()) {
-          MMI.setUsesVAFloatArgument(true);
-          return;
-        }
-      }
-    }
-  }
 }

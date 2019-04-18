@@ -1,10 +1,8 @@
-//===-- PythonDataObjects.cpp ------------------------------------*- C++
-//-*-===//
+//===-- PythonDataObjects.cpp -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,11 +20,11 @@
 #include "lldb/Interpreter/ScriptInterpreter.h"
 #include "lldb/Utility/Stream.h"
 
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/Errno.h"
 
 #include <stdio.h>
-
-#include "llvm/ADT/StringSwitch.h"
 
 using namespace lldb_private;
 using namespace lldb;
@@ -35,13 +33,11 @@ void StructuredPythonObject::Dump(Stream &s, bool pretty_print) const {
   s << "Python Obj: 0x" << GetValue();
 }
 
-//----------------------------------------------------------------------
 // PythonObject
-//----------------------------------------------------------------------
 
 void PythonObject::Dump(Stream &strm) const {
   if (m_py_obj) {
-    FILE *file = ::tmpfile();
+    FILE *file = llvm::sys::RetryAfterSignal(nullptr, ::tmpfile);
     if (file) {
       ::PyObject_Print(m_py_obj, file, 0);
       const long length = ftell(file);
@@ -79,6 +75,8 @@ PyObjectType PythonObject::GetObjectType() const {
 #endif
   if (PythonByteArray::Check(m_py_obj))
     return PyObjectType::ByteArray;
+  if (PythonBoolean::Check(m_py_obj))
+    return PyObjectType::Boolean;
   if (PythonInteger::Check(m_py_obj))
     return PyObjectType::Integer;
   if (PythonFile::Check(m_py_obj))
@@ -109,7 +107,7 @@ PythonString PythonObject::Str() const {
 PythonObject
 PythonObject::ResolveNameWithDictionary(llvm::StringRef name,
                                         const PythonDictionary &dict) {
-  size_t dot_pos = name.find_first_of('.');
+  size_t dot_pos = name.find('.');
   llvm::StringRef piece = name.substr(0, dot_pos);
   PythonObject result = dict.GetItemForKey(PythonString(piece));
   if (dot_pos == llvm::StringRef::npos) {
@@ -123,21 +121,20 @@ PythonObject::ResolveNameWithDictionary(llvm::StringRef name,
 }
 
 PythonObject PythonObject::ResolveName(llvm::StringRef name) const {
-  // Resolve the name in the context of the specified object.  If,
-  // for example, `this` refers to a PyModule, then this will look for
-  // `name` in this module.  If `this` refers to a PyType, then it will
-  // resolve `name` as an attribute of that type.  If `this` refers to
-  // an instance of an object, then it will resolve `name` as the value
-  // of the specified field.
+  // Resolve the name in the context of the specified object.  If, for example,
+  // `this` refers to a PyModule, then this will look for `name` in this
+  // module.  If `this` refers to a PyType, then it will resolve `name` as an
+  // attribute of that type.  If `this` refers to an instance of an object,
+  // then it will resolve `name` as the value of the specified field.
   //
   // This function handles dotted names so that, for example, if `m_py_obj`
-  // refers to the `sys` module, and `name` == "path.append", then it
-  // will find the function `sys.path.append`.
+  // refers to the `sys` module, and `name` == "path.append", then it will find
+  // the function `sys.path.append`.
 
-  size_t dot_pos = name.find_first_of('.');
+  size_t dot_pos = name.find('.');
   if (dot_pos == llvm::StringRef::npos) {
-    // No dots in the name, we should be able to find the value immediately
-    // as an attribute of `m_py_obj`.
+    // No dots in the name, we should be able to find the value immediately as
+    // an attribute of `m_py_obj`.
     return GetAttributeValue(name);
   }
 
@@ -181,6 +178,9 @@ StructuredData::ObjectSP PythonObject::CreateStructuredObject() const {
   case PyObjectType::Dictionary:
     return PythonDictionary(PyRefType::Borrowed, m_py_obj)
         .CreateStructuredDictionary();
+  case PyObjectType::Boolean:
+    return PythonBoolean(PyRefType::Borrowed, m_py_obj)
+        .CreateStructuredBoolean();
   case PyObjectType::Integer:
     return PythonInteger(PyRefType::Borrowed, m_py_obj)
         .CreateStructuredInteger();
@@ -200,9 +200,7 @@ StructuredData::ObjectSP PythonObject::CreateStructuredObject() const {
   }
 }
 
-//----------------------------------------------------------------------
 // PythonString
-//----------------------------------------------------------------------
 PythonBytes::PythonBytes() : PythonObject() {}
 
 PythonBytes::PythonBytes(llvm::ArrayRef<uint8_t> bytes) : PythonObject() {
@@ -224,14 +222,12 @@ PythonBytes::~PythonBytes() {}
 bool PythonBytes::Check(PyObject *py_obj) {
   if (!py_obj)
     return false;
-  if (PyBytes_Check(py_obj))
-    return true;
-  return false;
+  return PyBytes_Check(py_obj);
 }
 
 void PythonBytes::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonBytes::Check(py_obj)) {
@@ -240,8 +236,7 @@ void PythonBytes::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -297,14 +292,12 @@ PythonByteArray::~PythonByteArray() {}
 bool PythonByteArray::Check(PyObject *py_obj) {
   if (!py_obj)
     return false;
-  if (PyByteArray_Check(py_obj))
-    return true;
-  return false;
+  return PyByteArray_Check(py_obj);
 }
 
 void PythonByteArray::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonByteArray::Check(py_obj)) {
@@ -313,8 +306,7 @@ void PythonByteArray::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -342,9 +334,7 @@ StructuredData::StringSP PythonByteArray::CreateStructuredString() const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // PythonString
-//----------------------------------------------------------------------
 
 PythonString::PythonString(PyRefType type, PyObject *py_obj) : PythonObject() {
   Reset(type, py_obj); // Use "Reset()" to ensure that py_obj is a string
@@ -378,8 +368,8 @@ bool PythonString::Check(PyObject *py_obj) {
 }
 
 void PythonString::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonString::Check(py_obj)) {
@@ -394,8 +384,7 @@ void PythonString::Reset(PyRefType type, PyObject *py_obj) {
     result.Reset(PyRefType::Owned, PyUnicode_AsUTF8String(result.get()));
 #endif
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -404,14 +393,16 @@ llvm::StringRef PythonString::GetString() const {
     return llvm::StringRef();
 
   Py_ssize_t size;
-  char *c;
+  const char *data;
 
 #if PY_MAJOR_VERSION >= 3
-  c = PyUnicode_AsUTF8AndSize(m_py_obj, &size);
+  data = PyUnicode_AsUTF8AndSize(m_py_obj, &size);
 #else
+  char *c;
   PyString_AsStringAndSize(m_py_obj, &c, &size);
+  data = c;
 #endif
-  return llvm::StringRef(c, size);
+  return llvm::StringRef(data, size);
 }
 
 size_t PythonString::GetSize() const {
@@ -441,9 +432,7 @@ StructuredData::StringSP PythonString::CreateStructuredString() const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // PythonInteger
-//----------------------------------------------------------------------
 
 PythonInteger::PythonInteger() : PythonObject() {}
 
@@ -466,8 +455,8 @@ bool PythonInteger::Check(PyObject *py_obj) {
     return false;
 
 #if PY_MAJOR_VERSION >= 3
-  // Python 3 does not have PyInt_Check.  There is only one type of
-  // integral value, long.
+  // Python 3 does not have PyInt_Check.  There is only one type of integral
+  // value, long.
   return PyLong_Check(py_obj);
 #else
   return PyLong_Check(py_obj) || PyInt_Check(py_obj);
@@ -475,8 +464,8 @@ bool PythonInteger::Check(PyObject *py_obj) {
 }
 
 void PythonInteger::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonInteger::Check(py_obj)) {
@@ -485,13 +474,13 @@ void PythonInteger::Reset(PyRefType type, PyObject *py_obj) {
   }
 
 #if PY_MAJOR_VERSION < 3
-  // Always store this as a PyLong, which makes interoperability between
-  // Python 2.x and Python 3.x easier.  This is only necessary in 2.x,
-  // since 3.x doesn't even have a PyInt.
+  // Always store this as a PyLong, which makes interoperability between Python
+  // 2.x and Python 3.x easier.  This is only necessary in 2.x, since 3.x
+  // doesn't even have a PyInt.
   if (PyInt_Check(py_obj)) {
     // Since we converted the original object to a different type, the new
-    // object is an owned object regardless of the ownership semantics requested
-    // by the user.
+    // object is an owned object regardless of the ownership semantics
+    // requested by the user.
     result.Reset(PyRefType::Owned, PyLong_FromLongLong(PyInt_AsLong(py_obj)));
   }
 #endif
@@ -500,8 +489,7 @@ void PythonInteger::Reset(PyRefType type, PyObject *py_obj) {
          "Couldn't get a PyLong from this PyObject");
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -513,10 +501,9 @@ int64_t PythonInteger::GetInteger() const {
     int overflow = 0;
     int64_t result = PyLong_AsLongLongAndOverflow(m_py_obj, &overflow);
     if (overflow != 0) {
-      // We got an integer that overflows, like 18446744072853913392L
-      // we can't use PyLong_AsLongLong() as it will return
-      // 0xffffffffffffffff. If we use the unsigned long long
-      // it will work as expected.
+      // We got an integer that overflows, like 18446744072853913392L we can't
+      // use PyLong_AsLongLong() as it will return 0xffffffffffffffff. If we
+      // use the unsigned long long it will work as expected.
       const uint64_t uval = PyLong_AsUnsignedLongLong(m_py_obj);
       result = static_cast<int64_t>(uval);
     }
@@ -535,9 +522,54 @@ StructuredData::IntegerSP PythonInteger::CreateStructuredInteger() const {
   return result;
 }
 
-//----------------------------------------------------------------------
+// PythonBoolean
+
+PythonBoolean::PythonBoolean(PyRefType type, PyObject *py_obj)
+    : PythonObject() {
+  Reset(type, py_obj); // Use "Reset()" to ensure that py_obj is a boolean type
+}
+
+PythonBoolean::PythonBoolean(const PythonBoolean &object)
+    : PythonObject(object) {}
+
+PythonBoolean::PythonBoolean(bool value) {
+  SetValue(value);
+}
+
+bool PythonBoolean::Check(PyObject *py_obj) {
+  return py_obj ? PyBool_Check(py_obj) : false;
+}
+
+void PythonBoolean::Reset(PyRefType type, PyObject *py_obj) {
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
+  PythonObject result(type, py_obj);
+
+  if (!PythonBoolean::Check(py_obj)) {
+    PythonObject::Reset();
+    return;
+  }
+
+  // Calling PythonObject::Reset(const PythonObject&) will lead to stack
+  // overflow since it calls back into the virtual implementation.
+  PythonObject::Reset(PyRefType::Borrowed, result.get());
+}
+
+bool PythonBoolean::GetValue() const {
+  return m_py_obj ? PyObject_IsTrue(m_py_obj) : false;
+}
+
+void PythonBoolean::SetValue(bool value) {
+  PythonObject::Reset(PyRefType::Owned, PyBool_FromLong(value));
+}
+
+StructuredData::BooleanSP PythonBoolean::CreateStructuredBoolean() const {
+  StructuredData::BooleanSP result(new StructuredData::Boolean);
+  result->SetValue(GetValue());
+  return result;
+}
+
 // PythonList
-//----------------------------------------------------------------------
 
 PythonList::PythonList(PyInitialValue value) : PythonObject() {
   if (value == PyInitialValue::Empty)
@@ -563,8 +595,8 @@ bool PythonList::Check(PyObject *py_obj) {
 }
 
 void PythonList::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonList::Check(py_obj)) {
@@ -573,8 +605,7 @@ void PythonList::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -617,9 +648,7 @@ StructuredData::ArraySP PythonList::CreateStructuredArray() const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // PythonTuple
-//----------------------------------------------------------------------
 
 PythonTuple::PythonTuple(PyInitialValue value) : PythonObject() {
   if (value == PyInitialValue::Empty)
@@ -668,8 +697,8 @@ bool PythonTuple::Check(PyObject *py_obj) {
 }
 
 void PythonTuple::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonTuple::Check(py_obj)) {
@@ -678,8 +707,7 @@ void PythonTuple::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -714,9 +742,7 @@ StructuredData::ArraySP PythonTuple::CreateStructuredArray() const {
   return result;
 }
 
-//----------------------------------------------------------------------
 // PythonDictionary
-//----------------------------------------------------------------------
 
 PythonDictionary::PythonDictionary(PyInitialValue value) : PythonObject() {
   if (value == PyInitialValue::Empty)
@@ -741,8 +767,8 @@ bool PythonDictionary::Check(PyObject *py_obj) {
 }
 
 void PythonDictionary::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonDictionary::Check(py_obj)) {
@@ -751,8 +777,7 @@ void PythonDictionary::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -833,8 +858,8 @@ bool PythonModule::Check(PyObject *py_obj) {
 }
 
 void PythonModule::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonModule::Check(py_obj)) {
@@ -843,8 +868,7 @@ void PythonModule::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -871,8 +895,8 @@ bool PythonCallable::Check(PyObject *py_obj) {
 }
 
 void PythonCallable::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonCallable::Check(py_obj)) {
@@ -881,8 +905,7 @@ void PythonCallable::Reset(PyRefType type, PyObject *py_obj) {
   }
 
   // Calling PythonObject::Reset(const PythonObject&) will lead to stack
-  // overflow since it calls
-  // back into the virtual implementation.
+  // overflow since it calls back into the virtual implementation.
   PythonObject::Reset(PyRefType::Borrowed, result.get());
 }
 
@@ -949,7 +972,8 @@ PythonFile::PythonFile() : PythonObject() {}
 PythonFile::PythonFile(File &file, const char *mode) { Reset(file, mode); }
 
 PythonFile::PythonFile(const char *path, const char *mode) {
-  lldb_private::File file(path, GetOptionsFromMode(mode));
+  lldb_private::File file;
+  FileSystem::Instance().Open(file, FileSpec(path), GetOptionsFromMode(mode));
   Reset(file, mode);
 }
 
@@ -963,9 +987,9 @@ bool PythonFile::Check(PyObject *py_obj) {
 #else
   // In Python 3, there is no `PyFile_Check`, and in fact PyFile is not even a
   // first-class object type anymore.  `PyFile_FromFd` is just a thin wrapper
-  // over `io.open()`, which returns some object derived from `io.IOBase`.
-  // As a result, the only way to detect a file in Python 3 is to check whether
-  // it inherits from `io.IOBase`.  Since it is possible for non-files to also
+  // over `io.open()`, which returns some object derived from `io.IOBase`. As a
+  // result, the only way to detect a file in Python 3 is to check whether it
+  // inherits from `io.IOBase`.  Since it is possible for non-files to also
   // inherit from `io.IOBase`, we additionally verify that it has the `fileno`
   // attribute, which should guarantee that it is backed by the file system.
   PythonObject io_module(PyRefType::Owned, PyImport_ImportModule("io"));
@@ -985,8 +1009,8 @@ bool PythonFile::Check(PyObject *py_obj) {
 }
 
 void PythonFile::Reset(PyRefType type, PyObject *py_obj) {
-  // Grab the desired reference type so that if we end up rejecting
-  // `py_obj` it still gets decremented if necessary.
+  // Grab the desired reference type so that if we end up rejecting `py_obj` it
+  // still gets decremented if necessary.
   PythonObject result(type, py_obj);
 
   if (!PythonFile::Check(py_obj)) {

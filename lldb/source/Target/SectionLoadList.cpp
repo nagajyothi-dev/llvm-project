@@ -1,18 +1,13 @@
 //===-- SectionLoadList.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Target/SectionLoadList.h"
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/Module.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Symbol/Block.h"
@@ -32,8 +27,9 @@ SectionLoadList::SectionLoadList(const SectionLoadList &rhs)
 }
 
 void SectionLoadList::operator=(const SectionLoadList &rhs) {
-  std::lock_guard<std::recursive_mutex> lhs_guard(m_mutex);
-  std::lock_guard<std::recursive_mutex> rhs_guard(rhs.m_mutex);
+  std::lock(m_mutex, rhs.m_mutex);
+  std::lock_guard<std::recursive_mutex> lhs_guard(m_mutex, std::adopt_lock);
+  std::lock_guard<std::recursive_mutex> rhs_guard(rhs.m_mutex, std::adopt_lock);
   m_addr_to_sect = rhs.m_addr_to_sect;
   m_sect_to_addr = rhs.m_sect_to_addr;
 }
@@ -97,12 +93,12 @@ bool SectionLoadList::SetSectionLoadAddress(const lldb::SectionSP &section,
       // we have multiple load addresses that correspond to a section, we will
       // always attribute the section to the be last section that claims it
       // exists at that address. Sometimes it is ok for more that one section
-      // to be loaded at a specific load address, and other times it isn't.
-      // The "warn_multiple" parameter tells us if we should warn in this case
-      // or not. The DynamicLoader plug-in subclasses should know which
-      // sections should warn and which shouldn't (darwin shared cache modules
-      // all shared the same "__LINKEDIT" sections, so the dynamic loader can
-      // pass false for "warn_multiple").
+      // to be loaded at a specific load address, and other times it isn't. The
+      // "warn_multiple" parameter tells us if we should warn in this case or
+      // not. The DynamicLoader plug-in subclasses should know which sections
+      // should warn and which shouldn't (darwin shared cache modules all
+      // shared the same "__LINKEDIT" sections, so the dynamic loader can pass
+      // false for "warn_multiple").
       if (warn_multiple && section != ats_pos->second) {
         ModuleSP module_sp(section->GetModule());
         if (module_sp) {
@@ -228,8 +224,8 @@ bool SectionLoadList::ResolveLoadAddress(addr_t load_addr, Address &so_addr,
         }
       }
     } else {
-      // There are no entries that have an address that is >= load_addr,
-      // so we need to check the last entry on our collection.
+      // There are no entries that have an address that is >= load_addr, so we
+      // need to check the last entry on our collection.
       addr_to_sect_collection::const_reverse_iterator rpos =
           m_addr_to_sect.rbegin();
       if (load_addr >= rpos->first) {

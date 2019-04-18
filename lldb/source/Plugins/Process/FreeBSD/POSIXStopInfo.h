@@ -1,9 +1,8 @@
 //===-- POSIXStopInfo.h -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,8 +15,8 @@
 #include <string>
 
 //===----------------------------------------------------------------------===//
-/// @class POSIXStopInfo
-/// @brief Simple base class for all POSIX-specific StopInfo objects.
+/// \class POSIXStopInfo
+/// Simple base class for all POSIX-specific StopInfo objects.
 ///
 class POSIXStopInfo : public lldb_private::StopInfo {
 public:
@@ -26,8 +25,8 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
-/// @class POSIXLimboStopInfo
-/// @brief Represents the stop state of a process ready to exit.
+/// \class POSIXLimboStopInfo
+/// Represents the stop state of a process ready to exit.
 ///
 class POSIXLimboStopInfo : public POSIXStopInfo {
 public:
@@ -45,8 +44,8 @@ public:
 };
 
 //===----------------------------------------------------------------------===//
-/// @class POSIXNewThreadStopInfo
-/// @brief Represents the stop state of process when a new thread is spawned.
+/// \class POSIXNewThreadStopInfo
+/// Represents the stop state of process when a new thread is spawned.
 ///
 
 class POSIXNewThreadStopInfo : public POSIXStopInfo {

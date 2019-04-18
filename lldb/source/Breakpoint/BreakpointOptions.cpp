@@ -1,16 +1,11 @@
 //===-- BreakpointOptions.cpp -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Breakpoint/BreakpointOptions.h"
 
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
@@ -124,51 +119,47 @@ bool BreakpointOptions::NullCallback(void *baton,
   return true;
 }
 
-//----------------------------------------------------------------------
 // BreakpointOptions constructor
-//----------------------------------------------------------------------
 BreakpointOptions::BreakpointOptions(bool all_flags_set)
     : m_callback(BreakpointOptions::NullCallback), m_callback_baton_sp(),
       m_baton_is_command_baton(false), m_callback_is_synchronous(false),
-      m_enabled(true), m_one_shot(false), m_ignore_count(0), m_thread_spec_ap(),
+      m_enabled(true), m_one_shot(false), m_ignore_count(0), m_thread_spec_up(),
       m_condition_text(), m_condition_text_hash(0), m_auto_continue(false),
-      m_set_flags() {
-        if (all_flags_set)
-          m_set_flags.Set(~((Flags::ValueType) 0));
-      }
+      m_set_flags(0) {
+  if (all_flags_set)
+    m_set_flags.Set(~((Flags::ValueType)0));
+}
 
 BreakpointOptions::BreakpointOptions(const char *condition, bool enabled,
                                      int32_t ignore, bool one_shot, 
                                      bool auto_continue)
     : m_callback(nullptr), m_baton_is_command_baton(false),
       m_callback_is_synchronous(false), m_enabled(enabled),
-      m_one_shot(one_shot), m_ignore_count(ignore), m_condition_text(condition),
+      m_one_shot(one_shot), m_ignore_count(ignore),
       m_condition_text_hash(0), m_auto_continue(auto_continue)
 {
     m_set_flags.Set(eEnabled | eIgnoreCount | eOneShot 
-                   | eCondition | eAutoContinue);
+                   | eAutoContinue);
+    if (condition && *condition != '\0') {
+      SetCondition(condition);
+    }
 }
 
-//----------------------------------------------------------------------
 // BreakpointOptions copy constructor
-//----------------------------------------------------------------------
 BreakpointOptions::BreakpointOptions(const BreakpointOptions &rhs)
     : m_callback(rhs.m_callback), m_callback_baton_sp(rhs.m_callback_baton_sp),
       m_baton_is_command_baton(rhs.m_baton_is_command_baton),
       m_callback_is_synchronous(rhs.m_callback_is_synchronous),
       m_enabled(rhs.m_enabled), m_one_shot(rhs.m_one_shot),
-      m_ignore_count(rhs.m_ignore_count), m_thread_spec_ap(),
-      m_auto_continue(rhs.m_auto_continue),
-      m_set_flags(rhs.m_set_flags) {
-  if (rhs.m_thread_spec_ap.get() != nullptr)
-    m_thread_spec_ap.reset(new ThreadSpec(*rhs.m_thread_spec_ap.get()));
+      m_ignore_count(rhs.m_ignore_count), m_thread_spec_up(),
+      m_auto_continue(rhs.m_auto_continue), m_set_flags(rhs.m_set_flags) {
+  if (rhs.m_thread_spec_up != nullptr)
+    m_thread_spec_up.reset(new ThreadSpec(*rhs.m_thread_spec_up));
   m_condition_text = rhs.m_condition_text;
   m_condition_text_hash = rhs.m_condition_text_hash;
 }
 
-//----------------------------------------------------------------------
 // BreakpointOptions assignment operator
-//----------------------------------------------------------------------
 const BreakpointOptions &BreakpointOptions::
 operator=(const BreakpointOptions &rhs) {
   m_callback = rhs.m_callback;
@@ -178,8 +169,8 @@ operator=(const BreakpointOptions &rhs) {
   m_enabled = rhs.m_enabled;
   m_one_shot = rhs.m_one_shot;
   m_ignore_count = rhs.m_ignore_count;
-  if (rhs.m_thread_spec_ap.get() != nullptr)
-    m_thread_spec_ap.reset(new ThreadSpec(*rhs.m_thread_spec_ap.get()));
+  if (rhs.m_thread_spec_up != nullptr)
+    m_thread_spec_up.reset(new ThreadSpec(*rhs.m_thread_spec_up));
   m_condition_text = rhs.m_condition_text;
   m_condition_text_hash = rhs.m_condition_text_hash;
   m_auto_continue = rhs.m_auto_continue;
@@ -187,9 +178,59 @@ operator=(const BreakpointOptions &rhs) {
   return *this;
 }
 
-//----------------------------------------------------------------------
+void BreakpointOptions::CopyOverSetOptions(const BreakpointOptions &incoming)
+{
+  if (incoming.m_set_flags.Test(eEnabled))
+  {
+    m_enabled = incoming.m_enabled;
+    m_set_flags.Set(eEnabled);
+  }
+  if (incoming.m_set_flags.Test(eOneShot))
+  {
+    m_one_shot = incoming.m_one_shot;
+    m_set_flags.Set(eOneShot);
+  }
+  if (incoming.m_set_flags.Test(eCallback))
+  {
+    m_callback = incoming.m_callback;
+    m_callback_baton_sp = incoming.m_callback_baton_sp;
+    m_callback_is_synchronous = incoming.m_callback_is_synchronous;
+    m_baton_is_command_baton = incoming.m_baton_is_command_baton;
+    m_set_flags.Set(eCallback);
+  }
+  if (incoming.m_set_flags.Test(eIgnoreCount))
+  {
+    m_ignore_count = incoming.m_ignore_count;
+    m_set_flags.Set(eIgnoreCount);
+  }
+  if (incoming.m_set_flags.Test(eCondition))
+  {
+    // If we're copying over an empty condition, mark it as unset.
+    if (incoming.m_condition_text.empty()) {
+      m_condition_text.clear();
+      m_condition_text_hash = 0;
+      m_set_flags.Clear(eCondition);
+    } else {
+      m_condition_text = incoming.m_condition_text;
+      m_condition_text_hash = incoming.m_condition_text_hash;
+      m_set_flags.Set(eCondition);
+    }
+  }
+  if (incoming.m_set_flags.Test(eAutoContinue))
+  {
+    m_auto_continue = incoming.m_auto_continue;
+    m_set_flags.Set(eAutoContinue);
+  }
+  if (incoming.m_set_flags.Test(eThreadSpec) && incoming.m_thread_spec_up) {
+    if (!m_thread_spec_up)
+      m_thread_spec_up.reset(new ThreadSpec(*incoming.m_thread_spec_up));
+    else
+      *m_thread_spec_up = *incoming.m_thread_spec_up;
+    m_set_flags.Set(eThreadSpec);
+  }
+}
+
 // Destructor
-//----------------------------------------------------------------------
 BreakpointOptions::~BreakpointOptions() = default;
 
 std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
@@ -204,55 +245,50 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
 
   const char *key = GetKey(OptionNames::EnabledState);
   bool success;
-  if (key) {
+  if (key && options_dict.HasKey(key)) {
     success = options_dict.GetValueForKeyAsBoolean(key, enabled);
     if (!success) {
-      error.SetErrorStringWithFormat("%s key is not a boolean.",
-                                   GetKey(OptionNames::EnabledState));
+      error.SetErrorStringWithFormat("%s key is not a boolean.", key);
       return nullptr;
     }
     set_options.Set(eEnabled);
   }
 
   key = GetKey(OptionNames::OneShotState);
-  if (key) {
+  if (key && options_dict.HasKey(key)) {
     success = options_dict.GetValueForKeyAsBoolean(key, one_shot);
     if (!success) {
-      error.SetErrorStringWithFormat("%s key is not a boolean.",
-                                     GetKey(OptionNames::OneShotState));
+      error.SetErrorStringWithFormat("%s key is not a boolean.", key);
       return nullptr;
       }
       set_options.Set(eOneShot);
   }
   
   key = GetKey(OptionNames::AutoContinue);
-  if (key) {
+  if (key && options_dict.HasKey(key)) {
     success = options_dict.GetValueForKeyAsBoolean(key, auto_continue);
     if (!success) {
-      error.SetErrorStringWithFormat("%s key is not a boolean.",
-                                     GetKey(OptionNames::AutoContinue));
+      error.SetErrorStringWithFormat("%s key is not a boolean.", key);
       return nullptr;
       }
       set_options.Set(eAutoContinue);
   }
   
   key = GetKey(OptionNames::IgnoreCount);
-  if (key) {
+  if (key && options_dict.HasKey(key)) {
     success = options_dict.GetValueForKeyAsInteger(key, ignore_count);
     if (!success) {
-      error.SetErrorStringWithFormat("%s key is not an integer.",
-                                     GetKey(OptionNames::IgnoreCount));
+      error.SetErrorStringWithFormat("%s key is not an integer.", key);
       return nullptr;
     }
     set_options.Set(eIgnoreCount);
   }
 
   key = GetKey(OptionNames::ConditionText);
-  if (key) {
+  if (key && options_dict.HasKey(key)) {
     success = options_dict.GetValueForKeyAsString(key, condition_ref);
     if (!success) {
-      error.SetErrorStringWithFormat("%s key is not an string.",
-                                     GetKey(OptionNames::ConditionText));
+      error.SetErrorStringWithFormat("%s key is not an string.", key);
       return nullptr;
     }
     set_options.Set(eCondition);
@@ -276,7 +312,7 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
   auto bp_options = llvm::make_unique<BreakpointOptions>(
       condition_ref.str().c_str(), enabled, 
       ignore_count, one_shot, auto_continue);
-  if (cmd_data_up.get()) {
+  if (cmd_data_up) {
     if (cmd_data_up->interpreter == eScriptLanguageNone)
       bp_options->SetCommandDataCallback(cmd_data_up);
     else {
@@ -327,23 +363,23 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
 StructuredData::ObjectSP BreakpointOptions::SerializeToStructuredData() {
   StructuredData::DictionarySP options_dict_sp(
       new StructuredData::Dictionary());
-  if (m_set_flags.Set(eEnabled))
+  if (m_set_flags.Test(eEnabled))
     options_dict_sp->AddBooleanItem(GetKey(OptionNames::EnabledState),
                                     m_enabled);
-  if (m_set_flags.Set(eOneShot))
+  if (m_set_flags.Test(eOneShot))
     options_dict_sp->AddBooleanItem(GetKey(OptionNames::OneShotState),
                                m_one_shot);
-  if (m_set_flags.Set(eAutoContinue))
+  if (m_set_flags.Test(eAutoContinue))
     options_dict_sp->AddBooleanItem(GetKey(OptionNames::AutoContinue),
                                m_auto_continue);
-  if (m_set_flags.Set(eIgnoreCount))
+  if (m_set_flags.Test(eIgnoreCount))
     options_dict_sp->AddIntegerItem(GetKey(OptionNames::IgnoreCount),
                                     m_ignore_count);
-  if (m_set_flags.Set(eCondition))
+  if (m_set_flags.Test(eCondition))
     options_dict_sp->AddStringItem(GetKey(OptionNames::ConditionText),
                                    m_condition_text);
          
-  if (m_set_flags.Set(eCallback) && m_baton_is_command_baton) {
+  if (m_set_flags.Test(eCallback) && m_baton_is_command_baton) {
     auto cmd_baton =
         std::static_pointer_cast<CommandBaton>(m_callback_baton_sp);
     StructuredData::ObjectSP commands_sp =
@@ -353,26 +389,23 @@ StructuredData::ObjectSP BreakpointOptions::SerializeToStructuredData() {
           BreakpointOptions::CommandData::GetSerializationKey(), commands_sp);
     }
   }
-  if (m_set_flags.Set(eThreadSpec) && m_thread_spec_ap) {
+  if (m_set_flags.Test(eThreadSpec) && m_thread_spec_up) {
     StructuredData::ObjectSP thread_spec_sp =
-        m_thread_spec_ap->SerializeToStructuredData();
+        m_thread_spec_up->SerializeToStructuredData();
     options_dict_sp->AddItem(ThreadSpec::GetSerializationKey(), thread_spec_sp);
   }
 
   return options_dict_sp;
 }
 
-//------------------------------------------------------------------
 // Callbacks
-//------------------------------------------------------------------
 void BreakpointOptions::SetCallback(BreakpointHitCallback callback,
                                     const lldb::BatonSP &callback_baton_sp,
                                     bool callback_is_synchronous) {
   // FIXME: This seems unsafe.  If BatonSP actually *is* a CommandBaton, but
-  // in a shared_ptr<Baton> instead of a shared_ptr<CommandBaton>, then we
-  // will set m_baton_is_command_baton to false, which is incorrect.
-  // One possible solution is to make the base Baton class provide a method
-  // such as:
+  // in a shared_ptr<Baton> instead of a shared_ptr<CommandBaton>, then we will
+  // set m_baton_is_command_baton to false, which is incorrect. One possible
+  // solution is to make the base Baton class provide a method such as:
   //     virtual StringRef getBatonId() const { return ""; }
   // and have CommandBaton override this to return something unique, and then
   // check for it here.  Another option might be to make Baton using the llvm
@@ -414,12 +447,18 @@ const Baton *BreakpointOptions::GetBaton() const {
 bool BreakpointOptions::InvokeCallback(StoppointCallbackContext *context,
                                        lldb::user_id_t break_id,
                                        lldb::user_id_t break_loc_id) {
-  if (m_callback && context->is_synchronous == IsCallbackSynchronous()) {
-    return m_callback(m_callback_baton_sp ? m_callback_baton_sp->data()
+  if (m_callback) {
+    if (context->is_synchronous == IsCallbackSynchronous()) {
+        return m_callback(m_callback_baton_sp ? m_callback_baton_sp->data()
                                           : nullptr,
                       context, break_id, break_loc_id);
-  } else
-    return true;
+    } else if (IsCallbackSynchronous()) {
+      // If a synchronous callback is called at async time, it should not say
+      // to stop.
+      return false;
+    }
+  }
+  return true;
 }
 
 bool BreakpointOptions::HasCallback() const {
@@ -465,14 +504,16 @@ const char *BreakpointOptions::GetConditionText(size_t *hash) const {
 }
 
 const ThreadSpec *BreakpointOptions::GetThreadSpecNoCreate() const {
-  return m_thread_spec_ap.get();
+  return m_thread_spec_up.get();
 }
 
 ThreadSpec *BreakpointOptions::GetThreadSpec() {
-  if (m_thread_spec_ap.get() == nullptr)
-    m_thread_spec_ap.reset(new ThreadSpec());
+  if (m_thread_spec_up == nullptr) {
+    m_set_flags.Set(eThreadSpec);
+    m_thread_spec_up.reset(new ThreadSpec());
+  }
 
-  return m_thread_spec_ap.get();
+  return m_thread_spec_up.get();
 }
 
 void BreakpointOptions::SetThreadID(lldb::tid_t thread_id) {
@@ -482,15 +523,14 @@ void BreakpointOptions::SetThreadID(lldb::tid_t thread_id) {
 
 void BreakpointOptions::SetThreadSpec(
     std::unique_ptr<ThreadSpec> &thread_spec_up) {
-  m_thread_spec_ap = std::move(thread_spec_up);
+  m_thread_spec_up = std::move(thread_spec_up);
   m_set_flags.Set(eThreadSpec);
 }
 
 void BreakpointOptions::GetDescription(Stream *s,
                                        lldb::DescriptionLevel level) const {
   // Figure out if there are any options not at their default value, and only
-  // print
-  // anything if there are:
+  // print anything if there are:
 
   if (m_ignore_count != 0 || !m_enabled || m_one_shot || m_auto_continue ||
       (GetThreadSpecNoCreate() != nullptr &&
@@ -515,8 +555,8 @@ void BreakpointOptions::GetDescription(Stream *s,
     if (m_auto_continue)
       s->Printf("auto-continue ");
 
-    if (m_thread_spec_ap.get())
-      m_thread_spec_ap->GetDescription(s, level);
+    if (m_thread_spec_up)
+      m_thread_spec_up->GetDescription(s, level);
 
     if (level == lldb::eDescriptionLevelFull) {
       s->IndentLess();
@@ -595,8 +635,7 @@ bool BreakpointOptions::BreakpointOptionsCallbackFunction(
       CommandReturnObject result;
       Debugger &debugger = target->GetDebugger();
       // Rig up the results secondary output stream to the debugger's, so the
-      // output will come out synchronously
-      // if the debugger is set up that way.
+      // output will come out synchronously if the debugger is set up that way.
 
       StreamSP output_stream(debugger.GetAsyncOutputStream());
       StreamSP error_stream(debugger.GetAsyncErrorStream());
@@ -617,4 +656,19 @@ bool BreakpointOptions::BreakpointOptionsCallbackFunction(
     }
   }
   return ret_value;
+}
+
+void BreakpointOptions::Clear()
+{
+  m_set_flags.Clear();
+  m_thread_spec_up.release();
+  m_one_shot = false;
+  m_ignore_count = 0;
+  m_auto_continue = false;
+  m_callback = nullptr;
+  m_callback_baton_sp.reset();
+  m_baton_is_command_baton = false;
+  m_callback_is_synchronous = false;
+  m_enabled = false;
+  m_condition_text.clear();
 }

@@ -1,16 +1,11 @@
 //===-- HexagonDYLDRendezvous.cpp -------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-#include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Symbol/Symbol.h"
 #include "lldb/Symbol/SymbolContext.h"
@@ -119,8 +114,8 @@ bool HexagonDYLDRendezvous::UpdateSOEntries() {
   if (m_current.map_addr == 0)
     return false;
 
-  // When the previous and current states are consistent this is the first
-  // time we have been asked to update.  Just take a snapshot of the currently
+  // When the previous and current states are consistent this is the first time
+  // we have been asked to update.  Just take a snapshot of the currently
   // loaded modules.
   if (m_previous.state == eConsistent && m_current.state == eConsistent)
     return TakeSnapshot(m_soentries);
@@ -130,8 +125,8 @@ bool HexagonDYLDRendezvous::UpdateSOEntries() {
   if (m_current.state == eAdd || m_current.state == eDelete) {
     // this is a fudge so that we can clear the assert below.
     m_previous.state = eConsistent;
-    // We hit this assert on the 2nd run of this function after running the calc
-    // example
+    // We hit this assert on the 2nd run of this function after running the
+    // calc example
     assert(m_previous.state == eConsistent);
     m_soentries.clear();
     m_added_soentries.clear();
@@ -163,9 +158,9 @@ bool HexagonDYLDRendezvous::UpdateSOEntriesForAddition() {
     if (!ReadSOEntryFromMemory(cursor, entry))
       return false;
 
-    // Only add shared libraries and not the executable.
-    // On Linux this is indicated by an empty path in the entry.
-    // On FreeBSD it is the name of the executable.
+    // Only add shared libraries and not the executable. On Linux this is
+    // indicated by an empty path in the entry. On FreeBSD it is the name of
+    // the executable.
     if (entry.path.empty() || ::strcmp(entry.path.c_str(), m_exe_path) == 0)
       continue;
 
@@ -208,9 +203,9 @@ bool HexagonDYLDRendezvous::TakeSnapshot(SOEntryList &entry_list) {
     if (!ReadSOEntryFromMemory(cursor, entry))
       return false;
 
-    // Only add shared libraries and not the executable.
-    // On Linux this is indicated by an empty path in the entry.
-    // On FreeBSD it is the name of the executable.
+    // Only add shared libraries and not the executable. On Linux this is
+    // indicated by an empty path in the entry. On FreeBSD it is the name of
+    // the executable.
     if (entry.path.empty() || ::strcmp(entry.path.c_str(), m_exe_path) == 0)
       continue;
 

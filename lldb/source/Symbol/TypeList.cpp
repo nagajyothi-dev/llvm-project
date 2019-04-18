@@ -1,21 +1,16 @@
 //===-- TypeList.cpp --------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
 #include <vector>
 
-// Other libraries and framework includes
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 
-// Project includes
 #include "lldb/Symbol/SymbolFile.h"
 #include "lldb/Symbol/SymbolVendor.h"
 #include "lldb/Symbol/Type.h"
@@ -26,20 +21,17 @@ using namespace lldb_private;
 
 TypeList::TypeList() : m_types() {}
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 TypeList::~TypeList() {}
 
 void TypeList::Insert(const TypeSP &type_sp) {
-  // Just push each type on the back for now. We will worry about uniquing later
+  // Just push each type on the back for now. We will worry about uniquing
+  // later
   if (type_sp)
     m_types.push_back(type_sp);
 }
 
-//----------------------------------------------------------------------
 // Find a base type by its unique ID.
-//----------------------------------------------------------------------
 // TypeSP
 // TypeList::FindType(lldb::user_id_t uid)
 //{
@@ -49,11 +41,9 @@ void TypeList::Insert(const TypeSP &type_sp) {
 //    return TypeSP();
 //}
 
-//----------------------------------------------------------------------
 // Find a type by name.
-//----------------------------------------------------------------------
 // TypeList
-// TypeList::FindTypes (const ConstString &name)
+// TypeList::FindTypes (ConstString name)
 //{
 //    // Do we ever need to make a lookup by name map? Here we are doing
 //    // a linear search which isn't going to be fast.
@@ -76,6 +66,7 @@ uint32_t TypeList::GetSize() const { return m_types.size(); }
 TypeSP TypeList::GetTypeAtIndex(uint32_t idx) {
   iterator pos, end;
   uint32_t i = idx;
+  assert(i < GetSize() && "Accessing past the end of a TypeList");
   for (pos = m_types.begin(), end = m_types.end(); pos != end; ++pos) {
     if (i == 0)
       return *pos;
@@ -123,10 +114,10 @@ void TypeList::RemoveMismatchedTypes(const char *qualified_typename,
 void TypeList::RemoveMismatchedTypes(const std::string &type_scope,
                                      const std::string &type_basename,
                                      TypeClass type_class, bool exact_match) {
-  // Our "collection" type currently is a std::map which doesn't
-  // have any good way to iterate and remove items from the map
-  // so we currently just make a new list and add all of the matching
-  // types to it, and then swap it into m_types at the end
+  // Our "collection" type currently is a std::map which doesn't have any good
+  // way to iterate and remove items from the map so we currently just make a
+  // new list and add all of the matching types to it, and then swap it into
+  // m_types at the end
   collection matching_types;
 
   iterator pos, end = m_types.end();
@@ -161,19 +152,15 @@ void TypeList::RemoveMismatchedTypes(const std::string &type_scope,
               if (type_scope_pos == match_type_scope_size - type_scope_size) {
                 if (type_scope_pos >= 2) {
                   // Our match scope ends with the type scope we were looking
-                  // for,
-                  // but we need to make sure what comes before the matching
-                  // type scope is a namespace boundary in case we are trying to
-                  // match:
-                  // type_basename = "d"
-                  // type_scope = "b::c::"
+                  // for, but we need to make sure what comes before the
+                  // matching type scope is a namespace boundary in case we are
+                  // trying to match: type_basename = "d" type_scope = "b::c::"
                   // We want to match:
                   //  match_type_scope "a::b::c::"
                   // But not:
                   //  match_type_scope "a::bb::c::"
                   // So below we make sure what comes before "b::c::" in
-                  // match_type_scope
-                  // is "::", or the namespace boundary
+                  // match_type_scope is "::", or the namespace boundary
                   if (match_type_scope[type_scope_pos - 1] == ':' &&
                       match_type_scope[type_scope_pos - 2] == ':') {
                     keep_match = true;
@@ -184,11 +171,9 @@ void TypeList::RemoveMismatchedTypes(const std::string &type_scope,
           }
         }
       } else {
-        // The type we are currently looking at doesn't exists
-        // in a namespace or class, so it only matches if there
-        // is no type scope...
-        keep_match =
-            type_scope.empty() && type_basename.compare(match_type_name) == 0;
+        // The type we are currently looking at doesn't exists in a namespace
+        // or class, so it only matches if there is no type scope...
+        keep_match = type_scope.empty() && type_basename == match_type_name;
       }
     }
 
@@ -203,10 +188,10 @@ void TypeList::RemoveMismatchedTypes(TypeClass type_class) {
   if (type_class == eTypeClassAny)
     return;
 
-  // Our "collection" type currently is a std::map which doesn't
-  // have any good way to iterate and remove items from the map
-  // so we currently just make a new list and add all of the matching
-  // types to it, and then swap it into m_types at the end
+  // Our "collection" type currently is a std::map which doesn't have any good
+  // way to iterate and remove items from the map so we currently just make a
+  // new list and add all of the matching types to it, and then swap it into
+  // m_types at the end
   collection matching_types;
 
   iterator pos, end = m_types.end();

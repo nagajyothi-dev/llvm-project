@@ -1,9 +1,8 @@
 //===--- RuntimeDebugBuilder.cpp - Helper to insert prints into LLVM-IR ---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,7 +11,6 @@
 #include "polly/CodeGen/RuntimeDebugBuilder.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/Debug.h"
 #include <string>
 #include <vector>
 
@@ -103,6 +101,19 @@ void RuntimeDebugBuilder::createPrinter(PollyIRBuilder &Builder, bool IsGPU,
     createCPUPrinterT(Builder, Values);
 }
 
+bool RuntimeDebugBuilder::isPrintable(Type *Ty) {
+  if (Ty->isFloatingPointTy())
+    return true;
+
+  if (Ty->isIntegerTy())
+    return Ty->getIntegerBitWidth() <= 64;
+
+  if (isa<PointerType>(Ty))
+    return true;
+
+  return false;
+}
+
 static std::tuple<std::string, std::vector<Value *>>
 prepareValuesForPrinting(PollyIRBuilder &Builder, ArrayRef<Value *> Values) {
   std::string FormatString;
@@ -188,11 +199,13 @@ void RuntimeDebugBuilder::createGPUPrinterT(PollyIRBuilder &Builder,
       if (!Ty->isDoubleTy())
         Val = Builder.CreateFPExt(Val, Builder.getDoubleTy());
     } else if (Ty->isIntegerTy()) {
-      if (Ty->getIntegerBitWidth() < 64)
+      if (Ty->getIntegerBitWidth() < 64) {
         Val = Builder.CreateSExt(Val, Builder.getInt64Ty());
-      else
-        assert(Ty->getIntegerBitWidth() &&
+      } else {
+        assert(Ty->getIntegerBitWidth() == 64 &&
                "Integer types larger 64 bit not supported");
+        // fallthrough
+      }
     } else if (auto PtTy = dyn_cast<PointerType>(Ty)) {
       if (PtTy->getAddressSpace() == 4) {
         // Pointers in constant address space are printed as strings

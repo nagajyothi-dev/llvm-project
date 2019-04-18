@@ -1,25 +1,20 @@
 //===-- FormatManager.h -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef lldb_FormatManager_h_
 #define lldb_FormatManager_h_
 
-// C Includes
-// C++ Includes
 #include <atomic>
 #include <initializer_list>
 #include <map>
 #include <mutex>
 #include <vector>
 
-// Other libraries and framework includes
-// Project includes
 #include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-public.h"
 
@@ -33,12 +28,10 @@
 namespace lldb_private {
 
 // this file (and its. cpp) contain the low-level implementation of LLDB Data
-// Visualization
-// class DataVisualization is the high-level front-end of this feature
-// clients should refer to that class as the entry-point into the data
-// formatters
-// unless they have a good reason to bypass it and prefer to use this file's
-// objects directly
+// Visualization class DataVisualization is the high-level front-end of this
+// feature clients should refer to that class as the entry-point into the data
+// formatters unless they have a good reason to bypass it and prefer to use
+// this file's objects directly
 
 class FormatManager : public IFormatChangeListener {
   typedef FormatMap<ConstString, TypeSummaryImpl> NamedSummariesMap;
@@ -57,19 +50,19 @@ public:
   }
 
   void
-  EnableCategory(const ConstString &category_name,
+  EnableCategory(ConstString category_name,
                  TypeCategoryMap::Position pos = TypeCategoryMap::Default) {
     EnableCategory(category_name, pos,
                    std::initializer_list<lldb::LanguageType>());
   }
 
-  void EnableCategory(const ConstString &category_name,
+  void EnableCategory(ConstString category_name,
                       TypeCategoryMap::Position pos, lldb::LanguageType lang) {
     std::initializer_list<lldb::LanguageType> langs = {lang};
     EnableCategory(category_name, pos, langs);
   }
 
-  void EnableCategory(const ConstString &category_name,
+  void EnableCategory(ConstString category_name,
                       TypeCategoryMap::Position pos = TypeCategoryMap::Default,
                       std::initializer_list<lldb::LanguageType> langs = {}) {
     TypeCategoryMap::ValueSP category_sp;
@@ -80,7 +73,7 @@ public:
     }
   }
 
-  void DisableCategory(const ConstString &category_name) {
+  void DisableCategory(ConstString category_name) {
     m_categories_map.Disable(category_name);
   }
 
@@ -98,7 +91,7 @@ public:
 
   void DisableAllCategories();
 
-  bool DeleteCategory(const ConstString &category_name) {
+  bool DeleteCategory(ConstString category_name) {
     return m_categories_map.Delete(category_name);
   }
 
@@ -119,7 +112,7 @@ public:
     return GetCategory(ConstString(category_name));
   }
 
-  lldb::TypeCategoryImplSP GetCategory(const ConstString &category_name,
+  lldb::TypeCategoryImplSP GetCategory(ConstString category_name,
                                        bool can_create = true);
 
   lldb::TypeFormatImplSP
@@ -131,15 +124,8 @@ public:
   lldb::TypeFilterImplSP
   GetFilterForType(lldb::TypeNameSpecifierImplSP type_sp);
 
-#ifndef LLDB_DISABLE_PYTHON
   lldb::ScriptedSyntheticChildrenSP
   GetSyntheticForType(lldb::TypeNameSpecifierImplSP type_sp);
-#endif
-
-#ifndef LLDB_DISABLE_PYTHON
-  lldb::SyntheticChildrenSP
-  GetSyntheticChildrenForType(lldb::TypeNameSpecifierImplSP type_sp);
-#endif
 
   lldb::TypeValidatorImplSP
   GetValidatorForType(lldb::TypeNameSpecifierImplSP type_sp);
@@ -150,10 +136,8 @@ public:
   lldb::TypeSummaryImplSP GetSummaryFormat(ValueObject &valobj,
                                            lldb::DynamicValueType use_dynamic);
 
-#ifndef LLDB_DISABLE_PYTHON
   lldb::SyntheticChildrenSP
   GetSyntheticChildren(ValueObject &valobj, lldb::DynamicValueType use_dynamic);
-#endif
 
   lldb::TypeValidatorImplSP GetValidator(ValueObject &valobj,
                                          lldb::DynamicValueType use_dynamic);
@@ -175,24 +159,22 @@ public:
 
   static const char *GetFormatAsCString(lldb::Format format);
 
-  // if the user tries to add formatters for, say, "struct Foo"
-  // those will not match any type because of the way we strip qualifiers from
-  // typenames
-  // this method looks for the case where the user is adding a
-  // "class","struct","enum" or "union" Foo
-  // and strips the unnecessary qualifier
-  static ConstString GetValidTypeName(const ConstString &type);
+  // if the user tries to add formatters for, say, "struct Foo" those will not
+  // match any type because of the way we strip qualifiers from typenames this
+  // method looks for the case where the user is adding a
+  // "class","struct","enum" or "union" Foo and strips the unnecessary
+  // qualifier
+  static ConstString GetValidTypeName(ConstString type);
 
   // when DataExtractor dumps a vectorOfT, it uses a predefined format for each
-  // item
-  // this method returns it, or eFormatInvalid if vector_format is not a
+  // item this method returns it, or eFormatInvalid if vector_format is not a
   // vectorOf
   static lldb::Format GetSingleItemFormat(lldb::Format vector_format);
 
-  // this returns true if the ValueObjectPrinter is *highly encouraged*
-  // to actually represent this ValueObject in one-liner format
-  // If this object has a summary formatter, however, we should not
-  // try and do one-lining, just let the summary do the right thing
+  // this returns true if the ValueObjectPrinter is *highly encouraged* to
+  // actually represent this ValueObject in one-liner format If this object has
+  // a summary formatter, however, we should not try and do one-lining, just
+  // let the summary do the right thing
   bool ShouldPrintAsOneLiner(ValueObject &valobj);
 
   void Changed() override;
@@ -249,15 +231,12 @@ private:
 
   TypeCategoryMap &GetCategories() { return m_categories_map; }
 
-  // These functions are meant to initialize formatters that are very
-  // low-level/global in nature
-  // and do not naturally belong in any language. The intent is that most
-  // formatters go in
-  // language-specific categories. Eventually, the runtimes should also be
-  // allowed to vend their
-  // own formatters, and then one could put formatters that depend on specific
-  // library load events
-  // in the language runtimes, on an as-needed basis
+  // These functions are meant to initialize formatters that are very low-
+  // level/global in nature and do not naturally belong in any language. The
+  // intent is that most formatters go in language-specific categories.
+  // Eventually, the runtimes should also be allowed to vend their own
+  // formatters, and then one could put formatters that depend on specific
+  // library load events in the language runtimes, on an as-needed basis
   void LoadSystemFormatters();
 
   void LoadVectorFormatters();

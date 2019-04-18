@@ -1,9 +1,8 @@
 //===-- UnwindAssembly-x86.cpp ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,7 +14,6 @@
 #include "llvm/Support/TargetSelect.h"
 
 #include "lldb/Core/Address.h"
-#include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Symbol/UnwindPlan.h"
 #include "lldb/Target/ABI.h"
@@ -26,14 +24,13 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Target/UnwindAssembly.h"
+#include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/Status.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//-----------------------------------------------------------------------------------------------
 //  UnwindAssemblyParser_x86 method definitions
-//-----------------------------------------------------------------------------------------------
 
 UnwindAssembly_x86::UnwindAssembly_x86(const ArchSpec &arch)
     : lldb_private::UnwindAssembly(arch),
@@ -86,15 +83,13 @@ bool UnwindAssembly_x86::AugmentUnwindPlanFromCallSite(
                            LLDB_REGNUM_GENERIC_PC);
 
   // Does this UnwindPlan describe the prologue?  I want to see that the CFA is
-  // set
-  // in terms of the stack pointer plus an offset, and I want to see that rip is
-  // retrieved at the CFA-wordsize.
-  // If there is no description of the prologue, don't try to augment this
-  // eh_frame
-  // unwinder code, fall back to assembly parsing instead.
+  // set in terms of the stack pointer plus an offset, and I want to see that
+  // rip is retrieved at the CFA-wordsize. If there is no description of the
+  // prologue, don't try to augment this eh_frame unwinder code, fall back to
+  // assembly parsing instead.
 
   if (first_row->GetCFAValue().GetValueType() !=
-          UnwindPlan::Row::CFAValue::isRegisterPlusOffset ||
+          UnwindPlan::Row::FAValue::isRegisterPlusOffset ||
       RegisterNumber(thread, unwind_plan.GetRegisterKind(),
                      first_row->GetCFAValue().GetRegisterNumber()) !=
           sp_regnum ||
@@ -102,22 +97,21 @@ bool UnwindAssembly_x86::AugmentUnwindPlanFromCallSite(
     return false;
   }
   UnwindPlan::Row::RegisterLocation first_row_pc_loc;
-  if (first_row->GetRegisterInfo(
+  if (!first_row->GetRegisterInfo(
           pc_regnum.GetAsKind(unwind_plan.GetRegisterKind()),
-          first_row_pc_loc) == false ||
-      first_row_pc_loc.IsAtCFAPlusOffset() == false ||
+          first_row_pc_loc) ||
+      !first_row_pc_loc.IsAtCFAPlusOffset() ||
       first_row_pc_loc.GetOffset() != -wordsize) {
     return false;
   }
 
-  // It looks like the prologue is described.
-  // Is the epilogue described?  If it is, no need to do any augmentation.
+  // It looks like the prologue is described. Is the epilogue described?  If it
+  // is, no need to do any augmentation.
 
   if (first_row != last_row &&
       first_row->GetOffset() != last_row->GetOffset()) {
-    // The first & last row have the same CFA register
-    // and the same CFA offset value
-    // and the CFA register is esp/rsp (the stack pointer).
+    // The first & last row have the same CFA register and the same CFA offset
+    // value and the CFA register is esp/rsp (the stack pointer).
 
     // We're checking that both of them have an unwind rule like "CFA=esp+4" or
     // CFA+rsp+8".
@@ -128,8 +122,8 @@ bool UnwindAssembly_x86::AugmentUnwindPlanFromCallSite(
             last_row->GetCFAValue().GetRegisterNumber() &&
         first_row->GetCFAValue().GetOffset() ==
             last_row->GetCFAValue().GetOffset()) {
-      // Get the register locations for eip/rip from the first & last rows.
-      // Are they both CFA plus an offset?  Is it the same offset?
+      // Get the register locations for eip/rip from the first & last rows. Are
+      // they both CFA plus an offset?  Is it the same offset?
 
       UnwindPlan::Row::RegisterLocation last_row_pc_loc;
       if (last_row->GetRegisterInfo(
@@ -139,12 +133,10 @@ bool UnwindAssembly_x86::AugmentUnwindPlanFromCallSite(
             first_row_pc_loc.GetOffset() == last_row_pc_loc.GetOffset()) {
 
           // One last sanity check:  Is the unwind rule for getting the caller
-          // pc value
-          // "deref the CFA-4" or "deref the CFA-8"?
+          // pc value "deref the CFA-4" or "deref the CFA-8"?
 
           // If so, we have an UnwindPlan that already describes the epilogue
-          // and we don't need
-          // to modify it at all.
+          // and we don't need to modify it at all.
 
           if (first_row_pc_loc.GetOffset() == -wordsize) {
             do_augment_unwindplan = false;
@@ -250,9 +242,7 @@ UnwindAssembly *UnwindAssembly_x86::CreateInstance(const ArchSpec &arch) {
   return NULL;
 }
 
-//------------------------------------------------------------------
 // PluginInterface protocol in UnwindAssemblyParser_x86
-//------------------------------------------------------------------
 
 ConstString UnwindAssembly_x86::GetPluginName() {
   return GetPluginNameStatic();

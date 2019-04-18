@@ -1,21 +1,17 @@
 //===-- SectionLoadHistory.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_SectionLoadHistory_h_
 #define liblldb_SectionLoadHistory_h_
 
-// C Includes
-// C++ Includes
 #include <map>
 #include <mutex>
 
-// Project includes
 #include "lldb/lldb-public.h"
 
 namespace lldb_private {
@@ -23,18 +19,16 @@ namespace lldb_private {
 class SectionLoadHistory {
 public:
   enum : unsigned {
-    // Pass eStopIDNow to any function that takes a stop ID to get
-    // the current value.
+    // Pass eStopIDNow to any function that takes a stop ID to get the current
+    // value.
     eStopIDNow = UINT32_MAX
   };
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   SectionLoadHistory() : m_stop_id_to_section_load_list(), m_mutex() {}
 
   ~SectionLoadHistory() {
-    // Call clear since this takes a lock and clears the section load list
-    // in case another thread is currently using this section load list
+    // Call clear since this takes a lock and clears the section load list in
+    // case another thread is currently using this section load list
     Clear();
   }
 
@@ -59,14 +53,14 @@ public:
                              bool warn_multiple = false);
 
   // The old load address should be specified when unloading to ensure we get
-  // the correct instance of the section as a shared library could be loaded
-  // at more than one location.
+  // the correct instance of the section as a shared library could be loaded at
+  // more than one location.
   bool SetSectionUnloaded(uint32_t stop_id, const lldb::SectionSP &section_sp,
                           lldb::addr_t load_addr);
 
   // Unload all instances of a section. This function can be used on systems
-  // that don't support multiple copies of the same shared library to be
-  // loaded at the same time.
+  // that don't support multiple copies of the same shared library to be loaded
+  // at the same time.
   size_t SetSectionUnloaded(uint32_t stop_id,
                             const lldb::SectionSP &section_sp);
 

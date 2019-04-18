@@ -1,9 +1,8 @@
 //===-- tsan_rtl.cc -------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -102,11 +101,11 @@ Context::Context()
   , thread_registry(new(thread_registry_placeholder) ThreadRegistry(
       CreateThreadContext, kMaxTid, kThreadQuarantineSize, kMaxTidReuse))
   , racy_mtx(MutexTypeRacy, StatMtxRacy)
-  , racy_stacks(MBlockRacyStacks)
-  , racy_addresses(MBlockRacyAddresses)
+  , racy_stacks()
+  , racy_addresses()
   , fired_suppressions_mtx(MutexTypeFired, StatMtxFired)
-  , fired_suppressions(8)
   , clock_alloc("clock allocator") {
+  fired_suppressions.reserve(8);
 }
 
 // The objects are allocated in TLS, so one may rely on zero-initialization.
@@ -121,7 +120,7 @@ ThreadState::ThreadState(Context *ctx, int tid, int unique_id, u64 epoch,
   // , ignore_interceptors()
   , clock(tid, reuse_count)
 #if !SANITIZER_GO
-  , jmp_bufs(MBlockJmpBuf)
+  , jmp_bufs()
 #endif
   , tid(tid)
   , unique_id(unique_id)
@@ -140,7 +139,7 @@ static void MemoryProfiler(Context *ctx, fd_t fd, int i) {
   uptr n_threads;
   uptr n_running_threads;
   ctx->thread_registry->GetNumberOfThreads(&n_threads, &n_running_threads);
-  InternalScopedBuffer<char> buf(4096);
+  InternalMmapVector<char> buf(4096);
   WriteMemoryProfile(buf.data(), buf.size(), n_threads, n_running_threads);
   WriteToFile(fd, buf.data(), internal_strlen(buf.data()));
 }
@@ -214,7 +213,7 @@ static void BackgroundThread(void *arg) {
                              memory_order_relaxed);
       if (last != 0 && last + flags()->flush_symbolizer_ms * kMs2Ns < now) {
         Lock l(&ctx->report_mtx);
-        SpinMutexLock l2(&CommonSanitizerReportMutex);
+        ScopedErrorReportLock l2;
         SymbolizeFlush();
         atomic_store(&ctx->last_symbolize_time_ns, 0, memory_order_relaxed);
       }
@@ -246,7 +245,8 @@ void MapShadow(uptr addr, uptr size) {
   const uptr kPageSize = GetPageSizeCached();
   uptr shadow_begin = RoundDownTo((uptr)MemToShadow(addr), kPageSize);
   uptr shadow_end = RoundUpTo((uptr)MemToShadow(addr + size), kPageSize);
-  MmapFixedNoReserve(shadow_begin, shadow_end - shadow_begin, "shadow");
+  if (!MmapFixedNoReserve(shadow_begin, shadow_end - shadow_begin, "shadow"))
+    Die();
 
   // Meta shadow is 2:1, so tread carefully.
   static bool data_mapped = false;
@@ -258,7 +258,8 @@ void MapShadow(uptr addr, uptr size) {
   if (!data_mapped) {
     // First call maps data+bss.
     data_mapped = true;
-    MmapFixedNoReserve(meta_begin, meta_end - meta_begin, "meta shadow");
+    if (!MmapFixedNoReserve(meta_begin, meta_end - meta_begin, "meta shadow"))
+      Die();
   } else {
     // Mapping continous heap.
     // Windows wants 64K alignment.
@@ -268,7 +269,8 @@ void MapShadow(uptr addr, uptr size) {
       return;
     if (meta_begin < mapped_meta_end)
       meta_begin = mapped_meta_end;
-    MmapFixedNoReserve(meta_begin, meta_end - meta_begin, "meta shadow");
+    if (!MmapFixedNoReserve(meta_begin, meta_end - meta_begin, "meta shadow"))
+      Die();
     mapped_meta_end = meta_end;
   }
   VPrintf(2, "mapped meta shadow for (%p-%p) at (%p-%p)\n",
@@ -280,10 +282,9 @@ void MapThreadTrace(uptr addr, uptr size, const char *name) {
   CHECK_GE(addr, TraceMemBeg());
   CHECK_LE(addr + size, TraceMemEnd());
   CHECK_EQ(addr, addr & ~((64 << 10) - 1));  // windows wants 64K alignment
-  uptr addr1 = (uptr)MmapFixedNoReserve(addr, size, name);
-  if (addr1 != addr) {
-    Printf("FATAL: ThreadSanitizer can not mmap thread trace (%p/%p->%p)\n",
-        addr, size, addr1);
+  if (!MmapFixedNoReserve(addr, size, name)) {
+    Printf("FATAL: ThreadSanitizer can not mmap thread trace (%p/%p)\n",
+        addr, size);
     Die();
   }
 }
@@ -324,6 +325,18 @@ static void CheckShadowMapping() {
   }
 }
 
+#if !SANITIZER_GO
+static void OnStackUnwind(const SignalContext &sig, const void *,
+                          BufferedStackTrace *stack) {
+  stack->Unwind(sig.pc, sig.bp, sig.context,
+                common_flags()->fast_unwind_on_fatal);
+}
+
+static void TsanOnDeadlySignal(int signo, void *siginfo, void *context) {
+  HandleDeadlySignal(siginfo, context, GetTid(), &OnStackUnwind, nullptr);
+}
+#endif
+
 void Initialize(ThreadState *thr) {
   // Thread safe because done before all threads exist.
   static bool is_initialized = false;
@@ -339,9 +352,12 @@ void Initialize(ThreadState *thr) {
   ctx = new(ctx_placeholder) Context;
   const char *options = GetEnv(SANITIZER_GO ? "GORACE" : "TSAN_OPTIONS");
   CacheBinaryName();
+  CheckASLR();
   InitializeFlags(&ctx->flags, options);
   AvoidCVE_2016_2143();
-  InitializePlatformEarly();
+  __sanitizer::InitializePlatformEarly();
+  __tsan::InitializePlatformEarly();
+
 #if !SANITIZER_GO
   // Re-exec ourselves if we need to set additional env or command line args.
   MaybeReexec();
@@ -361,6 +377,7 @@ void Initialize(ThreadState *thr) {
 #if !SANITIZER_GO
   InitializeShadowMemory();
   InitializeAllocatorLate();
+  InstallDeadlySignalHandlers(TsanOnDeadlySignal);
 #endif
   // Setup correct file descriptor for error reports.
   __sanitizer_set_report_path(common_flags()->log_path);
@@ -368,13 +385,6 @@ void Initialize(ThreadState *thr) {
 #if !SANITIZER_GO
   InitializeLibIgnore();
   Symbolizer::GetOrInit()->AddHooks(EnterSymbolizer, ExitSymbolizer);
-  // On MIPS, TSan initialization is run before
-  // __pthread_initialize_minimal_internal() is finished, so we can not spawn
-  // new threads.
-#ifndef __mips__
-  StartBackgroundThread();
-  SetSandboxingCallback(StopBackgroundThread);
-#endif
 #endif
 
   VPrintf(1, "***** Running under ThreadSanitizer v2 (pid %d) *****\n",
@@ -383,7 +393,7 @@ void Initialize(ThreadState *thr) {
   // Initialize thread 0.
   int tid = ThreadCreate(thr, 0, 0, true);
   CHECK_EQ(tid, 0);
-  ThreadStart(thr, tid, GetTid(), /*workerthread*/ false);
+  ThreadStart(thr, tid, GetTid(), ThreadType::Regular);
 #if TSAN_CONTAINS_UBSAN
   __ubsan::InitAsPlugin();
 #endif
@@ -403,6 +413,21 @@ void Initialize(ThreadState *thr) {
   OnInitialize();
 }
 
+void MaybeSpawnBackgroundThread() {
+  // On MIPS, TSan initialization is run before
+  // __pthread_initialize_minimal_internal() is finished, so we can not spawn
+  // new threads.
+#if !SANITIZER_GO && !defined(__mips__)
+  static atomic_uint32_t bg_thread = {};
+  if (atomic_load(&bg_thread, memory_order_relaxed) == 0 &&
+      atomic_exchange(&bg_thread, 1, memory_order_relaxed) == 0) {
+    StartBackgroundThread();
+    SetSandboxingCallback(StopBackgroundThread);
+  }
+#endif
+}
+
+
 int Finalize(ThreadState *thr) {
   bool failed = false;
 
@@ -413,8 +438,7 @@ int Finalize(ThreadState *thr) {
 
   // Wait for pending reports.
   ctx->report_mtx.Lock();
-  CommonSanitizerReportMutex.Lock();
-  CommonSanitizerReportMutex.Unlock();
+  { ScopedErrorReportLock l; }
   ctx->report_mtx.Unlock();
 
 #if !SANITIZER_GO
@@ -524,6 +548,10 @@ u32 CurrentStackId(ThreadState *thr, uptr pc) {
 }
 
 void TraceSwitch(ThreadState *thr) {
+#if !SANITIZER_GO
+  if (ctx->after_multithreaded_fork)
+    return;
+#endif
   thr->nomalloc++;
   Trace *thr_trace = ThreadTrace(thr->tid);
   Lock l(&thr_trace->mtx);
@@ -610,6 +638,7 @@ void MemoryAccessImpl1(ThreadState *thr, uptr addr,
   // __m128i _mm_move_epi64(__m128i*);
   // _mm_storel_epi64(u64*, __m128i);
   u64 store_word = cur.raw();
+  bool stored = false;
 
   // scan all the shadow values and dispatch to 4 categories:
   // same, replace, candidate and race (see comments below).
@@ -634,16 +663,28 @@ void MemoryAccessImpl1(ThreadState *thr, uptr addr,
   int idx = 0;
 #include "tsan_update_shadow_word_inl.h"
   idx = 1;
+  if (stored) {
 #include "tsan_update_shadow_word_inl.h"
+  } else {
+#include "tsan_update_shadow_word_inl.h"
+  }
   idx = 2;
+  if (stored) {
 #include "tsan_update_shadow_word_inl.h"
+  } else {
+#include "tsan_update_shadow_word_inl.h"
+  }
   idx = 3;
+  if (stored) {
 #include "tsan_update_shadow_word_inl.h"
+  } else {
+#include "tsan_update_shadow_word_inl.h"
+  }
 #endif
 
   // we did not find any races and had already stored
   // the current access info, so we are done
-  if (LIKELY(store_word == 0))
+  if (LIKELY(stored))
     return;
   // choose a random candidate slot and replace it
   StoreShadow(shadow_mem + (cur.epoch() % kShadowCnt), store_word);
@@ -783,7 +824,7 @@ void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
   }
 #endif
 
-  if (!SANITIZER_GO && *shadow_mem == kShadowRodata) {
+  if (!SANITIZER_GO && !kAccessIsWrite && *shadow_mem == kShadowRodata) {
     // Access to .rodata section, no races here.
     // Measurements show that it can be 10-20% of all memory accesses.
     StatInc(thr, StatMop);
@@ -794,7 +835,7 @@ void MemoryAccess(ThreadState *thr, uptr pc, uptr addr,
   }
 
   FastState fast_state = thr->fast_state;
-  if (fast_state.GetIgnoreBit()) {
+  if (UNLIKELY(fast_state.GetIgnoreBit())) {
     StatInc(thr, StatMop);
     StatInc(thr, kAccessIsWrite ? StatMopWrite : StatMopRead);
     StatInc(thr, (StatType)(StatMop1 + kAccessSizeLog));
@@ -895,7 +936,8 @@ static void MemoryRangeSet(ThreadState *thr, uptr pc, uptr addr, uptr size,
     u64 *p1 = p;
     p = RoundDown(end, kPageSize);
     UnmapOrDie((void*)p1, (uptr)p - (uptr)p1);
-    MmapFixedNoReserve((uptr)p1, (uptr)p - (uptr)p1);
+    if (!MmapFixedNoReserve((uptr)p1, (uptr)p - (uptr)p1))
+      Die();
     // Set the ending.
     while (p < end) {
       *p++ = val;

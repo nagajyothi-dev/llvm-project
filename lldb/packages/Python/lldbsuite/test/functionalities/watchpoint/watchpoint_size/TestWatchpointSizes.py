@@ -28,38 +28,35 @@ class WatchpointSizeTestCase(TestBase):
         self.source = 'main.c'
 
         # Output filename.
-        self.exe_name = 'a.out'
+        self.exe_name = self.getBuildArtifact("a.out")
         self.d = {'C_SOURCES': self.source, 'EXE': self.exe_name}
 
-    # Watchpoints not supported
-    @expectedFailureAndroid(archs=['arm', 'aarch64'])
     @expectedFailureAll(
         oslist=["windows"],
         bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     # Read-write watchpoints not supported on SystemZ
     @expectedFailureAll(archs=['s390x'])
+    @expectedFailureNetBSD
     def test_byte_size_watchpoints_with_byte_selection(self):
         """Test to selectively watch different bytes in a 8-byte array."""
         self.run_watchpoint_size_test('byteArray', 8, '1')
 
-    # Watchpoints not supported
-    @expectedFailureAndroid(archs=['arm', 'aarch64'])
     @expectedFailureAll(
         oslist=["windows"],
         bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     # Read-write watchpoints not supported on SystemZ
     @expectedFailureAll(archs=['s390x'])
+    @expectedFailureNetBSD
     def test_two_byte_watchpoints_with_word_selection(self):
         """Test to selectively watch different words in an 8-byte word array."""
         self.run_watchpoint_size_test('wordArray', 4, '2')
 
-    # Watchpoints not supported
-    @expectedFailureAndroid(archs=['arm', 'aarch64'])
     @expectedFailureAll(
         oslist=["windows"],
         bugnumber="llvm.org/pr24446: WINDOWS XFAIL TRIAGE - Watchpoints not supported on Windows")
     # Read-write watchpoints not supported on SystemZ
     @expectedFailureAll(archs=['s390x'])
+    @expectedFailureNetBSD
     def test_four_byte_watchpoints_with_dword_selection(self):
         """Test to selectively watch two double words in an 8-byte dword array."""
         self.run_watchpoint_size_test('dwordArray', 2, '4')
@@ -68,7 +65,7 @@ class WatchpointSizeTestCase(TestBase):
         self.build(dictionary=self.d)
         self.setTearDownCleanup(dictionary=self.d)
 
-        exe = os.path.join(os.getcwd(), self.exe_name)
+        exe = self.getBuildArtifact(self.exe_name)
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
         # Detect line number after which we are going to increment arrayName.

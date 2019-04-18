@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextLinux_mips64.cpp ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,22 +10,19 @@
 
 #include "NativeRegisterContextLinux_mips64.h"
 
-// C Includes
-// C++ Includes
 
-// Other libraries and framework includes
 #include "Plugins/Process/Linux/NativeProcessLinux.h"
 #include "Plugins/Process/Linux/Procfs.h"
 #include "Plugins/Process/POSIX/ProcessPOSIXLog.h"
 #include "Plugins/Process/Utility/RegisterContextLinux_mips.h"
 #include "Plugins/Process/Utility/RegisterContextLinux_mips64.h"
 #include "lldb/Core/EmulateInstruction.h"
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/LLDBAssert.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-enumerations.h"
 #include "lldb/lldb-private-enumerations.h"
@@ -80,21 +76,18 @@ struct pt_watch_regs default_watch_regs;
 using namespace lldb_private;
 using namespace lldb_private::process_linux;
 
-NativeRegisterContextLinux *
+std::unique_ptr<NativeRegisterContextLinux>
 NativeRegisterContextLinux::CreateHostNativeRegisterContextLinux(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx) {
-  return new NativeRegisterContextLinux_mips64(target_arch, native_thread,
-                                               concrete_frame_idx);
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread) {
+  return llvm::make_unique<NativeRegisterContextLinux_mips64>(target_arch,
+                                                              native_thread);
 }
 
 #define REG_CONTEXT_SIZE                                                       \
   (GetRegisterInfoInterface().GetGPRSize() + sizeof(FPR_linux_mips) +          \
    sizeof(MSA_linux_mips))
 
-// ----------------------------------------------------------------------------
 // NativeRegisterContextLinux_mips64 members.
-// ----------------------------------------------------------------------------
 
 static RegisterInfoInterface *
 CreateRegisterInfoInterface(const ArchSpec &target_arch) {
@@ -110,9 +103,8 @@ CreateRegisterInfoInterface(const ArchSpec &target_arch) {
 }
 
 NativeRegisterContextLinux_mips64::NativeRegisterContextLinux_mips64(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx)
-    : NativeRegisterContextLinux(native_thread, concrete_frame_idx,
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread)
+    : NativeRegisterContextLinux(native_thread,
                                  CreateRegisterInfoInterface(target_arch)) {
   switch (target_arch.GetMachine()) {
   case llvm::Triple::mips:
@@ -142,9 +134,9 @@ NativeRegisterContextLinux_mips64::NativeRegisterContextLinux_mips64(
     break;
   }
 
-  // Initialize m_iovec to point to the buffer and buffer size
-  // using the conventions of Berkeley style UIO structures, as required
-  // by PTRACE extensions.
+  // Initialize m_iovec to point to the buffer and buffer size using the
+  // conventions of Berkeley style UIO structures, as required by PTRACE
+  // extensions.
   m_iovec.iov_base = &m_msa;
   m_iovec.iov_len = sizeof(MSA_linux_mips);
 
@@ -339,7 +331,8 @@ lldb_private::Status NativeRegisterContextLinux_mips64::WriteRegister(
     uint8_t byte_size = reg_info->byte_size;
     lldbassert(reg_info->byte_offset < sizeof(UserArea));
 
-    // Initialise the FP and MSA buffers by reading all co-processor 1 registers
+    // Initialise the FP and MSA buffers by reading all co-processor 1
+    // registers
     ReadCP1();
 
     if (IsFPR(reg_index)) {
@@ -945,25 +938,25 @@ NativeRegisterContextLinux_mips64::GetWatchpointHitAddress(uint32_t wp_index) {
 
   lldb_private::ArchSpec arch;
   arch = GetRegisterInfoInterface().GetTargetArchitecture();
-  std::unique_ptr<EmulateInstruction> emulator_ap(
+  std::unique_ptr<EmulateInstruction> emulator_up(
       EmulateInstruction::FindPlugin(arch, lldb_private::eInstructionTypeAny,
                                      nullptr));
 
-  if (emulator_ap == nullptr)
+  if (emulator_up == nullptr)
     return LLDB_INVALID_ADDRESS;
 
   EmulatorBaton baton(
       static_cast<NativeProcessLinux *>(&m_thread.GetProcess()), this);
-  emulator_ap->SetBaton(&baton);
-  emulator_ap->SetReadMemCallback(&ReadMemoryCallback);
-  emulator_ap->SetReadRegCallback(&ReadRegisterCallback);
-  emulator_ap->SetWriteMemCallback(&WriteMemoryCallback);
-  emulator_ap->SetWriteRegCallback(&WriteRegisterCallback);
+  emulator_up->SetBaton(&baton);
+  emulator_up->SetReadMemCallback(&ReadMemoryCallback);
+  emulator_up->SetReadRegCallback(&ReadRegisterCallback);
+  emulator_up->SetWriteMemCallback(&WriteMemoryCallback);
+  emulator_up->SetWriteRegCallback(&WriteRegisterCallback);
 
-  if (!emulator_ap->ReadInstruction())
+  if (!emulator_up->ReadInstruction())
     return LLDB_INVALID_ADDRESS;
 
-  if (emulator_ap->EvaluateInstruction(lldb::eEmulateInstructionOptionNone))
+  if (emulator_up->EvaluateInstruction(lldb::eEmulateInstructionOptionNone))
     return baton.m_watch_hit_addr;
 
   return LLDB_INVALID_ADDRESS;
@@ -1033,13 +1026,11 @@ Status NativeRegisterContextLinux_mips64::Read_SR_Config(uint32_t offset,
   Status error = NativeProcessLinux::PtraceWrapper(
       PTRACE_GETREGS, m_thread.GetID(), NULL, &regs, sizeof regs);
   if (error.Success()) {
-    lldb_private::ArchSpec arch;
-    if (m_thread.GetProcess().GetArchitecture(arch)) {
-      void *target_address = ((uint8_t *)&regs) + offset +
-                             4 * (arch.GetMachine() == llvm::Triple::mips);
-      value.SetUInt(*(uint32_t *)target_address, size);
-    } else
-      error.SetErrorString("failed to get architecture");
+    const lldb_private::ArchSpec &arch =
+        m_thread.GetProcess().GetArchitecture();
+    void *target_address = ((uint8_t *)&regs) + offset +
+                           4 * (arch.GetMachine() == llvm::Triple::mips);
+    value.SetUInt(*(uint32_t *)target_address, size);
   }
   return error;
 }

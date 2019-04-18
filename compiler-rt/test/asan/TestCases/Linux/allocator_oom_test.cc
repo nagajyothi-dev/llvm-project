@@ -29,8 +29,10 @@
 // RUN:   | FileCheck %s --check-prefixes=CHECK-MALLOC-REALLOC,CHECK-NULL
 
 // ASan shadow memory on s390 is too large for this test.
+// AArch64 bots fail on this test.
 // TODO(alekseys): Android lit do not run ulimit on device.
-// UNSUPPORTED: s390,android
+// REQUIRES: shadow-scale-3
+// UNSUPPORTED: s390,android,aarch64
 
 #include <stdlib.h>
 #include <string.h>
@@ -82,5 +84,5 @@ int main(int argc, char **argv) {
 // CHECK-REALLOC: realloc:
 // CHECK-MALLOC-REALLOC: realloc-after-malloc:
 
-// CHECK-CRASH: AddressSanitizer's allocator is terminating the process
+// CHECK-CRASH: SUMMARY: AddressSanitizer: out-of-memory
 // CHECK-NULL: x: 0

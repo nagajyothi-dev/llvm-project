@@ -1,28 +1,27 @@
 //===--------------------- JSON.cpp -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Utility/JSON.h"
 
-#include "lldb/Utility/Stream.h" // for Stream
+#include "lldb/Utility/Stream.h"
 #include "lldb/Utility/StreamString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 
-#include <inttypes.h> // for PRIu64, PRId64
+#include <inttypes.h>
 #include <limits.h>
-#include <stddef.h> // for size_t
-#include <utility>  // for pair
+#include <stddef.h>
+#include <utility>
 
 using namespace lldb_private;
 
 std::string JSONString::json_string_quote_metachars(const std::string &s) {
-  if (s.find('"') == std::string::npos)
+  if (s.find_first_of("\\\n\"") == std::string::npos)
     return s;
 
   std::string output;
@@ -30,8 +29,9 @@ std::string JSONString::json_string_quote_metachars(const std::string &s) {
   const char *s_chars = s.c_str();
   for (size_t i = 0; i < s_size; i++) {
     unsigned char ch = *(s_chars + i);
-    if (ch == '"') {
+    if (ch == '"' || ch == '\\' || ch == '\n') {
       output.push_back('\\');
+      if (ch == '\n') ch = 'n';
     }
     output.push_back(ch);
   }
@@ -448,8 +448,7 @@ int JSONParser::GetEscapedChar(bool &was_escaped) {
 
 JSONValue::SP JSONParser::ParseJSONObject() {
   // The "JSONParser::Token::ObjectStart" token should have already been
-  // consumed
-  // by the time this function is called
+  // consumed by the time this function is called
   std::unique_ptr<JSONObject> dict_up(new JSONObject());
 
   std::string value;
@@ -480,8 +479,7 @@ JSONValue::SP JSONParser::ParseJSONObject() {
 
 JSONValue::SP JSONParser::ParseJSONArray() {
   // The "JSONParser::Token::ObjectStart" token should have already been
-  // consumed
-  // by the time this function is called
+  // consumed by the time this function is called
   std::unique_ptr<JSONArray> array_up(new JSONArray());
 
   std::string value;

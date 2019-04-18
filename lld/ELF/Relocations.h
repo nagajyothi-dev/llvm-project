@@ -1,44 +1,86 @@
 //===- Relocations.h -------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLD_ELF_RELOCATIONS_H
 #define LLD_ELF_RELOCATIONS_H
 
-#include "lld/Core/LLVM.h"
+#include "lld/Common/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
 #include <map>
 #include <vector>
 
 namespace lld {
 namespace elf {
-class SymbolBody;
+class Symbol;
 class InputSection;
 class InputSectionBase;
 class OutputSection;
-class OutputSection;
+class SectionBase;
+
+// Represents a relocation type, such as R_X86_64_PC32 or R_ARM_THM_CALL.
+using RelType = uint32_t;
 
 // List of target-independent relocation types. Relocations read
 // from files are converted to these types so that the main code
 // doesn't have to know about architecture-specific details.
 enum RelExpr {
   R_ABS,
-  R_ARM_SBREL,
+  R_ADDEND,
   R_GOT,
-  R_GOTONLY_PC,
-  R_GOTONLY_PC_FROM_END,
-  R_GOTREL,
-  R_GOTREL_FROM_END,
-  R_GOT_FROM_END,
   R_GOT_OFF,
-  R_GOT_PAGE_PC,
   R_GOT_PC,
+  R_GOTONLY_PC,
+  R_GOTPLTONLY_PC,
+  R_GOTPLT,
+  R_GOTPLTREL,
+  R_GOTREL,
   R_HINT,
+  R_NEG_TLS,
+  R_NONE,
+  R_PC,
+  R_PLT,
+  R_PLT_PC,
+  R_RELAX_GOT_PC,
+  R_RELAX_GOT_PC_NOPIC,
+  R_RELAX_TLS_GD_TO_IE,
+  R_RELAX_TLS_GD_TO_IE_ABS,
+  R_RELAX_TLS_GD_TO_IE_END,
+  R_RELAX_TLS_GD_TO_IE_GOT_OFF,
+  R_RELAX_TLS_GD_TO_LE,
+  R_RELAX_TLS_GD_TO_LE_NEG,
+  R_RELAX_TLS_IE_TO_LE,
+  R_RELAX_TLS_LD_TO_LE,
+  R_RELAX_TLS_LD_TO_LE_ABS,
+  R_SIZE,
+  R_TLS,
+  R_TLSDESC,
+  R_TLSDESC_CALL,
+  R_TLSGD_GOT,
+  R_TLSGD_GOTPLT,
+  R_TLSGD_PC,
+  R_TLSIE_HINT,
+  R_TLSLD_GOT,
+  R_TLSLD_GOTPLT,
+  R_TLSLD_GOT_OFF,
+  R_TLSLD_HINT,
+  R_TLSLD_PC,
+
+  // The following is abstract relocation types used for only one target.
+  //
+  // Even though RelExpr is intended to be a target-neutral representation
+  // of a relocation type, there are some relocations whose semantics are
+  // unique to a target. Such relocation are marked with R_<TARGET_NAME>.
+  R_AARCH64_GOT_PAGE_PC,
+  R_AARCH64_PAGE_PC,
+  R_AARCH64_RELAX_TLS_GD_TO_IE_PAGE_PC,
+  R_AARCH64_TLSDESC_PAGE,
+  R_ARM_SBREL,
+  R_HEXAGON_GOT,
   R_MIPS_GOTREL,
   R_MIPS_GOT_GP,
   R_MIPS_GOT_GP_PC,
@@ -47,80 +89,28 @@ enum RelExpr {
   R_MIPS_GOT_OFF32,
   R_MIPS_TLSGD,
   R_MIPS_TLSLD,
-  R_NEG_TLS,
-  R_NONE,
-  R_PAGE_PC,
-  R_PC,
-  R_PLT,
-  R_PLT_PAGE_PC,
-  R_PLT_PC,
-  R_PPC_OPD,
-  R_PPC_PLT_OPD,
+  R_PPC_CALL,
+  R_PPC_CALL_PLT,
   R_PPC_TOC,
-  R_RELAX_GOT_PC,
-  R_RELAX_GOT_PC_NOPIC,
-  R_RELAX_TLS_GD_TO_IE,
-  R_RELAX_TLS_GD_TO_IE_ABS,
-  R_RELAX_TLS_GD_TO_IE_END,
-  R_RELAX_TLS_GD_TO_IE_PAGE_PC,
-  R_RELAX_TLS_GD_TO_LE,
-  R_RELAX_TLS_GD_TO_LE_NEG,
-  R_RELAX_TLS_IE_TO_LE,
-  R_RELAX_TLS_LD_TO_LE,
-  R_SIZE,
-  R_TLS,
-  R_TLSDESC,
-  R_TLSDESC_CALL,
-  R_TLSDESC_PAGE,
-  R_TLSGD,
-  R_TLSGD_PC,
-  R_TLSLD,
-  R_TLSLD_PC,
+  R_RISCV_PC_INDIRECT,
 };
-
-// Build a bitmask with one bit set for each RelExpr.
-//
-// Constexpr function arguments can't be used in static asserts, so we
-// use template arguments to build the mask.
-// But function template partial specializations don't exist (needed
-// for base case of the recursion), so we need a dummy struct.
-template <RelExpr... Exprs> struct RelExprMaskBuilder {
-  static inline uint64_t build() { return 0; }
-};
-
-// Specialization for recursive case.
-template <RelExpr Head, RelExpr... Tail>
-struct RelExprMaskBuilder<Head, Tail...> {
-  static inline uint64_t build() {
-    static_assert(0 <= Head && Head < 64,
-                  "RelExpr is too large for 64-bit mask!");
-    return (uint64_t(1) << Head) | RelExprMaskBuilder<Tail...>::build();
-  }
-};
-
-// Return true if `Expr` is one of `Exprs`.
-// There are fewer than 64 RelExpr's, so we can represent any set of
-// RelExpr's as a constant bit mask and test for membership with a
-// couple cheap bitwise operations.
-template <RelExpr... Exprs> bool isRelExprOneOf(RelExpr Expr) {
-  assert(0 <= Expr && (int)Expr < 64 &&
-         "RelExpr is too large for 64-bit mask!");
-  return (uint64_t(1) << Expr) & RelExprMaskBuilder<Exprs...>::build();
-}
 
 // Architecture-neutral representation of relocation.
 struct Relocation {
   RelExpr Expr;
-  uint32_t Type;
+  RelType Type;
   uint64_t Offset;
   int64_t Addend;
-  SymbolBody *Sym;
+  Symbol *Sym;
 };
 
 template <class ELFT> void scanRelocations(InputSectionBase &);
 
+void addIRelativeRelocs();
+
 class ThunkSection;
 class Thunk;
+struct InputSectionDescription;
 
 class ThunkCreator {
 public:
@@ -133,40 +123,37 @@ public:
   uint32_t Pass = 0;
 
 private:
-  void mergeThunks();
-  ThunkSection *getOSThunkSec(OutputSection *Cmd,
-                              std::vector<InputSection *> *ISR);
-  ThunkSection *getISThunkSec(InputSection *IS, OutputSection *OS);
-  void forEachExecInputSection(
-      ArrayRef<OutputSection *> OutputSections,
-      std::function<void(OutputSection *, std::vector<InputSection *> *,
-                         InputSection *)>
-          Fn);
-  std::pair<Thunk *, bool> getThunk(SymbolBody &Body, uint32_t Type);
-  ThunkSection *addThunkSection(OutputSection *Cmd,
-                                std::vector<InputSection *> *, uint64_t Off);
+  void mergeThunks(ArrayRef<OutputSection *> OutputSections);
+
+  ThunkSection *getISDThunkSec(OutputSection *OS, InputSection *IS,
+                               InputSectionDescription *ISD, uint32_t Type,
+                               uint64_t Src);
+
+  ThunkSection *getISThunkSec(InputSection *IS);
+
+  void createInitialThunkSections(ArrayRef<OutputSection *> OutputSections);
+
+  std::pair<Thunk *, bool> getThunk(Symbol &Sym, RelType Type, uint64_t Src);
+
+  ThunkSection *addThunkSection(OutputSection *OS, InputSectionDescription *,
+                                uint64_t Off);
+
+  bool normalizeExistingThunk(Relocation &Rel, uint64_t Src);
+
   // Record all the available Thunks for a Symbol
-  llvm::DenseMap<SymbolBody *, std::vector<Thunk *>> ThunkedSymbols;
+  llvm::DenseMap<std::pair<SectionBase *, uint64_t>, std::vector<Thunk *>>
+      ThunkedSymbolsBySection;
+  llvm::DenseMap<Symbol *, std::vector<Thunk *>> ThunkedSymbols;
 
   // Find a Thunk from the Thunks symbol definition, we can use this to find
   // the Thunk from a relocation to the Thunks symbol definition.
-  llvm::DenseMap<SymbolBody *, Thunk *> Thunks;
+  llvm::DenseMap<Symbol *, Thunk *> Thunks;
 
   // Track InputSections that have an inline ThunkSection placed in front
   // an inline ThunkSection may have control fall through to the section below
   // so we need to make sure that there is only one of them.
   // The Mips LA25 Thunk is an example of an inline ThunkSection.
   llvm::DenseMap<InputSection *, ThunkSection *> ThunkedSections;
-
-  // All the ThunkSections that we have created, organised by OutputSection
-  // will contain a mix of ThunkSections that have been created this pass, and
-  // ThunkSections that have been merged into the OutputSection on previous
-  // passes
-  std::map<std::vector<InputSection *> *, std::vector<ThunkSection *>>
-      ThunkSections;
-
-  // The ThunkSection for this vector of InputSections
-  ThunkSection *CurTS;
 };
 
 // Return a int64_t to make sure we get the sign extension out of the way as

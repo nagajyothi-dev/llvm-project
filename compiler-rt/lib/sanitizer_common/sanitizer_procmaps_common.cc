@@ -1,9 +1,8 @@
 //===-- sanitizer_procmaps_common.cc --------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -12,7 +11,8 @@
 
 #include "sanitizer_platform.h"
 
-#if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD
+#if SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD ||                \
+    SANITIZER_OPENBSD || SANITIZER_SOLARIS
 
 #include "sanitizer_common.h"
 #include "sanitizer_placement_new.h"
@@ -20,9 +20,8 @@
 
 namespace __sanitizer {
 
-// Linker initialized.
-ProcSelfMapsBuff MemoryMappingLayout::cached_proc_self_maps_;
-StaticSpinMutex MemoryMappingLayout::cache_lock_;  // Linker initialized.
+static ProcSelfMapsBuff cached_proc_self_maps;
+static StaticSpinMutex cache_lock;
 
 static int TranslateDigit(char c) {
   if (c >= '0' && c <= '9')
@@ -71,59 +70,55 @@ void MemoryMappedSegment::AddAddressRanges(LoadedModule *module) {
 }
 
 MemoryMappingLayout::MemoryMappingLayout(bool cache_enabled) {
-  ReadProcMaps(&proc_self_maps_);
-  if (cache_enabled) {
-    if (proc_self_maps_.mmaped_size == 0) {
-      LoadFromCache();
-      CHECK_GT(proc_self_maps_.len, 0);
-    }
-  } else {
-    CHECK_GT(proc_self_maps_.mmaped_size, 0);
-  }
-  Reset();
   // FIXME: in the future we may want to cache the mappings on demand only.
   if (cache_enabled)
     CacheMemoryMappings();
+
+  // Read maps after the cache update to capture the maps/unmaps happening in
+  // the process of updating.
+  ReadProcMaps(&data_.proc_self_maps);
+  if (cache_enabled && data_.proc_self_maps.mmaped_size == 0)
+    LoadFromCache();
+
+  Reset();
+}
+
+bool MemoryMappingLayout::Error() const {
+  return data_.current == nullptr;
 }
 
 MemoryMappingLayout::~MemoryMappingLayout() {
   // Only unmap the buffer if it is different from the cached one. Otherwise
   // it will be unmapped when the cache is refreshed.
-  if (proc_self_maps_.data != cached_proc_self_maps_.data) {
-    UnmapOrDie(proc_self_maps_.data, proc_self_maps_.mmaped_size);
-  }
+  if (data_.proc_self_maps.data != cached_proc_self_maps.data)
+    UnmapOrDie(data_.proc_self_maps.data, data_.proc_self_maps.mmaped_size);
 }
 
 void MemoryMappingLayout::Reset() {
-  current_ = proc_self_maps_.data;
+  data_.current = data_.proc_self_maps.data;
 }
 
 // static
 void MemoryMappingLayout::CacheMemoryMappings() {
-  SpinMutexLock l(&cache_lock_);
+  ProcSelfMapsBuff new_proc_self_maps;
+  ReadProcMaps(&new_proc_self_maps);
   // Don't invalidate the cache if the mappings are unavailable.
-  ProcSelfMapsBuff old_proc_self_maps;
-  old_proc_self_maps = cached_proc_self_maps_;
-  ReadProcMaps(&cached_proc_self_maps_);
-  if (cached_proc_self_maps_.mmaped_size == 0) {
-    cached_proc_self_maps_ = old_proc_self_maps;
-  } else {
-    if (old_proc_self_maps.mmaped_size) {
-      UnmapOrDie(old_proc_self_maps.data,
-                 old_proc_self_maps.mmaped_size);
-    }
-  }
+  if (new_proc_self_maps.mmaped_size == 0)
+    return;
+  SpinMutexLock l(&cache_lock);
+  if (cached_proc_self_maps.mmaped_size)
+    UnmapOrDie(cached_proc_self_maps.data, cached_proc_self_maps.mmaped_size);
+  cached_proc_self_maps = new_proc_self_maps;
 }
 
 void MemoryMappingLayout::LoadFromCache() {
-  SpinMutexLock l(&cache_lock_);
-  if (cached_proc_self_maps_.data) {
-    proc_self_maps_ = cached_proc_self_maps_;
-  }
+  SpinMutexLock l(&cache_lock);
+  if (cached_proc_self_maps.data)
+    data_.proc_self_maps = cached_proc_self_maps;
 }
 
 void MemoryMappingLayout::DumpListOfModules(
-    InternalMmapVector<LoadedModule> *modules) {
+    InternalMmapVectorNoCtor<LoadedModule> *modules) {
   Reset();
   InternalScopedString module_name(kMaxPathLength);
   MemoryMappedSegment segment(module_name.data(), module_name.size());
@@ -176,4 +171,4 @@ void GetMemoryProfile(fill_profile_f cb, uptr *stats, uptr stats_size) {
 
 } // namespace __sanitizer
 
-#endif // SANITIZER_FREEBSD || SANITIZER_LINUX || SANITIZER_NETBSD
+#endif

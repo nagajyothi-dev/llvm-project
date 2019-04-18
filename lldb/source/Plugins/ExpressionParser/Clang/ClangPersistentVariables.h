@@ -1,21 +1,16 @@
 //===-- ClangPersistentVariables.h ------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_ClangPersistentVariables_h_
 #define liblldb_ClangPersistentVariables_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
 #include "llvm/ADT/DenseMap.h"
 
-// Project includes
 #include "ClangExpressionVariable.h"
 #include "ClangModulesDeclVendor.h"
 
@@ -23,25 +18,20 @@
 
 namespace lldb_private {
 
-//----------------------------------------------------------------------
-/// @class ClangPersistentVariables ClangPersistentVariables.h
-/// "lldb/Expression/ClangPersistentVariables.h"
-/// @brief Manages persistent values that need to be preserved between
-/// expression invocations.
+/// \class ClangPersistentVariables ClangPersistentVariables.h
+/// "lldb/Expression/ClangPersistentVariables.h" Manages persistent values
+/// that need to be preserved between expression invocations.
 ///
 /// A list of variables that can be accessed and updated by any expression.  See
 /// ClangPersistentVariable for more discussion.  Also provides an increasing,
 /// 0-based counter for naming result variables.
-//----------------------------------------------------------------------
 class ClangPersistentVariables : public PersistentExpressionState {
 public:
   ClangPersistentVariables();
 
   ~ClangPersistentVariables() override = default;
 
-  //------------------------------------------------------------------
   // llvm casting support
-  //------------------------------------------------------------------
   static bool classof(const PersistentExpressionState *pv) {
     return pv->getKind() == PersistentExpressionState::eKindClang;
   }
@@ -50,24 +40,19 @@ public:
   CreatePersistentVariable(const lldb::ValueObjectSP &valobj_sp) override;
 
   lldb::ExpressionVariableSP CreatePersistentVariable(
-      ExecutionContextScope *exe_scope, const ConstString &name,
+      ExecutionContextScope *exe_scope, ConstString name,
       const CompilerType &compiler_type, lldb::ByteOrder byte_order,
       uint32_t addr_byte_size) override;
 
-  //----------------------------------------------------------------------
-  /// Return the next entry in the sequence of strings "$0", "$1", ... for
-  /// use naming persistent expression convenience variables.
-  ///
-  /// @return
-  ///     A string that contains the next persistent variable name.
-  //----------------------------------------------------------------------
-  ConstString GetNextPersistentVariableName() override;
-
   void RemovePersistentVariable(lldb::ExpressionVariableSP variable) override;
+  llvm::StringRef
+  GetPersistentVariablePrefix(bool is_error) const override {
+    return "$";
+  }
 
-  void RegisterPersistentDecl(const ConstString &name, clang::NamedDecl *decl);
+  void RegisterPersistentDecl(ConstString name, clang::NamedDecl *decl);
 
-  clang::NamedDecl *GetPersistentDecl(const ConstString &name);
+  clang::NamedDecl *GetPersistentDecl(ConstString name);
 
   void AddHandLoadedClangModule(ClangModulesDeclVendor::ModuleID module) {
     m_hand_loaded_clang_modules.push_back(module);

@@ -1,9 +1,8 @@
 //===-- asan_posix.cc -----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -25,7 +24,6 @@
 #include "sanitizer_common/sanitizer_procmaps.h"
 
 #include <pthread.h>
-#include <signal.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -34,62 +32,58 @@
 namespace __asan {
 
 void AsanOnDeadlySignal(int signo, void *siginfo, void *context) {
-  ScopedDeadlySignal signal_scope(GetCurrentThread());
-  int code = (int)((siginfo_t*)siginfo)->si_code;
-  // Write the first message using fd=2, just in case.
-  // It may actually fail to write in case stderr is closed.
-  internal_write(2, "ASAN:DEADLYSIGNAL\n", 18);
-  SignalContext sig = SignalContext::Create(siginfo, context);
-
-  // Access at a reasonable offset above SP, or slightly below it (to account
-  // for x86_64 or PowerPC redzone, ARM push of multiple registers, etc) is
-  // probably a stack overflow.
-#ifdef __s390__
-  // On s390, the fault address in siginfo points to start of the page, not
-  // to the precise word that was accessed.  Mask off the low bits of sp to
-  // take it into account.
-  bool IsStackAccess = sig.addr >= (sig.sp & ~0xFFF) &&
-                       sig.addr < sig.sp + 0xFFFF;
-#else
-  bool IsStackAccess = sig.addr + 512 > sig.sp && sig.addr < sig.sp + 0xFFFF;
-#endif
-
-#if __powerpc__
-  // Large stack frames can be allocated with e.g.
-  //   lis r0,-10000
-  //   stdux r1,r1,r0 # store sp to [sp-10000] and update sp by -10000
-  // If the store faults then sp will not have been updated, so test above
-  // will not work, because the fault address will be more than just "slightly"
-  // below sp.
-  if (!IsStackAccess && IsAccessibleMemoryRange(sig.pc, 4)) {
-    u32 inst = *(unsigned *)sig.pc;
-    u32 ra = (inst >> 16) & 0x1F;
-    u32 opcd = inst >> 26;
-    u32 xo = (inst >> 1) & 0x3FF;
-    // Check for store-with-update to sp. The instructions we accept are:
-    //   stbu rs,d(ra)          stbux rs,ra,rb
-    //   sthu rs,d(ra)          sthux rs,ra,rb
-    //   stwu rs,d(ra)          stwux rs,ra,rb
-    //   stdu rs,ds(ra)         stdux rs,ra,rb
-    // where ra is r1 (the stack pointer).
-    if (ra == 1 &&
-        (opcd == 39 || opcd == 45 || opcd == 37 || opcd == 62 ||
-         (opcd == 31 && (xo == 247 || xo == 439 || xo == 183 || xo == 181))))
-      IsStackAccess = true;
-  }
-#endif // __powerpc__
-
-  // We also check si_code to filter out SEGV caused by something else other
-  // then hitting the guard page or unmapped memory, like, for example,
-  // unaligned memory access.
-  if (IsStackAccess && (code == si_SEGV_MAPERR || code == si_SEGV_ACCERR))
-    ReportStackOverflow(sig);
-  else
-    ReportDeadlySignal(signo, sig);
+  StartReportDeadlySignal();
+  SignalContext sig(siginfo, context);
+  ReportDeadlySignal(sig);
 }
 
 // ---------------------- TSD ---------------- {{{1
 
+#if SANITIZER_NETBSD || SANITIZER_FREEBSD
+// Thread Static Data cannot be used in early init on NetBSD and FreeBSD.
+// Reuse the Asan TSD API for compatibility with existing code
+// with an alternative implementation.
+
+static void (*tsd_destructor)(void *tsd) = nullptr;
+
+struct tsd_key {
+  tsd_key() : key(nullptr) {}
+  ~tsd_key() {
+    CHECK(tsd_destructor);
+    if (key)
+      (*tsd_destructor)(key);
+  }
+  void *key;
+};
+
+static thread_local struct tsd_key key;
+
+void AsanTSDInit(void (*destructor)(void *tsd)) {
+  CHECK(!tsd_destructor);
+  tsd_destructor = destructor;
+}
+
+void *AsanTSDGet() {
+  CHECK(tsd_destructor);
+  return key.key;
+}
+
+void AsanTSDSet(void *tsd) {
+  CHECK(tsd_destructor);
+  CHECK(tsd);
+  CHECK(!key.key);
+  key.key = tsd;
+}
+
+void PlatformTSDDtor(void *tsd) {
+  CHECK(tsd_destructor);
+  CHECK_EQ(key.key, tsd);
+  key.key = nullptr;
+  // Make sure that signal handler can not see a stale current thread pointer.
+  atomic_signal_fence(memory_order_seq_cst);
+  AsanThread::TSDDtor(tsd);
+}
+#else
 static pthread_key_t tsd_key;
 static bool tsd_key_inited = false;
 void AsanTSDInit(void (*destructor)(void *tsd)) {
@@ -117,6 +111,7 @@ void PlatformTSDDtor(void *tsd) {
   }
   AsanThread::TSDDtor(tsd);
 }
+#endif
 }  // namespace __asan
 
 #endif  // SANITIZER_POSIX

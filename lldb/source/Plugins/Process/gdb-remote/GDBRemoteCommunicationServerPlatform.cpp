@@ -1,9 +1,8 @@
 //===-- GDBRemoteCommunicationServerPlatform.cpp ----------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,22 +10,20 @@
 
 #include <errno.h>
 
-// C Includes
-// C++ Includes
 #include <chrono>
+#include <csignal>
 #include <cstring>
 #include <mutex>
 #include <sstream>
 
-// Other libraries and framework includes
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Threading.h"
 
 #include "lldb/Host/Config.h"
 #include "lldb/Host/ConnectionFileDescriptor.h"
+#include "lldb/Host/FileAction.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostInfo.h"
-#include "lldb/Target/FileAction.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/UnixSignals.h"
@@ -37,16 +34,13 @@
 #include "lldb/Utility/StructuredData.h"
 #include "lldb/Utility/UriParser.h"
 
-// Project includes
-#include "Utility/StringExtractorGDBRemote.h"
+#include "lldb/Utility/StringExtractorGDBRemote.h"
 
 using namespace lldb;
 using namespace lldb_private;
 using namespace lldb_private::process_gdb_remote;
 
-//----------------------------------------------------------------------
 // GDBRemoteCommunicationServerPlatform constructor
-//----------------------------------------------------------------------
 GDBRemoteCommunicationServerPlatform::GDBRemoteCommunicationServerPlatform(
     const Socket::SocketProtocol socket_protocol, const char *socket_scheme)
     : GDBRemoteCommunicationServerCommon("gdb-remote.server",
@@ -90,9 +84,7 @@ GDBRemoteCommunicationServerPlatform::GDBRemoteCommunicationServerPlatform(
                         });
 }
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 GDBRemoteCommunicationServerPlatform::~GDBRemoteCommunicationServerPlatform() {}
 
 Status GDBRemoteCommunicationServerPlatform::LaunchGDBServer(
@@ -101,11 +93,11 @@ Status GDBRemoteCommunicationServerPlatform::LaunchGDBServer(
   if (port == UINT16_MAX)
     port = GetNextAvailablePort();
 
-  // Spawn a new thread to accept the port that gets bound after
-  // binding to port 0 (zero).
+  // Spawn a new thread to accept the port that gets bound after binding to
+  // port 0 (zero).
 
-  // ignore the hostname send from the remote end, just use the ip address
-  // that we're currently communicating with as the hostname
+  // ignore the hostname send from the remote end, just use the ip address that
+  // we're currently communicating with as the hostname
 
   // Spawn a debugserver and try to get the port it listens to.
   ProcessLaunchInfo debugserver_launch_info;
@@ -116,8 +108,8 @@ Status GDBRemoteCommunicationServerPlatform::LaunchGDBServer(
   if (log)
     log->Printf("Launching debugserver with: %s:%u...", hostname.c_str(), port);
 
-  // Do not run in a new session so that it can not linger after the
-  // platform closes.
+  // Do not run in a new session so that it can not linger after the platform
+  // closes.
   debugserver_launch_info.SetLaunchInSeparateProcessGroup(false);
   debugserver_launch_info.SetMonitorProcessCallback(
       std::bind(&GDBRemoteCommunicationServerPlatform::DebugserverProcessReaped,
@@ -128,8 +120,9 @@ Status GDBRemoteCommunicationServerPlatform::LaunchGDBServer(
   llvm::StringRef platform_ip;
   int platform_port;
   llvm::StringRef platform_path;
-  bool ok = UriParser::Parse(GetConnection()->GetURI(), platform_scheme,
-                             platform_ip, platform_port, platform_path);
+  std::string platform_uri = GetConnection()->GetURI();
+  bool ok = UriParser::Parse(platform_uri, platform_scheme, platform_ip,
+                             platform_port, platform_path);
   UNUSED_IF_ASSERT_DISABLED(ok);
   assert(ok);
 
@@ -166,11 +159,8 @@ Status GDBRemoteCommunicationServerPlatform::LaunchGDBServer(
 GDBRemoteCommunication::PacketResult
 GDBRemoteCommunicationServerPlatform::Handle_qLaunchGDBServer(
     StringExtractorGDBRemote &packet) {
-#ifdef _WIN32
-  return SendErrorResponse(9);
-#else
-  // Spawn a local debugserver as a platform so we can then attach or launch
-  // a process...
+  // Spawn a local debugserver as a platform so we can then attach or launch a
+  // process...
 
   Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_PLATFORM));
   if (log)
@@ -212,17 +202,16 @@ GDBRemoteCommunicationServerPlatform::Handle_qLaunchGDBServer(
                   port + m_port_offset);
   if (!socket_name.empty()) {
     response.PutCString("socket_name:");
-    response.PutCStringAsRawHex8(socket_name.c_str());
+    response.PutStringAsRawHex8(socket_name);
     response.PutChar(';');
   }
 
   PacketResult packet_result = SendPacketNoLock(response.GetString());
   if (packet_result != PacketResult::Success) {
     if (debugserver_pid != LLDB_INVALID_PROCESS_ID)
-      ::kill(debugserver_pid, SIGINT);
+      Host::Kill(debugserver_pid, SIGINT);
   }
   return packet_result;
-#endif
 }
 
 GDBRemoteCommunication::PacketResult
@@ -258,8 +247,7 @@ GDBRemoteCommunicationServerPlatform::Handle_qKillSpawnedProcess(
 
   lldb::pid_t pid = packet.GetU64(LLDB_INVALID_PROCESS_ID);
 
-  // verify that we know anything about this pid.
-  // Scope for locker
+  // verify that we know anything about this pid. Scope for locker
   {
     std::lock_guard<std::recursive_mutex> guard(m_spawned_pids_mutex);
     if (m_spawned_pids.find(pid) == m_spawned_pids.end()) {
@@ -305,8 +293,8 @@ bool GDBRemoteCommunicationServerPlatform::KillSpawnedProcess(lldb::pid_t pid) {
       return true;
   }
 
-  // the launched process still lives.  Now try killing it again,
-  // this time with an unblockable signal.
+  // the launched process still lives.  Now try killing it again, this time
+  // with an unblockable signal.
   Host::Kill(pid, SIGKILL);
 
   for (size_t i = 0; i < 10; ++i) {
@@ -320,8 +308,7 @@ bool GDBRemoteCommunicationServerPlatform::KillSpawnedProcess(lldb::pid_t pid) {
     usleep(10000);
   }
 
-  // check one more time after the final usleep
-  // Scope for locker
+  // check one more time after the final usleep Scope for locker
   {
     std::lock_guard<std::recursive_mutex> guard(m_spawned_pids_mutex);
     if (m_spawned_pids.find(pid) == m_spawned_pids.end())
@@ -388,14 +375,13 @@ GDBRemoteCommunicationServerPlatform::Handle_qC(
   StreamString response;
   response.Printf("QC%" PRIx64, pid);
 
-  // If we launch a process and this GDB server is acting as a platform,
-  // then we need to clear the process launch state so we can start
-  // launching another process. In order to launch a process a bunch or
-  // packets need to be sent: environment packets, working directory,
-  // disable ASLR, and many more settings. When we launch a process we
-  // then need to know when to clear this information. Currently we are
-  // selecting the 'qC' packet as that packet which seems to make the most
-  // sense.
+  // If we launch a process and this GDB server is acting as a platform, then
+  // we need to clear the process launch state so we can start launching
+  // another process. In order to launch a process a bunch or packets need to
+  // be sent: environment packets, working directory, disable ASLR, and many
+  // more settings. When we launch a process we then need to know when to clear
+  // this information. Currently we are selecting the 'qC' packet as that
+  // packet which seems to make the most sense.
   if (pid != LLDB_INVALID_PROCESS_ID) {
     m_process_launch_info.Clear();
   }
@@ -408,7 +394,7 @@ GDBRemoteCommunicationServerPlatform::Handle_jSignalsInfo(
     StringExtractorGDBRemote &packet) {
   StructuredData::Array signal_array;
 
-  const auto &signals = Host::GetUnixSignals();
+  lldb::UnixSignalsSP signals = UnixSignals::CreateForHost();
   for (auto signo = signals->GetFirstSignalNumber();
        signo != LLDB_INVALID_SIGNAL_NUMBER;
        signo = signals->GetNextSignalNumber(signo)) {
@@ -444,9 +430,8 @@ Status GDBRemoteCommunicationServerPlatform::LaunchProcess() {
     return Status("%s: no process command line specified to launch",
                   __FUNCTION__);
 
-  // specify the process monitor if not already set.  This should
-  // generally be what happens since we need to reap started
-  // processes.
+  // specify the process monitor if not already set.  This should generally be
+  // what happens since we need to reap started processes.
   if (!m_process_launch_info.GetMonitorProcessCallback())
     m_process_launch_info.SetMonitorProcessCallback(
         std::bind(
@@ -465,8 +450,8 @@ Status GDBRemoteCommunicationServerPlatform::LaunchProcess() {
          m_process_launch_info.GetArguments().GetArgumentAtIndex(0),
          m_process_launch_info.GetProcessID());
 
-  // add to list of spawned processes.  On an lldb-gdbserver, we
-  // would expect there to be only one.
+  // add to list of spawned processes.  On an lldb-gdbserver, we would expect
+  // there to be only one.
   const auto pid = m_process_launch_info.GetProcessID();
   if (pid != LLDB_INVALID_PROCESS_ID) {
     // add to spawned pids
@@ -534,9 +519,9 @@ const FileSpec &GDBRemoteCommunicationServerPlatform::GetDomainSocketDir() {
     const char *domainsocket_dir_env =
         ::getenv("LLDB_DEBUGSERVER_DOMAINSOCKET_DIR");
     if (domainsocket_dir_env != nullptr)
-      g_domainsocket_dir = FileSpec(domainsocket_dir_env, false);
+      g_domainsocket_dir = FileSpec(domainsocket_dir_env);
     else
-      HostInfo::GetLLDBPath(ePathTypeLLDBTempSystemDir, g_domainsocket_dir);
+      g_domainsocket_dir = HostInfo::GetProcessTempDir();
   });
 
   return g_domainsocket_dir;
@@ -544,15 +529,15 @@ const FileSpec &GDBRemoteCommunicationServerPlatform::GetDomainSocketDir() {
 
 FileSpec
 GDBRemoteCommunicationServerPlatform::GetDomainSocketPath(const char *prefix) {
-  llvm::SmallString<PATH_MAX> socket_path;
-  llvm::SmallString<PATH_MAX> socket_name(
+  llvm::SmallString<128> socket_path;
+  llvm::SmallString<128> socket_name(
       (llvm::StringRef(prefix) + ".%%%%%%").str());
 
   FileSpec socket_path_spec(GetDomainSocketDir());
   socket_path_spec.AppendPathComponent(socket_name.c_str());
 
   llvm::sys::fs::createUniqueFile(socket_path_spec.GetCString(), socket_path);
-  return FileSpec(socket_path.c_str(), false);
+  return FileSpec(socket_path.c_str());
 }
 
 void GDBRemoteCommunicationServerPlatform::SetPortOffset(uint16_t port_offset) {

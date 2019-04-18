@@ -1,11 +1,10 @@
+# REQUIRES: mips
 # Check R_MIPS_GOT16 relocation calculation.
 
 # RUN: llvm-mc -filetype=obj -triple=mips-unknown-linux %s -o %t.o
 # RUN: ld.lld %t.o -shared -o %t.so
 # RUN: llvm-objdump -d -t %t.so | FileCheck %s
 # RUN: llvm-readobj -r -mips-plt-got %t.so | FileCheck -check-prefix=GOT %s
-
-# REQUIRES: mips
 
 # CHECK:      Disassembly of section .text:
 # CHECK-NEXT: __start:
@@ -97,7 +96,7 @@
 # GOT-NEXT:       Value: 0x0
 # GOT-NEXT:       Type: None
 # GOT-NEXT:       Section: Undefined
-# GOT-NEXT:       Name: foo@
+# GOT-NEXT:       Name: foo
 # GOT-NEXT:     }
 # GOT-NEXT:   ]
 # GOT-NEXT:   Number of TLS and multi-GOT entries: 0

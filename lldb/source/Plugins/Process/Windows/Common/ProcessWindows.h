@@ -1,16 +1,14 @@
 //===-- ProcessWindows.h ----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_Plugins_Process_Windows_Common_ProcessWindows_H_
 #define liblldb_Plugins_Process_Windows_Common_ProcessWindows_H_
 
-// Other libraries and framework includes
 #include "lldb/Target/Process.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/lldb-forward.h"
@@ -18,6 +16,7 @@
 #include "llvm/Support/Mutex.h"
 
 #include "IDebugDelegate.h"
+#include "Plugins/DynamicLoader/Windows-DYLD/DynamicLoaderWindowsDYLD.h"
 
 namespace lldb_private {
 
@@ -26,9 +25,7 @@ class ProcessWindowsData;
 
 class ProcessWindows : public Process, public IDebugDelegate {
 public:
-  //------------------------------------------------------------------
   // Static functions.
-  //------------------------------------------------------------------
   static lldb::ProcessSP CreateInstance(lldb::TargetSP target_sp,
                                         lldb::ListenerSP listener_sp,
                                         const FileSpec *);
@@ -41,9 +38,7 @@ public:
 
   static const char *GetPluginDescriptionStatic();
 
-  //------------------------------------------------------------------
   // Constructors and destructors
-  //------------------------------------------------------------------
   ProcessWindows(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp);
 
   ~ProcessWindows();
@@ -84,10 +79,15 @@ public:
                       Status &error) override;
   size_t DoWriteMemory(lldb::addr_t vm_addr, const void *buf, size_t size,
                        Status &error) override;
+  lldb::addr_t DoAllocateMemory(size_t size, uint32_t permissions,
+                                Status &error) override;
+  Status DoDeallocateMemory(lldb::addr_t ptr) override;
   Status GetMemoryRegionInfo(lldb::addr_t vm_addr,
                              MemoryRegionInfo &info) override;
 
   lldb::addr_t GetImageInfoAddress() override;
+
+  DynamicLoaderWindowsDYLD *GetDynamicLoader() override;
 
   // IDebugDelegate overrides.
   void OnExitProcess(uint32_t exit_code) override;

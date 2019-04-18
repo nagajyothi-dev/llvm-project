@@ -1,9 +1,8 @@
 //===-- TypeSystem.cpp ------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,19 +22,20 @@
 #include "lldb/Symbol/CompilerType.h"
 
 using namespace lldb_private;
+using namespace lldb;
 
 TypeSystem::TypeSystem(LLVMCastKind kind) : m_kind(kind), m_sym_file(nullptr) {}
 
 TypeSystem::~TypeSystem() {}
 
-lldb::TypeSystemSP TypeSystem::CreateInstance(lldb::LanguageType language,
-                                              Module *module) {
+static lldb::TypeSystemSP CreateInstanceHelper(lldb::LanguageType language,
+                                               Module *module, Target *target) {
   uint32_t i = 0;
   TypeSystemCreateInstance create_callback;
   while ((create_callback = PluginManager::GetTypeSystemCreateCallbackAtIndex(
               i++)) != nullptr) {
     lldb::TypeSystemSP type_system_sp =
-        create_callback(language, module, nullptr);
+        create_callback(language, module, target);
     if (type_system_sp)
       return type_system_sp;
   }
@@ -44,18 +44,13 @@ lldb::TypeSystemSP TypeSystem::CreateInstance(lldb::LanguageType language,
 }
 
 lldb::TypeSystemSP TypeSystem::CreateInstance(lldb::LanguageType language,
-                                              Target *target) {
-  uint32_t i = 0;
-  TypeSystemCreateInstance create_callback;
-  while ((create_callback = PluginManager::GetTypeSystemCreateCallbackAtIndex(
-              i++)) != nullptr) {
-    lldb::TypeSystemSP type_system_sp =
-        create_callback(language, nullptr, target);
-    if (type_system_sp)
-      return type_system_sp;
-  }
+                                              Module *module) {
+  return CreateInstanceHelper(language, module, nullptr);
+}
 
-  return lldb::TypeSystemSP();
+lldb::TypeSystemSP TypeSystem::CreateInstance(lldb::LanguageType language,
+                                              Target *target) {
+  return CreateInstanceHelper(language, nullptr, target);
 }
 
 bool TypeSystem::IsAnonymousType(lldb::opaque_compiler_type_t type) {
@@ -97,12 +92,32 @@ CompilerType TypeSystem::CreateTypedef(lldb::opaque_compiler_type_t type,
   return CompilerType();
 }
 
-CompilerType TypeSystem::GetBuiltinTypeByName(const ConstString &name) {
+CompilerType TypeSystem::GetBuiltinTypeByName(ConstString name) {
   return CompilerType();
 }
 
 CompilerType TypeSystem::GetTypeForFormatters(void *type) {
   return CompilerType(this, type);
+}
+
+size_t TypeSystem::GetNumTemplateArguments(lldb::opaque_compiler_type_t type) {
+  return 0;
+}
+
+TemplateArgumentKind
+TypeSystem::GetTemplateArgumentKind(opaque_compiler_type_t type, size_t idx) {
+  return eTemplateArgumentKindNull;
+}
+
+CompilerType TypeSystem::GetTypeTemplateArgument(opaque_compiler_type_t type,
+                                                 size_t idx) {
+  return CompilerType();
+}
+
+llvm::Optional<CompilerType::IntegralTemplateArgument>
+TypeSystem::GetIntegralTemplateArgument(opaque_compiler_type_t type,
+                                        size_t idx) {
+  return llvm::None;
 }
 
 LazyBool TypeSystem::ShouldPrintAsOneLiner(void *type, ValueObject *valobj) {
@@ -177,7 +192,7 @@ void TypeSystemMap::ForEach(std::function<bool(TypeSystem *)> const &callback) {
     TypeSystem *type_system = pair.second.get();
     if (type_system && !visited.count(type_system)) {
       visited.insert(type_system);
-      if (callback(type_system) == false)
+      if (!callback(type_system))
         break;
     }
   }

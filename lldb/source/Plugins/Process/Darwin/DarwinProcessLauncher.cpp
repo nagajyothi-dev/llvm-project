@@ -1,9 +1,8 @@
 //===-- DarwinProcessLauncher.cpp -------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -142,24 +141,20 @@ static Status ForkChildForPTraceDebugging(const char *path, char const *argv[],
   }
 
   // Use a fork that ties the child process's stdin/out/err to a pseudo
-  // terminal so we can read it in our MachProcess::STDIOThread
-  // as unbuffered io.
-  lldb_utility::PseudoTerminal pty;
+  // terminal so we can read it in our MachProcess::STDIOThread as unbuffered
+  // io.
+  PseudoTerminal pty;
   char fork_error[256];
   memset(fork_error, 0, sizeof(fork_error));
   *pid = static_cast<::pid_t>(pty.Fork(fork_error, sizeof(fork_error)));
   if (*pid < 0) {
-    //--------------------------------------------------------------
     // Status during fork.
-    //--------------------------------------------------------------
     *pid = static_cast<::pid_t>(LLDB_INVALID_PROCESS_ID);
     error.SetErrorStringWithFormat("%s(): fork failed: %s", __FUNCTION__,
                                    fork_error);
     return error;
   } else if (pid == 0) {
-    //--------------------------------------------------------------
     // Child process
-    //--------------------------------------------------------------
 
     // Debug this process.
     ::ptrace(PT_TRACE_ME, 0, 0, 0);
@@ -167,12 +162,12 @@ static Status ForkChildForPTraceDebugging(const char *path, char const *argv[],
     // Get BSD signals as mach exceptions.
     ::ptrace(PT_SIGEXC, 0, 0, 0);
 
-    // If our parent is setgid, lets make sure we don't inherit those
-    // extra powers due to nepotism.
+    // If our parent is setgid, lets make sure we don't inherit those extra
+    // powers due to nepotism.
     if (::setgid(getgid()) == 0) {
-      // Let the child have its own process group. We need to execute
-      // this call in both the child and parent to avoid a race
-      // condition between the two processes.
+      // Let the child have its own process group. We need to execute this call
+      // in both the child and parent to avoid a race condition between the two
+      // processes.
 
       // Set the child process group to match its pid.
       ::setpgid(0, 0);
@@ -183,23 +178,20 @@ static Status ForkChildForPTraceDebugging(const char *path, char const *argv[],
       // Turn this process into the given executable.
       ::execv(path, (char *const *)argv);
     }
-    // Exit with error code. Child process should have taken
-    // over in above exec call and if the exec fails it will
-    // exit the child process below.
+    // Exit with error code. Child process should have taken over in above exec
+    // call and if the exec fails it will exit the child process below.
     ::exit(127);
   } else {
-    //--------------------------------------------------------------
     // Parent process
-    //--------------------------------------------------------------
-    // Let the child have its own process group. We need to execute
-    // this call in both the child and parent to avoid a race condition
-    // between the two processes.
+    // Let the child have its own process group. We need to execute this call
+    // in both the child and parent to avoid a race condition between the two
+    // processes.
 
     // Set the child process group to match its pid
     ::setpgid(*pid, *pid);
     if (pty_fd) {
-      // Release our master pty file descriptor so the pty class doesn't
-      // close it and so we can continue to use it in our STDIO thread
+      // Release our master pty file descriptor so the pty class doesn't close
+      // it and so we can continue to use it in our STDIO thread
       *pty_fd = pty.ReleaseMasterFileDescriptor();
     }
   }
@@ -302,8 +294,7 @@ static Status PosixSpawnChildForPTraceDebugging(const char *path,
     return error;
   }
 
-  // Ensure we clean up the spawnattr structure however we exit this
-  // function.
+  // Ensure we clean up the spawnattr structure however we exit this function.
   std::unique_ptr<posix_spawnattr_t, int (*)(posix_spawnattr_t *)> spawnattr_up(
       &attr, ::posix_spawnattr_destroy);
 
@@ -332,9 +323,9 @@ static Status PosixSpawnChildForPTraceDebugging(const char *path,
 
 #if !defined(__arm__)
 
-  // We don't need to do this for ARM, and we really shouldn't now that we
-  // have multiple CPU subtypes and no posix_spawnattr call that allows us
-  // to set which CPU subtype to launch...
+  // We don't need to do this for ARM, and we really shouldn't now that we have
+  // multiple CPU subtypes and no posix_spawnattr call that allows us to set
+  // which CPU subtype to launch...
   cpu_type_t desired_cpu_type = launch_info.GetArchitecture().GetMachOCPUType();
   if (desired_cpu_type != LLDB_INVALID_CPUTYPE) {
     size_t ocount = 0;
@@ -374,10 +365,10 @@ static Status PosixSpawnChildForPTraceDebugging(const char *path,
                   int (*)(posix_spawn_file_actions_t *)>
       file_actions_up(&file_actions, ::posix_spawn_file_actions_destroy);
 
-  // We assume the caller has setup the file actions appropriately.  We
-  // are not in the business of figuring out what we really need here.
-  // lldb-server will have already called FinalizeFileActions() as well
-  // to button these up properly.
+  // We assume the caller has setup the file actions appropriately.  We are not
+  // in the business of figuring out what we really need here. lldb-server will
+  // have already called FinalizeFileActions() as well to button these up
+  // properly.
   const size_t num_actions = launch_info.GetNumFileActions();
   for (size_t action_index = 0; action_index < num_actions; ++action_index) {
     const FileAction *const action =
@@ -533,8 +524,8 @@ Status LaunchInferior(ProcessLaunchInfo &launch_info, int *pty_master_fd,
     if (error.Success()) {
       launch_info.SetProcessID(static_cast<lldb::pid_t>(pid));
     } else {
-      // Reset any variables that might have been set during a failed
-      // launch attempt.
+      // Reset any variables that might have been set during a failed launch
+      // attempt.
       if (pty_master_fd)
         *pty_master_fd = -1;
 
@@ -616,8 +607,8 @@ Status LaunchInferior(ProcessLaunchInfo &launch_info, int *pty_master_fd,
       if (pty_master_fd)
         *pty_master_fd = launch_info.GetPTY().ReleaseMasterFileDescriptor();
     } else {
-      // Reset any variables that might have been set during a failed
-      // launch attempt.
+      // Reset any variables that might have been set during a failed launch
+      // attempt.
       if (pty_master_fd)
         *pty_master_fd = -1;
 
@@ -636,8 +627,8 @@ Status LaunchInferior(ProcessLaunchInfo &launch_info, int *pty_master_fd,
   }
 
   if (launch_info.GetProcessID() == LLDB_INVALID_PROCESS_ID) {
-    // If we don't have a valid process ID and no one has set the error,
-    // then return a generic error.
+    // If we don't have a valid process ID and no one has set the error, then
+    // return a generic error.
     if (error.Success())
       error.SetErrorStringWithFormat("%s(): failed to launch, no reason "
                                      "specified",

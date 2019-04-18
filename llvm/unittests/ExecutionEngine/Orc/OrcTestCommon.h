@@ -1,9 +1,8 @@
 //===------ OrcTestCommon.h - Utilities for Orc Unit Tests ------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,16 +16,57 @@
 
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
+#include "llvm/ExecutionEngine/Orc/IndirectionUtils.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
-#include "llvm/IR/TypeBuilder.h"
 #include "llvm/Object/ObjectFile.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "gtest/gtest.h"
+
 #include <memory>
 
 namespace llvm {
+
+namespace orc {
+// CoreAPIsStandardTest that saves a bunch of boilerplate by providing the
+// following:
+//
+// (1) ES -- An ExecutionSession
+// (2) Foo, Bar, Baz, Qux -- SymbolStringPtrs for strings "foo", "bar", "baz",
+//     and "qux" respectively.
+// (3) FooAddr, BarAddr, BazAddr, QuxAddr -- Dummy addresses. Guaranteed
+//     distinct and non-null.
+// (4) FooSym, BarSym, BazSym, QuxSym -- JITEvaluatedSymbols with FooAddr,
+//     BarAddr, BazAddr, and QuxAddr respectively. All with default strong,
+//     linkage and non-hidden visibility.
+// (5) V -- A JITDylib associated with ES.
+class CoreAPIsBasedStandardTest : public testing::Test {
+protected:
+  std::shared_ptr<SymbolStringPool> SSP = std::make_shared<SymbolStringPool>();
+  ExecutionSession ES{SSP};
+  JITDylib &JD = ES.createJITDylib("JD");
+  SymbolStringPtr Foo = ES.intern("foo");
+  SymbolStringPtr Bar = ES.intern("bar");
+  SymbolStringPtr Baz = ES.intern("baz");
+  SymbolStringPtr Qux = ES.intern("qux");
+  static const JITTargetAddress FooAddr = 1U;
+  static const JITTargetAddress BarAddr = 2U;
+  static const JITTargetAddress BazAddr = 3U;
+  static const JITTargetAddress QuxAddr = 4U;
+  JITEvaluatedSymbol FooSym =
+      JITEvaluatedSymbol(FooAddr, JITSymbolFlags::Exported);
+  JITEvaluatedSymbol BarSym =
+      JITEvaluatedSymbol(BarAddr, JITSymbolFlags::Exported);
+  JITEvaluatedSymbol BazSym =
+      JITEvaluatedSymbol(BazAddr, JITSymbolFlags::Exported);
+  JITEvaluatedSymbol QuxSym =
+      JITEvaluatedSymbol(QuxAddr, JITSymbolFlags::Exported);
+};
+
+} // end namespace orc
 
 class OrcNativeTarget {
 public:
@@ -41,6 +81,47 @@ public:
 
 private:
   static bool NativeTargetInitialized;
+};
+
+class SimpleMaterializationUnit : public orc::MaterializationUnit {
+public:
+  using MaterializeFunction =
+      std::function<void(orc::MaterializationResponsibility)>;
+  using DiscardFunction =
+      std::function<void(const orc::JITDylib &, orc::SymbolStringPtr)>;
+  using DestructorFunction = std::function<void()>;
+
+  SimpleMaterializationUnit(
+      orc::SymbolFlagsMap SymbolFlags, MaterializeFunction Materialize,
+      DiscardFunction Discard = DiscardFunction(),
+      DestructorFunction Destructor = DestructorFunction())
+      : MaterializationUnit(std::move(SymbolFlags), orc::VModuleKey()),
+        Materialize(std::move(Materialize)), Discard(std::move(Discard)),
+        Destructor(std::move(Destructor)) {}
+
+  ~SimpleMaterializationUnit() override {
+    if (Destructor)
+      Destructor();
+  }
+
+  StringRef getName() const override { return "<Simple>"; }
+
+  void materialize(orc::MaterializationResponsibility R) override {
+    Materialize(std::move(R));
+  }
+
+  void discard(const orc::JITDylib &JD,
+               const orc::SymbolStringPtr &Name) override {
+    if (Discard)
+      Discard(JD, std::move(Name));
+    else
+      llvm_unreachable("Discard not supported");
+  }
+
+private:
+  MaterializeFunction Materialize;
+  DiscardFunction Discard;
+  DestructorFunction Destructor;
 };
 
 // Base class for Orc tests that will execute code.
@@ -59,15 +140,26 @@ public:
       // If we found a TargetMachine, check that it's one that Orc supports.
       const Triple& TT = TM->getTargetTriple();
 
+      // Bail out for windows platforms. We do not support these yet.
       if ((TT.getArch() != Triple::x86_64 && TT.getArch() != Triple::x86) ||
-          TT.isOSWindows())
-        TM = nullptr;
+           TT.isOSWindows())
+        return;
+
+      // Target can JIT?
+      SupportsJIT = TM->getTarget().hasJIT();
+      // Use ability to create callback manager to detect whether Orc
+      // has indirection support on this platform. This way the test
+      // and Orc code do not get out of sync.
+      SupportsIndirection = !!orc::createLocalCompileCallbackManager(TT, ES, 0);
     }
   };
 
 protected:
+  orc::ExecutionSession ES;
   LLVMContext Context;
   std::unique_ptr<TargetMachine> TM;
+  bool SupportsJIT = false;
+  bool SupportsIndirection = false;
 };
 
 class ModuleBuilder {
@@ -75,11 +167,8 @@ public:
   ModuleBuilder(LLVMContext &Context, StringRef Triple,
                 StringRef Name);
 
-  template <typename FuncType>
-  Function* createFunctionDecl(StringRef Name) {
-    return Function::Create(
-             TypeBuilder<FuncType, false>::get(M->getContext()),
-             GlobalValue::ExternalLinkage, Name, M.get());
+  Function *createFunctionDecl(FunctionType *FTy, StringRef Name) {
+    return Function::Create(FTy, GlobalValue::ExternalLinkage, Name, M.get());
   }
 
   Module* getModule() { return M.get(); }
@@ -95,82 +184,66 @@ struct DummyStruct {
   int X[256];
 };
 
-// TypeBuilder specialization for DummyStruct.
-template <bool XCompile>
-class TypeBuilder<DummyStruct, XCompile> {
-public:
-  static StructType *get(LLVMContext &Context) {
-    return StructType::get(
-        TypeBuilder<types::i<32>[256], XCompile>::get(Context));
-  }
-};
+inline StructType *getDummyStructTy(LLVMContext &Context) {
+  return StructType::get(ArrayType::get(Type::getInt32Ty(Context), 256));
+}
 
-template <typename HandleT,
-          typename AddModuleFtor,
-          typename RemoveModuleFtor,
-          typename FindSymbolFtor,
-          typename FindSymbolInFtor>
+template <typename HandleT, typename ModuleT>
 class MockBaseLayer {
 public:
 
-  typedef HandleT ModuleHandleT;
+  using ModuleHandleT = HandleT;
 
-  MockBaseLayer(AddModuleFtor &&AddModule,
-                RemoveModuleFtor &&RemoveModule,
-                FindSymbolFtor &&FindSymbol,
-                FindSymbolInFtor &&FindSymbolIn)
-      : AddModule(std::move(AddModule)),
-        RemoveModule(std::move(RemoveModule)),
-        FindSymbol(std::move(FindSymbol)),
-        FindSymbolIn(std::move(FindSymbolIn))
-  {}
+  using AddModuleSignature =
+    Expected<ModuleHandleT>(ModuleT M,
+                            std::shared_ptr<JITSymbolResolver> R);
 
-  template <typename ModuleT, typename MemoryManagerPtrT,
-            typename SymbolResolverPtrT>
-  Expected<ModuleHandleT> addModule(ModuleT Ms, MemoryManagerPtrT MemMgr,
-                                    SymbolResolverPtrT Resolver) {
-    return AddModule(std::move(Ms), std::move(MemMgr), std::move(Resolver));
+  using RemoveModuleSignature = Error(ModuleHandleT H);
+  using FindSymbolSignature = JITSymbol(const std::string &Name,
+                                        bool ExportedSymbolsOnly);
+  using FindSymbolInSignature = JITSymbol(ModuleHandleT H,
+                                          const std::string &Name,
+                                          bool ExportedSymbolsONly);
+  using EmitAndFinalizeSignature = Error(ModuleHandleT H);
+
+  std::function<AddModuleSignature> addModuleImpl;
+  std::function<RemoveModuleSignature> removeModuleImpl;
+  std::function<FindSymbolSignature> findSymbolImpl;
+  std::function<FindSymbolInSignature> findSymbolInImpl;
+  std::function<EmitAndFinalizeSignature> emitAndFinalizeImpl;
+
+  Expected<ModuleHandleT> addModule(ModuleT M,
+                                    std::shared_ptr<JITSymbolResolver> R) {
+    assert(addModuleImpl &&
+           "addModule called, but no mock implementation was provided");
+    return addModuleImpl(std::move(M), std::move(R));
   }
 
   Error removeModule(ModuleHandleT H) {
-    return RemoveModule(H);
+    assert(removeModuleImpl &&
+           "removeModule called, but no mock implementation was provided");
+    return removeModuleImpl(H);
   }
 
   JITSymbol findSymbol(const std::string &Name, bool ExportedSymbolsOnly) {
-    return FindSymbol(Name, ExportedSymbolsOnly);
+    assert(findSymbolImpl &&
+           "findSymbol called, but no mock implementation was provided");
+    return findSymbolImpl(Name, ExportedSymbolsOnly);
   }
 
   JITSymbol findSymbolIn(ModuleHandleT H, const std::string &Name,
                          bool ExportedSymbolsOnly) {
-    return FindSymbolIn(H, Name, ExportedSymbolsOnly);
+    assert(findSymbolInImpl &&
+           "findSymbolIn called, but no mock implementation was provided");
+    return findSymbolInImpl(H, Name, ExportedSymbolsOnly);
   }
 
-private:
-  AddModuleFtor AddModule;
-  RemoveModuleFtor RemoveModule;
-  FindSymbolFtor FindSymbol;
-  FindSymbolInFtor FindSymbolIn;
+  Error emitAndFinaliez(ModuleHandleT H) {
+    assert(emitAndFinalizeImpl &&
+           "emitAndFinalize called, but no mock implementation was provided");
+    return emitAndFinalizeImpl(H);
+  }
 };
-
-template <typename ModuleHandleT,
-          typename AddModuleFtor,
-          typename RemoveModuleFtor,
-          typename FindSymbolFtor,
-          typename FindSymbolInFtor>
-MockBaseLayer<ModuleHandleT, AddModuleFtor, RemoveModuleFtor,
-              FindSymbolFtor, FindSymbolInFtor>
-createMockBaseLayer(AddModuleFtor &&AddModule,
-                    RemoveModuleFtor &&RemoveModule,
-                    FindSymbolFtor &&FindSymbol,
-                    FindSymbolInFtor &&FindSymbolIn) {
-  return MockBaseLayer<ModuleHandleT, AddModuleFtor, RemoveModuleFtor,
-                       FindSymbolFtor, FindSymbolInFtor>(
-                         std::forward<AddModuleFtor>(AddModule),
-                         std::forward<RemoveModuleFtor>(RemoveModule),
-                         std::forward<FindSymbolFtor>(FindSymbol),
-                         std::forward<FindSymbolInFtor>(FindSymbolIn));
-}
-
 
 class ReturnNullJITSymbol {
 public:

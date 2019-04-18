@@ -1,9 +1,8 @@
 //===-IslExprBuilder.h - Helper to generate code for isl AST expressions --===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,16 +13,7 @@
 
 #include "polly/CodeGen/IRBuilder.h"
 #include "polly/Support/ScopHelper.h"
-
-#include "llvm/ADT/MapVector.h"
-#include "isl/ast.h"
-
-namespace llvm {
-class DataLayout;
-class ScalarEvolution;
-} // namespace llvm
-
-struct isl_id;
+#include "isl/isl-noexceptions.h"
 
 namespace llvm {
 // Provide PointerLikeTypeTraits for isl_id.
@@ -183,6 +173,13 @@ public:
   ///
   /// @return The llvm::Value* containing the result of the computation.
   llvm::Value *createAccessAddress(__isl_take isl_ast_expr *Expr);
+
+  /// Check if an @p Expr contains integer constants larger than 64 bit.
+  ///
+  /// @param Expr The expression to check.
+  ///
+  /// @return True if the ast expression is larger than 64 bit.
+  bool hasLargeInts(isl::ast_expr Expr);
 
 private:
   Scop &S;

@@ -1,3 +1,4 @@
+# REQUIRES: mips
 # Check the order of dynamic symbols for the MIPS target.
 
 # RUN: llvm-mc -filetype=obj -triple=mips-unknown-linux %s -o %t-be.o
@@ -7,8 +8,6 @@
 # RUN: llvm-mc -filetype=obj -triple=mipsel-unknown-linux %s -o %t-el.o
 # RUN: ld.lld -shared %t-el.o -o %t-el.so
 # RUN: llvm-readobj -symbols -dyn-symbols %t-el.so | FileCheck %s
-
-# REQUIRES: mips
 
   .data
   .globl v1,v2,v3
@@ -37,7 +36,7 @@ __start:
 # the MIPS rules. v2 comes first as it is not in the GOT.
 # v1 and v3 are sorted according to their order in the GOT.
 # CHECK: DynamicSymbols [
-# CHECK:     Name: v2@
-# CHECK:     Name: v3@
-# CHECK:     Name: v1@
+# CHECK:     Name: v2
+# CHECK:     Name: v3
+# CHECK:     Name: v1
 # CHECK: ]

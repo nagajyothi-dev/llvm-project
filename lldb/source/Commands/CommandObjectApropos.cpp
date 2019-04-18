@@ -1,30 +1,23 @@
 //===-- CommandObjectApropos.cpp ---------------------------------*- C++
 //-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "CommandObjectApropos.h"
-#include "lldb/Interpreter/Args.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Interpreter/Options.h"
 #include "lldb/Interpreter/Property.h"
+#include "lldb/Utility/Args.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//-------------------------------------------------------------------------
 // CommandObjectApropos
-//-------------------------------------------------------------------------
 
 CommandObjectApropos::CommandObjectApropos(CommandInterpreter &interpreter)
     : CommandObjectParsed(
@@ -53,8 +46,8 @@ bool CommandObjectApropos::DoExecute(Args &args, CommandReturnObject &result) {
   if (argc == 1) {
     auto search_word = args[0].ref;
     if (!search_word.empty()) {
-      // The bulk of the work must be done inside the Command Interpreter, since
-      // the command dictionary is private.
+      // The bulk of the work must be done inside the Command Interpreter,
+      // since the command dictionary is private.
       StringList commands_found;
       StringList commands_help;
 

@@ -1,9 +1,8 @@
 //===- SymbolTable.h --------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,11 +27,11 @@ class Chunk;
 class CommonChunk;
 class Defined;
 class DefinedAbsolute;
+class DefinedRegular;
 class DefinedRelative;
 class Lazy;
 class SectionChunk;
-class SymbolBody;
-struct Symbol;
+class Symbol;
 
 // SymbolTable is a bucket of all known symbols, including defined,
 // undefined, or lazy symbols (the last one is symbols in archive
@@ -55,6 +54,9 @@ public:
   // symbols.
   void reportRemainingUndefines();
 
+  void loadMinGWAutomaticImports();
+  bool handleMinGWAutomaticImport(Symbol *Sym, StringRef Name);
+
   // Returns a list of chunks of selected symbols.
   std::vector<Chunk *> getChunks();
 
@@ -66,7 +68,7 @@ public:
   // mangled symbol. This function tries to find a mangled name
   // for U from the symbol table, and if found, set the symbol as
   // a weak alias for U.
-  void mangleMaybe(SymbolBody *B);
+  void mangleMaybe(Symbol *B);
   StringRef findMangle(StringRef Name);
 
   // Build a set of COFF objects representing the combined contents of
@@ -76,7 +78,7 @@ public:
   std::vector<StringRef> compileBitcodeFiles();
 
   // Creates an Undefined symbol for a given name.
-  SymbolBody *addUndefined(StringRef Name);
+  Symbol *addUndefined(StringRef Name);
 
   Symbol *addSynthetic(StringRef N, Chunk *C);
   Symbol *addAbsolute(StringRef N, uint64_t VA);
@@ -84,9 +86,12 @@ public:
   Symbol *addUndefined(StringRef Name, InputFile *F, bool IsWeakAlias);
   void addLazy(ArchiveFile *F, const Archive::Symbol Sym);
   Symbol *addAbsolute(StringRef N, COFFSymbolRef S);
-  Symbol *addRegular(InputFile *F, StringRef N, bool IsCOMDAT,
+  Symbol *addRegular(InputFile *F, StringRef N,
                      const llvm::object::coff_symbol_generic *S = nullptr,
                      SectionChunk *C = nullptr);
+  std::pair<DefinedRegular *, bool>
+  addComdat(InputFile *F, StringRef N,
+            const llvm::object::coff_symbol_generic *S = nullptr);
   Symbol *addCommon(InputFile *F, StringRef N, uint64_t Size,
                     const llvm::object::coff_symbol_generic *S = nullptr,
                     CommonChunk *C = nullptr);
@@ -101,19 +106,24 @@ public:
 
   // Iterates symbols in non-determinstic hash table order.
   template <typename T> void forEachSymbol(T Callback) {
-    for (auto &Pair : Symtab)
+    for (auto &Pair : SymMap)
       Callback(Pair.second);
   }
 
 private:
+  /// Inserts symbol if not already present.
   std::pair<Symbol *, bool> insert(StringRef Name);
+  /// Same as insert(Name), but also sets IsUsedInRegularObj.
+  std::pair<Symbol *, bool> insert(StringRef Name, InputFile *F);
   StringRef findByPrefix(StringRef Prefix);
 
-  llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> Symtab;
+  llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> SymMap;
   std::unique_ptr<BitcodeCompiler> LTO;
 };
 
 extern SymbolTable *Symtab;
+
+std::string getSymbolLocations(ObjFile *File, uint32_t SymIndex);
 
 } // namespace coff
 } // namespace lld

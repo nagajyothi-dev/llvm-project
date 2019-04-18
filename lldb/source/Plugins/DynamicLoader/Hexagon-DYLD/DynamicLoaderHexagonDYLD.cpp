@@ -1,15 +1,11 @@
 //===-- DynamicLoaderHexagonDYLD.cpp ----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
@@ -23,6 +19,8 @@
 #include "lldb/Utility/Log.h"
 
 #include "DynamicLoaderHexagonDYLD.h"
+
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -61,7 +59,7 @@ static lldb::addr_t findSymbolAddress(Process *proc, ConstString findName) {
   for (size_t i = 0; i < symtab->GetNumSymbols(); i++) {
     const Symbol *sym = symtab->SymbolAtIndex(i);
     assert(sym != nullptr);
-    const ConstString &symName = sym->GetName();
+    ConstString symName = sym->GetName();
 
     if (ConstString::Compare(findName, symName) == 0) {
       Address addr = sym->GetAddress();
@@ -127,8 +125,8 @@ void DynamicLoaderHexagonDYLD::DidAttach() {
 
   executable = GetTargetExecutable();
 
-  // Find the difference between the desired load address in the elf file
-  // and the real load address in memory
+  // Find the difference between the desired load address in the elf file and
+  // the real load address in memory
   load_offset = ComputeLoadOffset();
 
   // Check that there is a valid executable
@@ -157,10 +155,10 @@ void DynamicLoaderHexagonDYLD::DidAttach() {
   // Callback for the target to give it the loaded module list
   m_process->GetTarget().ModulesDidLoad(module_list);
 
-  // Try to set a breakpoint at the rendezvous breakpoint.
-  // DidLaunch uses ProbeEntry() instead.  That sets a breakpoint,
-  // at the dyld breakpoint address, with a callback so that when hit,
-  // the dyld structure can be parsed.
+  // Try to set a breakpoint at the rendezvous breakpoint. DidLaunch uses
+  // ProbeEntry() instead.  That sets a breakpoint, at the dyld breakpoint
+  // address, with a callback so that when hit, the dyld structure can be
+  // parsed.
   if (!SetRendezvousBreakpoint()) {
     // fail
   }
@@ -179,7 +177,7 @@ ModuleSP DynamicLoaderHexagonDYLD::GetTargetExecutable() {
     return executable;
 
   // The target executable file does not exits
-  if (!executable->GetFileSpec().Exists())
+  if (!FileSystem::Instance().Exists(executable->GetFileSpec()))
     return executable;
 
   // Prep module for loading
@@ -201,12 +199,11 @@ ModuleSP DynamicLoaderHexagonDYLD::GetTargetExecutable() {
     return executable;
 
   // TODO: What case is this code used?
-  executable = target.GetSharedModule(module_spec);
+  executable = target.GetOrCreateModule(module_spec, true /* notify */);
   if (executable.get() != target.GetExecutableModulePointer()) {
-    // Don't load dependent images since we are in dyld where we will know
-    // and find out about all images that are loaded
-    const bool get_dependent_images = false;
-    target.SetExecutableModule(executable, get_dependent_images);
+    // Don't load dependent images since we are in dyld where we will know and
+    // find out about all images that are loaded
+    target.SetExecutableModule(executable, eLoadDependentsNo);
   }
 
   return executable;
@@ -246,9 +243,9 @@ void DynamicLoaderHexagonDYLD::UpdateLoadedSections(ModuleSP module,
   }
 }
 
-/// Removes the loaded sections from the target in @p module.
+/// Removes the loaded sections from the target in \p module.
 ///
-/// @param module The module to traverse.
+/// \param module The module to traverse.
 void DynamicLoaderHexagonDYLD::UnloadSections(const ModuleSP module) {
   Target &target = m_process->GetTarget();
   const SectionList *sections = GetSectionListFromModule(module);
@@ -270,9 +267,8 @@ bool DynamicLoaderHexagonDYLD::SetRendezvousBreakpoint() {
 
   // This is the original code, which want to look in the rendezvous structure
   // to find the breakpoint address.  Its backwards for us, since we can easily
-  // find the breakpoint address, since it is exported in our executable.
-  // We however know that we cant read the Rendezvous structure until we have
-  // hit
+  // find the breakpoint address, since it is exported in our executable. We
+  // however know that we cant read the Rendezvous structure until we have hit
   // the breakpoint once.
   const ConstString dyldBpName("_rtld_debug_state");
   addr_t break_addr = findSymbolAddress(m_process, dyldBpName);
@@ -326,8 +322,8 @@ bool DynamicLoaderHexagonDYLD::RendezvousBreakpointHit(
   DynamicLoaderHexagonDYLD *dyld_instance = nullptr;
   dyld_instance = static_cast<DynamicLoaderHexagonDYLD *>(baton);
 
-  // if the dyld_instance is still not valid then
-  // try to locate it on the symbol table
+  // if the dyld_instance is still not valid then try to locate it on the
+  // symbol table
   if (!dyld_instance->m_rendezvous.IsValid()) {
     Process *proc = dyld_instance->m_process;
 
@@ -369,7 +365,8 @@ void DynamicLoaderHexagonDYLD::RefreshModules() {
 
     E = m_rendezvous.loaded_end();
     for (I = m_rendezvous.loaded_begin(); I != E; ++I) {
-      FileSpec file(I->path, true);
+      FileSpec file(I->path);
+      FileSystem::Instance().Resolve(file);
       ModuleSP module_sp =
           LoadModuleAtAddress(file, I->link_addr, I->base_addr, true);
       if (module_sp.get()) {
@@ -393,7 +390,8 @@ void DynamicLoaderHexagonDYLD::RefreshModules() {
 
     E = m_rendezvous.unloaded_end();
     for (I = m_rendezvous.unloaded_begin(); I != E; ++I) {
-      FileSpec file(I->path, true);
+      FileSpec file(I->path);
+      FileSystem::Instance().Resolve(file);
       ModuleSpec module_spec(file);
       ModuleSP module_sp = loaded_modules.FindFirstModule(module_spec);
 
@@ -456,9 +454,10 @@ DynamicLoaderHexagonDYLD::GetStepThroughTrampolinePlan(Thread &thread,
     AddressVector::iterator start = addrs.begin();
     AddressVector::iterator end = addrs.end();
 
-    std::sort(start, end);
+    llvm::sort(start, end);
     addrs.erase(std::unique(start, end), end);
-    thread_plan_sp.reset(new ThreadPlanRunToAddress(thread, addrs, stop));
+    thread_plan_sp =
+        std::make_shared<ThreadPlanRunToAddress>(thread, addrs, stop);
   }
 
   return thread_plan_sp;
@@ -480,14 +479,14 @@ void DynamicLoaderHexagonDYLD::LoadAllCurrentModules() {
     return;
   }
 
-  // The rendezvous class doesn't enumerate the main module, so track
-  // that ourselves here.
+  // The rendezvous class doesn't enumerate the main module, so track that
+  // ourselves here.
   ModuleSP executable = GetTargetExecutable();
   m_loaded_modules[executable] = m_rendezvous.GetLinkMapAddress();
 
   for (I = m_rendezvous.begin(), E = m_rendezvous.end(); I != E; ++I) {
     const char *module_path = I->path.c_str();
-    FileSpec file(module_path, false);
+    FileSpec file(module_path);
     ModuleSP module_sp =
         LoadModuleAtAddress(file, I->link_addr, I->base_addr, true);
     if (module_sp.get()) {
@@ -517,12 +516,11 @@ addr_t DynamicLoaderHexagonDYLD::ComputeLoadOffset() {
   return 0;
 }
 
-// Here we must try to read the entry point directly from
-// the elf header.  This is possible if the process is not
-// relocatable or dynamically linked.
+// Here we must try to read the entry point directly from the elf header.  This
+// is possible if the process is not relocatable or dynamically linked.
 //
-// an alternative is to look at the PC if we can be sure
-// that we have connected when the process is at the entry point.
+// an alternative is to look at the PC if we can be sure that we have connected
+// when the process is at the entry point.
 // I dont think that is reliable for us.
 addr_t DynamicLoaderHexagonDYLD::GetEntryPoint() {
   if (m_entry_point != LLDB_INVALID_ADDRESS)

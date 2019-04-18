@@ -15,15 +15,15 @@ __attribute__((objc_runtime_name("MySecretNamespace.Protocol")))
 
 __attribute__((objc_runtime_name("MySecretNamespace.Message")))
 @interface Message <Protocol> { 
-__attribute__((objc_runtime_name("MySecretNamespace.Message"))) // expected-error {{'objc_runtime_name' attribute only applies to interface or protocol declarations}}
+__attribute__((objc_runtime_name("MySecretNamespace.Message"))) // expected-error {{'objc_runtime_name' attribute only applies to Objective-C interfaces and Objective-C protocols}}
   id MyIVAR;
 }
 __attribute__((objc_runtime_name("MySecretNamespace.Message")))
 @property int MyProperty; // expected-error {{prefix attribute must be followed by an interface or protocol}}}}
 
-- (int) getMyProperty __attribute__((objc_runtime_name("MySecretNamespace.Message"))); // expected-error {{'objc_runtime_name' attribute only applies to interface or protocol declarations}}
+- (int) getMyProperty __attribute__((objc_runtime_name("MySecretNamespace.Message"))); // expected-error {{'objc_runtime_name' attribute only applies to}}
 
-- (void) setMyProperty : (int) arg __attribute__((objc_runtime_name("MySecretNamespace.Message"))); // expected-error {{'objc_runtime_name' attribute only applies to interface or protocol declarations}}
+- (void) setMyProperty : (int) arg __attribute__((objc_runtime_name("MySecretNamespace.Message"))); // expected-error {{'objc_runtime_name' attribute only applies to}}
 
 @end
 
@@ -33,10 +33,18 @@ __attribute__((objc_runtime_name("MySecretNamespace.ForwardClass")))
 __attribute__((objc_runtime_name("MySecretNamespace.ForwardProtocol")))
 @protocol ForwardProtocol;
 
-__attribute__((objc_runtime_name("MySecretNamespace.Message")))
-@implementation Message // expected-error {{prefix attribute must be followed by an interface or protocol}}
-__attribute__((objc_runtime_name("MySecretNamespace.Message")))
-- (id) MyMethod {
+@implementation Message
+// expected-error@+1 {{'objc_runtime_name' attribute only applies to Objective-C interfaces and Objective-C protocols}}
+- (id) MyMethod __attribute__((objc_runtime_name("MySecretNamespace.Message"))) {
   return MyIVAR;
 }
+
+-(int)getMyProperty { return 0; }
+-(void)setMyProperty:(int)arg {}
 @end
+
+@interface NoImpl @end
+
+__attribute__((objc_runtime_name("MySecretNamespace.Message")))
+// expected-error@+1 {{prefix attribute must be followed by an interface or protocol}}
+@implementation NoImpl @end

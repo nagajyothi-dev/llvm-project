@@ -1,39 +1,34 @@
 //===-- PlatformFreeBSD.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "PlatformFreeBSD.h"
 #include "lldb/Host/Config.h"
 
-// C Includes
 #include <stdio.h>
 #ifndef LLDB_DISABLE_POSIX
 #include <sys/utsname.h>
 #endif
 
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Breakpoint/BreakpointSite.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/State.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/State.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StreamString.h"
 
-// Define these constants from FreeBSD mman.h for use when targeting
-// remote FreeBSD systems even when host has different values.
+// Define these constants from FreeBSD mman.h for use when targeting remote
+// FreeBSD systems even when host has different values.
 #define MAP_PRIVATE 0x0002
 #define MAP_ANON 0x1000
 
@@ -43,7 +38,6 @@ using namespace lldb_private::platform_freebsd;
 
 static uint32_t g_initialize_count = 0;
 
-//------------------------------------------------------------------
 
 PlatformSP PlatformFreeBSD::CreateInstance(bool force, const ArchSpec *arch) {
   Log *log(GetLogIfAllCategoriesSet(LIBLLDB_LOG_PLATFORM));
@@ -52,7 +46,7 @@ PlatformSP PlatformFreeBSD::CreateInstance(bool force, const ArchSpec *arch) {
            arch ? arch->GetTriple().getTriple() : "<null>");
 
   bool create = force;
-  if (create == false && arch && arch->IsValid()) {
+  if (!create && arch && arch->IsValid()) {
     const llvm::Triple &triple = arch->GetTriple();
     switch (triple.getOS()) {
     case llvm::Triple::FreeBSD:
@@ -60,9 +54,8 @@ PlatformSP PlatformFreeBSD::CreateInstance(bool force, const ArchSpec *arch) {
       break;
 
 #if defined(__FreeBSD__)
-    // Only accept "unknown" for the OS if the host is BSD and
-    // it "unknown" wasn't specified (it was just returned because it
-    // was NOT specified)
+    // Only accept "unknown" for the OS if the host is BSD and it "unknown"
+    // wasn't specified (it was just returned because it was NOT specified)
     case llvm::Triple::OSType::UnknownOS:
       create = !arch->TripleOSWasSpecified();
       break;
@@ -125,9 +118,7 @@ void PlatformFreeBSD::Terminate() {
   PlatformPOSIX::Terminate();
 }
 
-//------------------------------------------------------------------
 /// Default Constructor
-//------------------------------------------------------------------
 PlatformFreeBSD::PlatformFreeBSD(bool is_host)
     : PlatformPOSIX(is_host) // This is the local host platform
 {}
@@ -143,7 +134,8 @@ bool PlatformFreeBSD::GetSupportedArchitectureAtIndex(uint32_t idx,
         arch = hostArch;
         return arch.IsValid();
       } else if (idx == 1) {
-        // If the default host architecture is 64-bit, look for a 32-bit variant
+        // If the default host architecture is 64-bit, look for a 32-bit
+        // variant
         if (hostArch.IsValid() && hostArch.GetTriple().isArch64Bit()) {
           arch = HostInfo::GetArchitecture(HostInfo::eArchKind32);
           return arch.IsValid();
@@ -187,13 +179,10 @@ bool PlatformFreeBSD::GetSupportedArchitectureAtIndex(uint32_t idx,
       return false;
     }
     // Leave the vendor as "llvm::Triple:UnknownVendor" and don't specify the
-    // vendor by
-    // calling triple.SetVendorName("unknown") so that it is a "unspecified
-    // unknown".
-    // This means when someone calls triple.GetVendorName() it will return an
-    // empty string
-    // which indicates that the vendor can be set when two architectures are
-    // merged
+    // vendor by calling triple.SetVendorName("unknown") so that it is a
+    // "unspecified unknown". This means when someone calls
+    // triple.GetVendorName() it will return an empty string which indicates
+    // that the vendor can be set when two architectures are merged
 
     // Now set the triple into "arch" and return true
     arch.SetTriple(triple);
@@ -228,16 +217,16 @@ PlatformFreeBSD::GetSoftwareBreakpointTrapOpcode(Target &target,
   switch (target.GetArchitecture().GetMachine()) {
   case llvm::Triple::arm: {
     lldb::BreakpointLocationSP bp_loc_sp(bp_site->GetOwnerAtIndex(0));
-    AddressClass addr_class = eAddressClassUnknown;
+    AddressClass addr_class = AddressClass::eUnknown;
 
     if (bp_loc_sp) {
       addr_class = bp_loc_sp->GetAddress().GetAddressClass();
-      if (addr_class == eAddressClassUnknown &&
+      if (addr_class == AddressClass::eUnknown &&
           (bp_loc_sp->GetAddress().GetFileAddress() & 1))
-        addr_class = eAddressClassCodeAlternateISA;
+        addr_class = AddressClass::eCodeAlternateISA;
     }
 
-    if (addr_class == eAddressClassCodeAlternateISA) {
+    if (addr_class == AddressClass::eCodeAlternateISA) {
       // TODO: Enable when FreeBSD supports thumb breakpoints.
       // FreeBSD kernel as of 10.x, does not support thumb breakpoints
       return 0;
@@ -277,18 +266,18 @@ lldb::ProcessSP PlatformFreeBSD::Attach(ProcessAttachInfo &attach_info,
       TargetSP new_target_sp;
       ArchSpec emptyArchSpec;
 
-      error = debugger.GetTargetList().CreateTarget(debugger, "", emptyArchSpec,
-                                                    false, m_remote_platform_sp,
-                                                    new_target_sp);
+      error = debugger.GetTargetList().CreateTarget(
+          debugger, "", emptyArchSpec, eLoadDependentsNo, m_remote_platform_sp,
+          new_target_sp);
       target = new_target_sp.get();
     } else
       error.Clear();
 
     if (target && error.Success()) {
       debugger.GetTargetList().SetSelectedTarget(target);
-      // The freebsd always currently uses the GDB remote debugger plug-in
-      // so even when debugging locally we are debugging remotely!
-      // Just like the darwin plugin.
+      // The freebsd always currently uses the GDB remote debugger plug-in so
+      // even when debugging locally we are debugging remotely! Just like the
+      // darwin plugin.
       process_sp = target->CreateProcess(
           attach_info.GetListenerForProcess(debugger), "gdb-remote", NULL);
 

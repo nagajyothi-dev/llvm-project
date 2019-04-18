@@ -1,9 +1,8 @@
 //===-- ObjCLanguageRuntime.cpp ---------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 #include "clang/AST/Type.h"
@@ -23,13 +22,12 @@
 #include "lldb/Utility/Timer.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/DJB.h"
 
 using namespace lldb;
 using namespace lldb_private;
 
-//----------------------------------------------------------------------
 // Destructor
-//----------------------------------------------------------------------
 ObjCLanguageRuntime::~ObjCLanguageRuntime() {}
 
 ObjCLanguageRuntime::ObjCLanguageRuntime(Process *process)
@@ -45,8 +43,7 @@ bool ObjCLanguageRuntime::AddClass(ObjCISA isa,
   if (isa != 0) {
     m_isa_to_descriptor[isa] = descriptor_sp;
     // class_name is assumed to be valid
-    m_hash_to_isa_map.insert(
-        std::make_pair(MappedHash::HashStringUsingDJB(class_name), isa));
+    m_hash_to_isa_map.insert(std::make_pair(llvm::djbHash(class_name), isa));
     return true;
   }
   return false;
@@ -108,14 +105,13 @@ ObjCLanguageRuntime::LookupInCompleteClassCache(ConstString &name) {
     if (!module_sp)
       return TypeSP();
 
-    const SymbolContext null_sc;
     const bool exact_match = true;
     const uint32_t max_matches = UINT32_MAX;
     TypeList types;
 
     llvm::DenseSet<SymbolFile *> searched_symbol_files;
     const uint32_t num_types = module_sp->FindTypes(
-        null_sc, name, exact_match, max_matches, searched_symbol_files, types);
+        name, exact_match, max_matches, searched_symbol_files, types);
 
     if (num_types) {
       uint32_t i;
@@ -155,7 +151,7 @@ bool ObjCLanguageRuntime::ClassDescriptor::IsPointerValid(
 }
 
 ObjCLanguageRuntime::ObjCISA
-ObjCLanguageRuntime::GetISA(const ConstString &name) {
+ObjCLanguageRuntime::GetISA(ConstString name) {
   ISAToDescriptorIterator pos = GetDescriptorIterator(name);
   if (pos != m_isa_to_descriptor.end())
     return pos->first;
@@ -163,15 +159,14 @@ ObjCLanguageRuntime::GetISA(const ConstString &name) {
 }
 
 ObjCLanguageRuntime::ISAToDescriptorIterator
-ObjCLanguageRuntime::GetDescriptorIterator(const ConstString &name) {
+ObjCLanguageRuntime::GetDescriptorIterator(ConstString name) {
   ISAToDescriptorIterator end = m_isa_to_descriptor.end();
 
   if (name) {
     UpdateISAToDescriptorMap();
     if (m_hash_to_isa_map.empty()) {
       // No name hashes were provided, we need to just linearly power through
-      // the
-      // names and find a match
+      // the names and find a match
       for (ISAToDescriptorIterator pos = m_isa_to_descriptor.begin();
            pos != end; ++pos) {
         if (pos->second->GetClassName() == name)
@@ -180,8 +175,7 @@ ObjCLanguageRuntime::GetDescriptorIterator(const ConstString &name) {
     } else {
       // Name hashes were provided, so use them to efficiently lookup name to
       // isa/descriptor
-      const uint32_t name_hash =
-          MappedHash::HashStringUsingDJB(name.GetCString());
+      const uint32_t name_hash = llvm::djbHash(name.GetStringRef());
       std::pair<HashToISAIterator, HashToISAIterator> range =
           m_hash_to_isa_map.equal_range(name_hash);
       for (HashToISAIterator range_pos = range.first; range_pos != range.second;
@@ -230,7 +224,7 @@ ObjCLanguageRuntime::GetActualTypeName(ObjCLanguageRuntime::ObjCISA isa) {
 
 ObjCLanguageRuntime::ClassDescriptorSP
 ObjCLanguageRuntime::GetClassDescriptorFromClassName(
-    const ConstString &class_name) {
+    ConstString class_name) {
   ISAToDescriptorIterator pos = GetDescriptorIterator(class_name);
   if (pos != m_isa_to_descriptor.end())
     return pos->second;
@@ -240,9 +234,9 @@ ObjCLanguageRuntime::GetClassDescriptorFromClassName(
 ObjCLanguageRuntime::ClassDescriptorSP
 ObjCLanguageRuntime::GetClassDescriptor(ValueObject &valobj) {
   ClassDescriptorSP objc_class_sp;
-  // if we get an invalid VO (which might still happen when playing around
-  // with pointers returned by the expression parser, don't consider this
-  // a valid ObjC object)
+  // if we get an invalid VO (which might still happen when playing around with
+  // pointers returned by the expression parser, don't consider this a valid
+  // ObjC object)
   if (valobj.GetCompilerType().IsValid()) {
     addr_t isa_pointer = valobj.GetPointerValue();
     if (isa_pointer != LLDB_INVALID_ADDRESS) {
@@ -306,8 +300,8 @@ ObjCLanguageRuntime::GetNonKVOClassDescriptor(ObjCISA isa) {
 CompilerType
 ObjCLanguageRuntime::EncodingToType::RealizeType(const char *name,
                                                  bool for_expression) {
-  if (m_scratch_ast_ctx_ap)
-    return RealizeType(*m_scratch_ast_ctx_ap, name, for_expression);
+  if (m_scratch_ast_ctx_up)
+    return RealizeType(*m_scratch_ast_ctx_up, name, for_expression);
   return CompilerType();
 }
 
@@ -359,9 +353,7 @@ bool ObjCLanguageRuntime::GetTypeBitSize(const CompilerType &compiler_type,
   return found;
 }
 
-//------------------------------------------------------------------
 // Exception breakpoint Precondition class for ObjC:
-//------------------------------------------------------------------
 void ObjCLanguageRuntime::ObjCExceptionPrecondition::AddClassName(
     const char *class_name) {
   m_class_names.insert(class_name);

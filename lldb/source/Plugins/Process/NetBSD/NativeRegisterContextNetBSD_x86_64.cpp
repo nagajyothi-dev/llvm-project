@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextNetBSD_x86_64.cpp ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,10 +10,10 @@
 
 #include "NativeRegisterContextNetBSD_x86_64.h"
 
-#include "lldb/Core/RegisterValue.h"
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
 
 #include "Plugins/Process/Utility/RegisterContextNetBSD_x86_64.h"
@@ -32,9 +31,7 @@
 using namespace lldb_private;
 using namespace lldb_private::process_netbsd;
 
-// ----------------------------------------------------------------------------
 // Private namespace.
-// ----------------------------------------------------------------------------
 
 namespace {
 // x86 64-bit general purpose registers.
@@ -149,29 +146,24 @@ const int fpu_save = []() -> int {
 
 NativeRegisterContextNetBSD *
 NativeRegisterContextNetBSD::CreateHostNativeRegisterContextNetBSD(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx) {
-  return new NativeRegisterContextNetBSD_x86_64(target_arch, native_thread,
-                                                concrete_frame_idx);
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread) {
+  return new NativeRegisterContextNetBSD_x86_64(target_arch, native_thread);
 }
 
-// ----------------------------------------------------------------------------
 // NativeRegisterContextNetBSD_x86_64 members.
-// ----------------------------------------------------------------------------
 
 static RegisterInfoInterface *
 CreateRegisterInfoInterface(const ArchSpec &target_arch) {
   assert((HostInfo::GetArchitecture().GetAddressByteSize() == 8) &&
          "Register setting path assumes this is a 64-bit host");
-  // X86_64 hosts know how to work with 64-bit and 32-bit EXEs using the
-  // x86_64 register context.
+  // X86_64 hosts know how to work with 64-bit and 32-bit EXEs using the x86_64
+  // register context.
   return new RegisterContextNetBSD_x86_64(target_arch);
 }
 
 NativeRegisterContextNetBSD_x86_64::NativeRegisterContextNetBSD_x86_64(
-    const ArchSpec &target_arch, NativeThreadProtocol &native_thread,
-    uint32_t concrete_frame_idx)
-    : NativeRegisterContextNetBSD(native_thread, concrete_frame_idx,
+    const ArchSpec &target_arch, NativeThreadProtocol &native_thread)
+    : NativeRegisterContextNetBSD(native_thread,
                                   CreateRegisterInfoInterface(target_arch)),
       m_gpr_x86_64(), m_fpr_x86_64(), m_dbr_x86_64() {}
 
@@ -410,7 +402,7 @@ NativeRegisterContextNetBSD_x86_64::ReadRegister(const RegisterInfo *reg_info,
   case lldb_mm5_x86_64:
   case lldb_mm6_x86_64:
   case lldb_mm7_x86_64:
-    reg_value.SetBytes(&m_fpr_x86_64.fxstate.fx_xmm[reg - lldb_mm0_x86_64],
+    reg_value.SetBytes(&m_fpr_x86_64.fxstate.fx_87_ac[reg - lldb_mm0_x86_64],
                        reg_info->byte_size, endian::InlHostByteOrder());
     break;
   case lldb_xmm0_x86_64:
@@ -606,7 +598,7 @@ Status NativeRegisterContextNetBSD_x86_64::WriteRegister(
   case lldb_mm5_x86_64:
   case lldb_mm6_x86_64:
   case lldb_mm7_x86_64:
-    ::memcpy(&m_fpr_x86_64.fxstate.fx_xmm[reg - lldb_mm0_x86_64],
+    ::memcpy(&m_fpr_x86_64.fxstate.fx_87_ac[reg - lldb_mm0_x86_64],
              reg_value.GetBytes(), reg_value.GetByteSize());
     break;
   case lldb_xmm0_x86_64:
@@ -808,8 +800,7 @@ Status NativeRegisterContextNetBSD_x86_64::SetHardwareWatchpointWithIndex(
   if (error.Fail())
     return error;
 
-  // for watchpoints 0, 1, 2, or 3, respectively,
-  // set bits 1, 3, 5, or 7
+  // for watchpoints 0, 1, 2, or 3, respectively, set bits 1, 3, 5, or 7
   uint64_t enable_bit = 1 << (2 * wp_index);
 
   // set bits 16-17, 20-21, 24-25, or 28-29
@@ -848,8 +839,8 @@ bool NativeRegisterContextNetBSD_x86_64::ClearHardwareWatchpoint(
 
   RegisterValue reg_value;
 
-  // for watchpoints 0, 1, 2, or 3, respectively,
-  // clear bits 0, 1, 2, or 3 of the debug status register (DR6)
+  // for watchpoints 0, 1, 2, or 3, respectively, clear bits 0, 1, 2, or 3 of
+  // the debug status register (DR6)
   const RegisterInfo *const reg_info_dr6 =
       GetRegisterInfoAtIndex(lldb_dr6_x86_64);
   Status error = ReadRegister(reg_info_dr6, reg_value);
@@ -861,9 +852,9 @@ bool NativeRegisterContextNetBSD_x86_64::ClearHardwareWatchpoint(
   if (error.Fail())
     return false;
 
-  // for watchpoints 0, 1, 2, or 3, respectively,
-  // clear bits {0-1,16-19}, {2-3,20-23}, {4-5,24-27}, or {6-7,28-31}
-  // of the debug control register (DR7)
+  // for watchpoints 0, 1, 2, or 3, respectively, clear bits {0-1,16-19},
+  // {2-3,20-23}, {4-5,24-27}, or {6-7,28-31} of the debug control register
+  // (DR7)
   const RegisterInfo *const reg_info_dr7 =
       GetRegisterInfoAtIndex(lldb_dr7_x86_64);
   error = ReadRegister(reg_info_dr7, reg_value);

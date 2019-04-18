@@ -1,16 +1,15 @@
 //===- ScriptLexer.h --------------------------------------------*- C++ -*-===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLD_ELF_SCRIPT_LEXER_H
 #define LLD_ELF_SCRIPT_LEXER_H
 
-#include "lld/Core/LLVM.h"
+#include "lld/Common/LLVM.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <utility>
@@ -29,6 +28,7 @@ public:
   bool atEOF();
   StringRef next();
   StringRef peek();
+  StringRef peek2();
   void skip();
   bool consume(StringRef Tok);
   void expect(StringRef Expect);

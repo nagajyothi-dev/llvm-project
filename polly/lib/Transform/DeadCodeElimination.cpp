@@ -1,9 +1,8 @@
 //===- DeadCodeElimination.cpp - Eliminate dead iteration  ----------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -37,13 +36,7 @@
 #include "polly/Options.h"
 #include "polly/ScopInfo.h"
 #include "llvm/Support/CommandLine.h"
-#include "isl/flow.h"
-#include "isl/map.h"
-#include "isl/set.h"
-#include "isl/union_map.h"
-#include "isl/union_set.h"
-
-#include "isl-noexceptions.h"
+#include "isl/isl-noexceptions.h"
 
 using namespace llvm;
 using namespace polly;
@@ -125,8 +118,8 @@ bool DeadCodeElim::eliminateDeadCode(Scop &S, int PreciseSteps) {
     return false;
 
   isl::union_set Live = getLiveOut(S);
-  isl::union_map Dep = isl::manage(
-      D.getDependences(Dependences::TYPE_RAW | Dependences::TYPE_RED));
+  isl::union_map Dep =
+      D.getDependences(Dependences::TYPE_RAW | Dependences::TYPE_RED);
   Dep = Dep.reverse();
 
   if (PreciseSteps == -1)

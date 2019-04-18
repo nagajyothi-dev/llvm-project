@@ -1,9 +1,8 @@
 //===-- PipePosix.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -11,6 +10,7 @@
 #include "lldb/Host/HostInfo.h"
 #include "lldb/Utility/SelectHelper.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Errno.h"
 #include "llvm/Support/FileSystem.h"
 
 #if defined(__GNUC__) && (__GNUC__ < 4 || (__GNUC__ == 4 && __GNUC_MINOR__ < 8))
@@ -61,12 +61,13 @@ bool SetCloexecFlag(int fd) {
 std::chrono::time_point<std::chrono::steady_clock> Now() {
   return std::chrono::steady_clock::now();
 }
-}
+} // namespace
 
 PipePosix::PipePosix()
     : m_fds{PipePosix::kInvalidDescriptor, PipePosix::kInvalidDescriptor} {}
 
-PipePosix::PipePosix(int read_fd, int write_fd) : m_fds{read_fd, write_fd} {}
+PipePosix::PipePosix(lldb::pipe_t read, lldb::pipe_t write)
+    : m_fds{read, write} {}
 
 PipePosix::PipePosix(PipePosix &&pipe_posix)
     : PipeBase{std::move(pipe_posix)},
@@ -125,20 +126,16 @@ Status PipePosix::CreateNew(llvm::StringRef name, bool child_process_inherit) {
 Status PipePosix::CreateWithUniqueName(llvm::StringRef prefix,
                                        bool child_process_inherit,
                                        llvm::SmallVectorImpl<char> &name) {
-  llvm::SmallString<PATH_MAX> named_pipe_path;
-  llvm::SmallString<PATH_MAX> pipe_spec((prefix + ".%%%%%%").str());
-  FileSpec tmpdir_file_spec;
-  tmpdir_file_spec.Clear();
-  if (HostInfo::GetLLDBPath(ePathTypeLLDBTempSystemDir, tmpdir_file_spec)) {
-    tmpdir_file_spec.AppendPathComponent(pipe_spec.c_str());
-  } else {
+  llvm::SmallString<128> named_pipe_path;
+  llvm::SmallString<128> pipe_spec((prefix + ".%%%%%%").str());
+  FileSpec tmpdir_file_spec = HostInfo::GetProcessTempDir();
+  if (!tmpdir_file_spec)
     tmpdir_file_spec.AppendPathComponent("/tmp");
-    tmpdir_file_spec.AppendPathComponent(pipe_spec.c_str());
-  }
+  tmpdir_file_spec.AppendPathComponent(pipe_spec);
 
   // It's possible that another process creates the target path after we've
-  // verified it's available but before we create it, in which case we
-  // should try again.
+  // verified it's available but before we create it, in which case we should
+  // try again.
   Status error;
   do {
     llvm::sys::fs::createUniqueFile(tmpdir_file_spec.GetPath(),
@@ -161,7 +158,7 @@ Status PipePosix::OpenAsReader(llvm::StringRef name,
     flags |= O_CLOEXEC;
 
   Status error;
-  int fd = ::open(name.data(), flags);
+  int fd = llvm::sys::RetryAfterSignal(-1, ::open, name.data(), flags);
   if (fd != -1)
     m_fds[READ] = fd;
   else
@@ -196,7 +193,7 @@ PipePosix::OpenAsWriterWithTimeout(llvm::StringRef name,
     if (fd == -1) {
       const auto errno_copy = errno;
       // We may get ENXIO if a reader side of the pipe hasn't opened yet.
-      if (errno_copy != ENXIO)
+      if (errno_copy != ENXIO && errno_copy != EINTR)
         return Status(errno_copy, eErrorTypePOSIX);
 
       std::this_thread::sleep_for(
@@ -279,6 +276,8 @@ Status PipePosix::ReadWithTimeout(void *buf, size_t size,
         bytes_read += result;
         if (bytes_read == size || result == 0)
           break;
+      } else if (errno == EINTR) {
+        continue;
       } else {
         error.SetErrorToErrno();
         break;
@@ -309,6 +308,8 @@ Status PipePosix::Write(const void *buf, size_t size, size_t &bytes_written) {
         bytes_written += result;
         if (bytes_written == size)
           break;
+      } else if (errno == EINTR) {
+        continue;
       } else {
         error.SetErrorToErrno();
       }

@@ -14,7 +14,7 @@ entry:
   %0 = zext i32 %n to i64, !dbg !16
 
 ; CHECK:  store i8* %[[VLA:.*]], i8** @__safestack_unsafe_stack_ptr
-; CHECK:  tail call void @llvm.dbg.value(metadata i8* %[[VLA]], metadata ![[TYPE:.*]], metadata ![[EXPR:.*]])
+; CHECK:  tail call void @llvm.dbg.value(metadata i8* %[[VLA]], metadata ![[TYPE:.*]], metadata !DIExpression(DW_OP_deref))
 ; CHECK:  call void @capture({{.*}} %[[VLA]])
 
   %vla = alloca i8, i64 %0, align 16, !dbg !16
@@ -36,7 +36,7 @@ declare void @llvm.dbg.value(metadata, metadata, metadata)
 !3 = !{i32 2, !"Dwarf Version", i32 4}
 !4 = !{i32 2, !"Debug Info Version", i32 3}
 !5 = !{!"clang version 3.9.0 (trunk 272832) (llvm/trunk 272831)"}
-!6 = distinct !DISubprogram(name: "f", linkageName: "_Z1fi", scope: !1, file: !1, line: 2, type: !7, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !10)
+!6 = distinct !DISubprogram(name: "f", linkageName: "_Z1fi", scope: !1, file: !1, line: 2, type: !7, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !10)
 !7 = !DISubroutineType(types: !8)
 !8 = !{null, !9}
 !9 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
@@ -50,7 +50,6 @@ declare void @llvm.dbg.value(metadata, metadata, metadata)
 !15 = !DILocation(line: 2, column: 12, scope: !6)
 !16 = !DILocation(line: 3, column: 3, scope: !6)
 
-; CHECK-DAG: ![[EXPR]] = !DIExpression(DW_OP_deref)
 !17 = !DIExpression(DW_OP_deref)
 !18 = !DILocation(line: 3, column: 8, scope: !6)
 !19 = !DILocation(line: 4, column: 3, scope: !6)

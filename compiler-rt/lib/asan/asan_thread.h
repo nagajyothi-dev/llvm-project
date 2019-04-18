@@ -1,9 +1,8 @@
 //===-- asan_thread.h -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -90,6 +89,9 @@ class AsanThread {
   };
   bool GetStackFrameAccessByAddr(uptr addr, StackFrameAccess *access);
 
+  // Returns a pointer to the start of the stack variable's shadow memory.
+  uptr GetStackVariableShadowStart(uptr addr);
+
   bool AddrIsInStack(uptr addr);
 
   void DeleteFakeStack(int tid) {
@@ -125,12 +127,10 @@ class AsanThread {
   bool isUnwinding() const { return unwinding_; }
   void setUnwinding(bool b) { unwinding_ = b; }
 
-  // True if we are in a deadly signal handler.
-  bool isInDeadlySignal() const { return in_deadly_signal_; }
-  void setInDeadlySignal(bool b) { in_deadly_signal_ = b; }
-
   AsanThreadLocalMallocStorage &malloc_storage() { return malloc_storage_; }
   AsanStats &stats() { return stats_; }
+
+  void *extra_spill_area() { return &extra_spill_area_; }
 
  private:
   // NOTE: There is no AsanThread constructor. It is allocated
@@ -167,33 +167,7 @@ class AsanThread {
   AsanThreadLocalMallocStorage malloc_storage_;
   AsanStats stats_;
   bool unwinding_;
-  bool in_deadly_signal_;
-};
-
-// ScopedUnwinding is a scope for stacktracing member of a context
-class ScopedUnwinding {
- public:
-  explicit ScopedUnwinding(AsanThread *t) : thread(t) {
-    t->setUnwinding(true);
-  }
-  ~ScopedUnwinding() { thread->setUnwinding(false); }
-
- private:
-  AsanThread *thread;
-};
-
-// ScopedDeadlySignal is a scope for handling deadly signals.
-class ScopedDeadlySignal {
- public:
-  explicit ScopedDeadlySignal(AsanThread *t) : thread(t) {
-    if (thread) thread->setInDeadlySignal(true);
-  }
-  ~ScopedDeadlySignal() {
-    if (thread) thread->setInDeadlySignal(false);
-  }
-
- private:
-  AsanThread *thread;
+  uptr extra_spill_area_;
 };
 
 // Returns a single instance of registry.

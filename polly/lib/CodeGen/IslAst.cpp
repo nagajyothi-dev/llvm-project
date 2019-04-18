@@ -1,9 +1,8 @@
 //===- IslAst.cpp - isl code generator interface --------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -32,18 +31,26 @@
 #include "polly/DependenceInfo.h"
 #include "polly/LinkAllPasses.h"
 #include "polly/Options.h"
+#include "polly/ScopDetection.h"
 #include "polly/ScopInfo.h"
+#include "polly/ScopPass.h"
 #include "polly/Support/GICHelper.h"
-#include "llvm/Analysis/RegionInfo.h"
+#include "llvm/ADT/Statistic.h"
+#include "llvm/IR/Function.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 #include "isl/aff.h"
+#include "isl/ast.h"
 #include "isl/ast_build.h"
-#include "isl/list.h"
-#include "isl/map.h"
+#include "isl/id.h"
+#include "isl/isl-noexceptions.h"
+#include "isl/printer.h"
+#include "isl/schedule.h"
 #include "isl/set.h"
 #include "isl/union_map.h"
-
-#include <utility>
+#include "isl/val.h"
+#include <cassert>
+#include <cstdlib>
 
 #define DEBUG_TYPE "polly-ast"
 
@@ -78,21 +85,37 @@ static cl::opt<bool> DetectParallel("polly-ast-detect-parallel",
                                     cl::init(false), cl::ZeroOrMore,
                                     cl::cat(PollyCategory));
 
+STATISTIC(ScopsProcessed, "Number of SCoPs processed");
+STATISTIC(ScopsBeneficial, "Number of beneficial SCoPs");
+STATISTIC(BeneficialAffineLoops, "Number of beneficial affine loops");
+STATISTIC(BeneficialBoxedLoops, "Number of beneficial boxed loops");
+
+STATISTIC(NumForLoops, "Number of for-loops");
+STATISTIC(NumParallel, "Number of parallel for-loops");
+STATISTIC(NumInnermostParallel, "Number of innermost parallel for-loops");
+STATISTIC(NumOutermostParallel, "Number of outermost parallel for-loops");
+STATISTIC(NumReductionParallel, "Number of reduction-parallel for-loops");
+STATISTIC(NumExecutedInParallel, "Number of for-loops executed in parallel");
+STATISTIC(NumIfConditions, "Number of if-conditions");
+
 namespace polly {
+
 /// Temporary information used when building the ast.
 struct AstBuildUserInfo {
   /// Construct and initialize the helper struct for AST creation.
-  AstBuildUserInfo()
-      : Deps(nullptr), InParallelFor(false), LastForNodeId(nullptr) {}
+  AstBuildUserInfo() = default;
 
   /// The dependence information used for the parallelism check.
-  const Dependences *Deps;
+  const Dependences *Deps = nullptr;
 
   /// Flag to indicate that we are inside a parallel for node.
-  bool InParallelFor;
+  bool InParallelFor = false;
+
+  /// Flag to indicate that we are inside an SIMD node.
+  bool InSIMD = false;
 
   /// The last iterator id created for the current SCoP.
-  isl_id *LastForNodeId;
+  isl_id *LastForNodeId = nullptr;
 };
 } // namespace polly
 
@@ -103,7 +126,6 @@ static void freeIslAstUserPayload(void *Ptr) {
 
 IslAstInfo::IslAstUserPayload::~IslAstUserPayload() {
   isl_ast_build_free(Build);
-  isl_pw_aff_free(MinimalDependenceDistance);
 }
 
 /// Print a string @p str in a single line using @p Printer.
@@ -149,7 +171,6 @@ static const std::string getBrokenReductionsStr(__isl_keep isl_ast_node *Node) {
 static isl_printer *cbPrintFor(__isl_take isl_printer *Printer,
                                __isl_take isl_ast_print_options *Options,
                                __isl_keep isl_ast_node *Node, void *) {
-
   isl_pw_aff *DD = IslAstInfo::getMinimalDependenceDistance(Node);
   const std::string BrokenReductionsStr = getBrokenReductionsStr(Node);
   const std::string KnownParallelStr = "#pragma known-parallel";
@@ -189,14 +210,26 @@ static bool astScheduleDimIsParallel(__isl_keep isl_ast_build *Build,
     return false;
 
   isl_union_map *Schedule = isl_ast_build_get_schedule(Build);
-  isl_union_map *Deps = D->getDependences(
-      Dependences::TYPE_RAW | Dependences::TYPE_WAW | Dependences::TYPE_WAR);
+  isl_union_map *Deps =
+      D->getDependences(Dependences::TYPE_RAW | Dependences::TYPE_WAW |
+                        Dependences::TYPE_WAR)
+          .release();
 
-  if (!D->isParallel(Schedule, Deps, &NodeInfo->MinimalDependenceDistance) &&
-      !isl_union_map_free(Schedule))
+  if (!D->isParallel(Schedule, Deps)) {
+    isl_union_map *DepsAll =
+        D->getDependences(Dependences::TYPE_RAW | Dependences::TYPE_WAW |
+                          Dependences::TYPE_WAR | Dependences::TYPE_TC_RED)
+            .release();
+    isl_pw_aff *MinimalDependenceDistance = nullptr;
+    D->isParallel(Schedule, DepsAll, &MinimalDependenceDistance);
+    NodeInfo->MinimalDependenceDistance =
+        isl::manage(MinimalDependenceDistance);
+    isl_union_map_free(Schedule);
     return false;
+  }
 
-  isl_union_map *RedDeps = D->getDependences(Dependences::TYPE_TC_RED);
+  isl_union_map *RedDeps =
+      D->getDependences(Dependences::TYPE_TC_RED).release();
   if (!D->isParallel(Schedule, RedDeps))
     NodeInfo->IsReductionParallel = true;
 
@@ -232,10 +265,13 @@ static __isl_give isl_id *astBuildBeforeFor(__isl_keep isl_ast_build *Build,
   Id = isl_id_set_free_user(Id, freeIslAstUserPayload);
   BuildInfo->LastForNodeId = Id;
 
+  Payload->IsParallel =
+      astScheduleDimIsParallel(Build, BuildInfo->Deps, Payload);
+
   // Test for parallelism only if we are not already inside a parallel loop
-  if (!BuildInfo->InParallelFor)
+  if (!BuildInfo->InParallelFor && !BuildInfo->InSIMD)
     BuildInfo->InParallelFor = Payload->IsOutermostParallel =
-        astScheduleDimIsParallel(Build, BuildInfo->Deps, Payload);
+        Payload->IsParallel;
 
   return Id;
 }
@@ -260,18 +296,8 @@ astBuildAfterFor(__isl_take isl_ast_node *Node, __isl_keep isl_ast_build *Build,
   Payload->Build = isl_ast_build_copy(Build);
   Payload->IsInnermost = (Id == BuildInfo->LastForNodeId);
 
-  // Innermost loops that are surrounded by parallel loops have not yet been
-  // tested for parallelism. Test them here to ensure we check all innermost
-  // loops for parallelism.
-  if (Payload->IsInnermost && BuildInfo->InParallelFor) {
-    if (Payload->IsOutermostParallel) {
-      Payload->IsInnermostParallel = true;
-    } else {
-      if (PollyVectorizerChoice == VECTORIZER_NONE)
-        Payload->IsInnermostParallel =
-            astScheduleDimIsParallel(Build, BuildInfo->Deps, Payload);
-    }
-  }
+  Payload->IsInnermostParallel =
+      Payload->IsInnermost && (BuildInfo->InSIMD || Payload->IsParallel);
   if (Payload->IsOutermostParallel)
     BuildInfo->InParallelFor = false;
 
@@ -286,8 +312,8 @@ static isl_stat astBuildBeforeMark(__isl_keep isl_id *MarkId,
     return isl_stat_error;
 
   AstBuildUserInfo *BuildInfo = (AstBuildUserInfo *)User;
-  if (!strcmp(isl_id_get_name(MarkId), "SIMD"))
-    BuildInfo->InParallelFor = true;
+  if (strcmp(isl_id_get_name(MarkId), "SIMD") == 0)
+    BuildInfo->InSIMD = true;
 
   return isl_stat_ok;
 }
@@ -298,8 +324,8 @@ astBuildAfterMark(__isl_take isl_ast_node *Node,
   assert(isl_ast_node_get_type(Node) == isl_ast_node_mark);
   AstBuildUserInfo *BuildInfo = (AstBuildUserInfo *)User;
   auto *Id = isl_ast_node_mark_get_id(Node);
-  if (!strcmp(isl_id_get_name(Id), "SIMD"))
-    BuildInfo->InParallelFor = false;
+  if (strcmp(isl_id_get_name(Id), "SIMD") == 0)
+    BuildInfo->InSIMD = false;
   isl_id_free(Id);
   return Node;
 }
@@ -319,21 +345,61 @@ static __isl_give isl_ast_node *AtEachDomain(__isl_take isl_ast_node *Node,
 }
 
 // Build alias check condition given a pair of minimal/maximal access.
-static __isl_give isl_ast_expr *
-buildCondition(__isl_keep isl_ast_build *Build, const Scop::MinMaxAccessTy *It0,
-               const Scop::MinMaxAccessTy *It1) {
-  isl_ast_expr *NonAliasGroup, *MinExpr, *MaxExpr;
-  MinExpr = isl_ast_expr_address_of(isl_ast_build_access_from_pw_multi_aff(
-      Build, isl_pw_multi_aff_copy(It0->first)));
-  MaxExpr = isl_ast_expr_address_of(isl_ast_build_access_from_pw_multi_aff(
-      Build, isl_pw_multi_aff_copy(It1->second)));
-  NonAliasGroup = isl_ast_expr_le(MaxExpr, MinExpr);
-  MinExpr = isl_ast_expr_address_of(isl_ast_build_access_from_pw_multi_aff(
-      Build, isl_pw_multi_aff_copy(It1->first)));
-  MaxExpr = isl_ast_expr_address_of(isl_ast_build_access_from_pw_multi_aff(
-      Build, isl_pw_multi_aff_copy(It0->second)));
-  NonAliasGroup =
-      isl_ast_expr_or(NonAliasGroup, isl_ast_expr_le(MaxExpr, MinExpr));
+static isl::ast_expr buildCondition(Scop &S, isl::ast_build Build,
+                                    const Scop::MinMaxAccessTy *It0,
+                                    const Scop::MinMaxAccessTy *It1) {
+
+  isl::pw_multi_aff AFirst = It0->first;
+  isl::pw_multi_aff ASecond = It0->second;
+  isl::pw_multi_aff BFirst = It1->first;
+  isl::pw_multi_aff BSecond = It1->second;
+
+  isl::id Left = AFirst.get_tuple_id(isl::dim::set);
+  isl::id Right = BFirst.get_tuple_id(isl::dim::set);
+
+  isl::ast_expr True =
+      isl::ast_expr::from_val(isl::val::int_from_ui(Build.get_ctx(), 1));
+  isl::ast_expr False =
+      isl::ast_expr::from_val(isl::val::int_from_ui(Build.get_ctx(), 0));
+
+  const ScopArrayInfo *BaseLeft =
+      ScopArrayInfo::getFromId(Left)->getBasePtrOriginSAI();
+  const ScopArrayInfo *BaseRight =
+      ScopArrayInfo::getFromId(Right)->getBasePtrOriginSAI();
+  if (BaseLeft && BaseLeft == BaseRight)
+    return True;
+
+  isl::set Params = S.getContext();
+
+  isl::ast_expr NonAliasGroup, MinExpr, MaxExpr;
+
+  // In the following, we first check if any accesses will be empty under
+  // the execution context of the scop and do not code generate them if this
+  // is the case as isl will fail to derive valid AST expressions for such
+  // accesses.
+
+  if (!AFirst.intersect_params(Params).domain().is_empty() &&
+      !BSecond.intersect_params(Params).domain().is_empty()) {
+    MinExpr = Build.access_from(AFirst).address_of();
+    MaxExpr = Build.access_from(BSecond).address_of();
+    NonAliasGroup = MaxExpr.le(MinExpr);
+  }
+
+  if (!BFirst.intersect_params(Params).domain().is_empty() &&
+      !ASecond.intersect_params(Params).domain().is_empty()) {
+    MinExpr = Build.access_from(BFirst).address_of();
+    MaxExpr = Build.access_from(ASecond).address_of();
+
+    isl::ast_expr Result = MaxExpr.le(MinExpr);
+    if (!NonAliasGroup.is_null())
+      NonAliasGroup = isl::manage(
+          isl_ast_expr_or(NonAliasGroup.release(), Result.release()));
+    else
+      NonAliasGroup = Result;
+  }
+
+  if (NonAliasGroup.is_null())
+    NonAliasGroup = True;
 
   return NonAliasGroup;
 }
@@ -370,10 +436,14 @@ IslAst::buildRunCondition(Scop &S, __isl_keep isl_ast_build *Build) {
          ++RWAccIt0) {
       for (auto RWAccIt1 = RWAccIt0 + 1; RWAccIt1 != RWAccEnd; ++RWAccIt1)
         RunCondition = isl_ast_expr_and(
-            RunCondition, buildCondition(Build, RWAccIt0, RWAccIt1));
+            RunCondition,
+            buildCondition(S, isl::manage_copy(Build), RWAccIt0, RWAccIt1)
+                .release());
       for (const Scop::MinMaxAccessTy &ROAccIt : MinMaxReadOnly)
         RunCondition = isl_ast_expr_and(
-            RunCondition, buildCondition(Build, RWAccIt0, &ROAccIt));
+            RunCondition,
+            buildCondition(S, isl::manage_copy(Build), RWAccIt0, &ROAccIt)
+                .release());
     }
   }
 
@@ -388,7 +458,6 @@ IslAst::buildRunCondition(Scop &S, __isl_keep isl_ast_build *Build) {
 ///       performed optimizations (e.g., tiling) or compute properties on the
 ///       original as well as optimized SCoP (e.g., #stride-one-accesses).
 static bool benefitsFromPolly(Scop &Scop, bool PerformParallelTest) {
-
   if (PollyProcessUnprofitable)
     return true;
 
@@ -401,9 +470,53 @@ static bool benefitsFromPolly(Scop &Scop, bool PerformParallelTest) {
   return true;
 }
 
-IslAst::IslAst(Scop &Scop)
-    : S(Scop), Root(nullptr), RunCondition(nullptr),
-      Ctx(Scop.getSharedIslCtx()) {}
+/// Collect statistics for the syntax tree rooted at @p Ast.
+static void walkAstForStatistics(__isl_keep isl_ast_node *Ast) {
+  assert(Ast);
+  isl_ast_node_foreach_descendant_top_down(
+      Ast,
+      [](__isl_keep isl_ast_node *Node, void *User) -> isl_bool {
+        switch (isl_ast_node_get_type(Node)) {
+        case isl_ast_node_for:
+          NumForLoops++;
+          if (IslAstInfo::isParallel(Node))
+            NumParallel++;
+          if (IslAstInfo::isInnermostParallel(Node))
+            NumInnermostParallel++;
+          if (IslAstInfo::isOutermostParallel(Node))
+            NumOutermostParallel++;
+          if (IslAstInfo::isReductionParallel(Node))
+            NumReductionParallel++;
+          if (IslAstInfo::isExecutedInParallel(Node))
+            NumExecutedInParallel++;
+          break;
+
+        case isl_ast_node_if:
+          NumIfConditions++;
+          break;
+
+        default:
+          break;
+        }
+
+        // Continue traversing subtrees.
+        return isl_bool_true;
+      },
+      nullptr);
+}
+
+IslAst::IslAst(Scop &Scop) : S(Scop), Ctx(Scop.getSharedIslCtx()) {}
+
+IslAst::IslAst(IslAst &&O)
+    : S(O.S), Root(O.Root), RunCondition(O.RunCondition), Ctx(O.Ctx) {
+  O.Root = nullptr;
+  O.RunCondition = nullptr;
+}
+
+IslAst::~IslAst() {
+  isl_ast_node_free(Root);
+  isl_ast_expr_free(RunCondition);
+}
 
 void IslAst::init(const Dependences &D) {
   bool PerformParallelTest = PollyParallel || DetectParallel ||
@@ -412,18 +525,22 @@ void IslAst::init(const Dependences &D) {
   // We can not perform the dependence analysis and, consequently,
   // the parallel code generation in case the schedule tree contains
   // extension nodes.
-  auto *ScheduleTree = S.getScheduleTree().release();
+  auto ScheduleTree = S.getScheduleTree();
   PerformParallelTest =
       PerformParallelTest && !S.containsExtensionNode(ScheduleTree);
-  isl_schedule_free(ScheduleTree);
 
   // Skip AST and code generation if there was no benefit achieved.
   if (!benefitsFromPolly(S, PerformParallelTest))
     return;
 
-  isl_ctx *Ctx = S.getIslCtx();
-  isl_options_set_ast_build_atomic_upper_bound(Ctx, true);
-  isl_options_set_ast_build_detect_min_max(Ctx, true);
+  auto ScopStats = S.getStatistics();
+  ScopsBeneficial++;
+  BeneficialAffineLoops += ScopStats.NumAffineLoops;
+  BeneficialBoxedLoops += ScopStats.NumBoxedLoops;
+
+  auto Ctx = S.getIslCtx();
+  isl_options_set_ast_build_atomic_upper_bound(Ctx.get(), true);
+  isl_options_set_ast_build_detect_min_max(Ctx.get(), true);
   isl_ast_build *Build;
   AstBuildUserInfo BuildInfo;
 
@@ -437,7 +554,8 @@ void IslAst::init(const Dependences &D) {
 
   if (PerformParallelTest) {
     BuildInfo.Deps = &D;
-    BuildInfo.InParallelFor = 0;
+    BuildInfo.InParallelFor = false;
+    BuildInfo.InSIMD = false;
 
     Build = isl_ast_build_set_before_each_for(Build, &astBuildBeforeFor,
                                               &BuildInfo);
@@ -454,6 +572,7 @@ void IslAst::init(const Dependences &D) {
   RunCondition = buildRunCondition(S, Build);
 
   Root = isl_ast_build_node_from_schedule(Build, S.getScheduleTree().release());
+  walkAstForStatistics(Root);
 
   isl_ast_build_free(Build);
 }
@@ -462,17 +581,6 @@ IslAst IslAst::create(Scop &Scop, const Dependences &D) {
   IslAst Ast{Scop};
   Ast.init(D);
   return Ast;
-}
-
-IslAst::IslAst(IslAst &&O)
-    : S(O.S), Root(O.Root), RunCondition(O.RunCondition), Ctx(O.Ctx) {
-  O.Root = nullptr;
-  O.RunCondition = nullptr;
-}
-
-IslAst::~IslAst() {
-  isl_ast_node_free(Root);
-  isl_ast_expr_free(RunCondition);
 }
 
 __isl_give isl_ast_node *IslAst::getAst() { return isl_ast_node_copy(Root); }
@@ -520,7 +628,6 @@ bool IslAstInfo::isReductionParallel(__isl_keep isl_ast_node *Node) {
 }
 
 bool IslAstInfo::isExecutedInParallel(__isl_keep isl_ast_node *Node) {
-
   if (!PollyParallel)
     return false;
 
@@ -548,8 +655,7 @@ IslAstInfo::getSchedule(__isl_keep isl_ast_node *Node) {
 __isl_give isl_pw_aff *
 IslAstInfo::getMinimalDependenceDistance(__isl_keep isl_ast_node *Node) {
   IslAstUserPayload *Payload = getNodePayload(Node);
-  return Payload ? isl_pw_aff_copy(Payload->MinimalDependenceDistance)
-                 : nullptr;
+  return Payload ? Payload->MinimalDependenceDistance.copy() : nullptr;
 }
 
 IslAstInfo::MemoryAccessSet *
@@ -573,7 +679,7 @@ static __isl_give isl_printer *cbPrintUser(__isl_take isl_printer *P,
                                            __isl_take isl_ast_print_options *O,
                                            __isl_keep isl_ast_node *Node,
                                            void *User) {
-  isl::ast_node AstNode = isl::manage(isl_ast_node_copy(Node));
+  isl::ast_node AstNode = isl::manage_copy(Node);
   isl::ast_expr NodeExpr = AstNode.user_get_expr();
   isl::ast_expr CallExpr = NodeExpr.get_op_arg(0);
   isl::id CallExprId = CallExpr.get_id();
@@ -593,8 +699,7 @@ static __isl_give isl_printer *cbPrintUser(__isl_take isl_printer *P,
     else
       P = isl_printer_print_str(P, "/* write */  ");
 
-    isl::ast_build Build =
-        isl::manage(isl_ast_build_copy(IslAstInfo::getBuild(Node)));
+    isl::ast_build Build = isl::manage_copy(IslAstInfo::getBuild(Node));
     if (MemAcc->isAffine()) {
       isl_pw_multi_aff *PwmaPtr =
           MemAcc->applyScheduleToAccessRelation(Build.get_schedule()).release();
@@ -638,14 +743,14 @@ void IslAstInfo::print(raw_ostream &OS) {
   isl_ast_expr *RunCondition = Ast.getRunCondition();
   char *RtCStr, *AstStr;
 
-  Options = isl_ast_print_options_alloc(S.getIslCtx());
+  Options = isl_ast_print_options_alloc(S.getIslCtx().get());
 
   if (PrintAccesses)
     Options =
         isl_ast_print_options_set_print_user(Options, cbPrintUser, nullptr);
   Options = isl_ast_print_options_set_print_for(Options, cbPrintFor, nullptr);
 
-  isl_printer *P = isl_printer_to_str(S.getIslCtx());
+  isl_printer *P = isl_printer_to_str(S.getIslCtx().get());
   P = isl_printer_set_output_format(P, ISL_FORMAT_C);
   P = isl_printer_print_ast_expr(P, RunCondition);
   RtCStr = isl_printer_get_str(P);
@@ -656,7 +761,7 @@ void IslAstInfo::print(raw_ostream &OS) {
 
   auto *Schedule = S.getScheduleTree().release();
 
-  DEBUG({
+  LLVM_DEBUG({
     dbgs() << S.getContextStr() << "\n";
     dbgs() << stringFromIslObj(Schedule);
   });
@@ -678,33 +783,43 @@ AnalysisKey IslAstAnalysis::Key;
 PreservedAnalyses IslAstPrinterPass::run(Scop &S, ScopAnalysisManager &SAM,
                                          ScopStandardAnalysisResults &SAR,
                                          SPMUpdater &U) {
-
   auto &Ast = SAM.getResult<IslAstAnalysis>(S, SAR);
-  Ast.print(Stream);
+  Ast.print(OS);
   return PreservedAnalyses::all();
 }
 
 void IslAstInfoWrapperPass::releaseMemory() { Ast.reset(); }
 
 bool IslAstInfoWrapperPass::runOnScop(Scop &Scop) {
-
   // Skip SCoPs in case they're already handled by PPCGCodeGeneration.
   if (Scop.isToBeSkipped())
     return false;
 
+  ScopsProcessed++;
+
   const Dependences &D =
       getAnalysis<DependenceInfo>().getDependences(Dependences::AL_Statement);
 
+  if (D.getSharedIslCtx() != Scop.getSharedIslCtx()) {
+    LLVM_DEBUG(
+        dbgs() << "Got dependence analysis for different SCoP/isl_ctx\n");
+    Ast.reset();
+    return false;
+  }
+
   Ast.reset(new IslAstInfo(Scop, D));
 
-  DEBUG(printScop(dbgs(), Scop));
+  LLVM_DEBUG(printScop(dbgs(), Scop));
   return false;
 }
+
 void IslAstInfoWrapperPass::getAnalysisUsage(AnalysisUsage &AU) const {
   // Get the Common analysis usage of ScopPasses.
   ScopPass::getAnalysisUsage(AU);
-  AU.addRequired<ScopInfoRegionPass>();
+  AU.addRequiredTransitive<ScopInfoRegionPass>();
   AU.addRequired<DependenceInfo>();
+
+  AU.addPreserved<DependenceInfo>();
 }
 
 void IslAstInfoWrapperPass::printScop(raw_ostream &OS, Scop &S) const {

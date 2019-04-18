@@ -1,9 +1,8 @@
 //===-- EmulateInstruction.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,19 +11,18 @@
 
 #include <string>
 
-#include "lldb/Core/ArchSpec.h"
+#include "lldb/Core/Address.h"
 #include "lldb/Core/Opcode.h"
 #include "lldb/Core/PluginInterface.h"
+#include "lldb/Utility/ArchSpec.h"
+#include "lldb/lldb-defines.h"
+#include "lldb/lldb-enumerations.h"
+#include "lldb/lldb-private-enumerations.h"
+#include "lldb/lldb-private-types.h"
+#include "lldb/lldb-types.h"
 
-#include "lldb/Core/Address.h"              // for Address
-#include "lldb/lldb-defines.h"              // for DISALLOW_COPY_AND_ASSIGN
-#include "lldb/lldb-enumerations.h"         // for RegisterKind, ByteOrder
-#include "lldb/lldb-private-enumerations.h" // for InstructionType
-#include "lldb/lldb-private-types.h"        // for RegisterInfo
-#include "lldb/lldb-types.h"                // for addr_t
-
-#include <stddef.h> // for size_t
-#include <stdint.h> // for uint32_t, uint64_t, int64_t
+#include <stddef.h>
+#include <stdint.h>
 namespace lldb_private {
 class OptionValueDictionary;
 }
@@ -46,66 +44,63 @@ class UnwindPlan;
 
 namespace lldb_private {
 
-//----------------------------------------------------------------------
-/// @class EmulateInstruction EmulateInstruction.h
+/// \class EmulateInstruction EmulateInstruction.h
 /// "lldb/Core/EmulateInstruction.h"
-/// @brief A class that allows emulation of CPU opcodes.
+/// A class that allows emulation of CPU opcodes.
 ///
-/// This class is a plug-in interface that is accessed through the
-/// standard static FindPlugin function call in the EmulateInstruction
-/// class. The FindPlugin takes a target triple and returns a new object
-/// if there is a plug-in that supports the architecture and OS. Four
-/// callbacks and a baton are provided. The four callbacks are read
-/// register, write register, read memory and write memory.
+/// This class is a plug-in interface that is accessed through the standard
+/// static FindPlugin function call in the EmulateInstruction class. The
+/// FindPlugin takes a target triple and returns a new object if there is a
+/// plug-in that supports the architecture and OS. Four callbacks and a baton
+/// are provided. The four callbacks are read register, write register, read
+/// memory and write memory.
 ///
-/// This class is currently designed for these main use cases:
-/// - Auto generation of Call Frame Information (CFI) from assembly code
-/// - Predicting single step breakpoint locations
-/// - Emulating instructions for breakpoint traps
+/// This class is currently designed for these main use cases: - Auto
+/// generation of Call Frame Information (CFI) from assembly code - Predicting
+/// single step breakpoint locations - Emulating instructions for breakpoint
+/// traps
 ///
-/// Objects can be asked to read an instruction which will cause a call
-/// to the read register callback to get the PC, followed by a read
-/// memory call to read the opcode. If ReadInstruction () returns true,
-/// then a call to EmulateInstruction::EvaluateInstruction () can be
-/// made. At this point the EmulateInstruction subclass will use all of
-/// the callbacks to emulate an instruction.
+/// Objects can be asked to read an instruction which will cause a call to the
+/// read register callback to get the PC, followed by a read memory call to
+/// read the opcode. If ReadInstruction () returns true, then a call to
+/// EmulateInstruction::EvaluateInstruction () can be made. At this point the
+/// EmulateInstruction subclass will use all of the callbacks to emulate an
+/// instruction.
 ///
 /// Clients that provide the callbacks can either do the read/write
-/// registers/memory to actually emulate the instruction on a real or
-/// virtual CPU, or watch for the EmulateInstruction::Context which
-/// is context for the read/write register/memory which explains why
-/// the callback is being called. Examples of a context are:
-/// "pushing register 3 onto the stack at offset -12", or "adjusting
-/// stack pointer by -16". This extra context allows the generation of
+/// registers/memory to actually emulate the instruction on a real or virtual
+/// CPU, or watch for the EmulateInstruction::Context which is context for the
+/// read/write register/memory which explains why the callback is being
+/// called. Examples of a context are: "pushing register 3 onto the stack at
+/// offset -12", or "adjusting stack pointer by -16". This extra context
+/// allows the generation of
 /// CFI information from assembly code without having to actually do
 /// the read/write register/memory.
 ///
-/// Clients must be prepared that not all instructions for an
-/// Instruction Set Architecture (ISA) will be emulated.
+/// Clients must be prepared that not all instructions for an Instruction Set
+/// Architecture (ISA) will be emulated.
 ///
-/// Subclasses at the very least should implement the instructions that
-/// save and restore registers onto the stack and adjustment to the stack
-/// pointer. By just implementing a few instructions for an ISA that are
-/// the typical prologue opcodes, you can then generate CFI using a
-/// class that will soon be available.
+/// Subclasses at the very least should implement the instructions that save
+/// and restore registers onto the stack and adjustment to the stack pointer.
+/// By just implementing a few instructions for an ISA that are the typical
+/// prologue opcodes, you can then generate CFI using a class that will soon
+/// be available.
 ///
-/// Implementing all of the instructions that affect the PC can then
-/// allow single step prediction support.
+/// Implementing all of the instructions that affect the PC can then allow
+/// single step prediction support.
 ///
-/// Implementing all of the instructions allows for emulation of opcodes
-/// for breakpoint traps and will pave the way for "thread centric"
-/// debugging. The current debugging model is "process centric" where
-/// all threads must be stopped when any thread is stopped; when
-/// hitting software breakpoints we must disable the breakpoint by
-/// restoring the original breakpoint opcode, single stepping and
-/// restoring the breakpoint trap. If all threads were allowed to run
-/// then other threads could miss the breakpoint.
+/// Implementing all of the instructions allows for emulation of opcodes for
+/// breakpoint traps and will pave the way for "thread centric" debugging. The
+/// current debugging model is "process centric" where all threads must be
+/// stopped when any thread is stopped; when hitting software breakpoints we
+/// must disable the breakpoint by restoring the original breakpoint opcode,
+/// single stepping and restoring the breakpoint trap. If all threads were
+/// allowed to run then other threads could miss the breakpoint.
 ///
-/// This class centralizes the code that usually is done in separate
-/// code paths in a debugger (single step prediction, finding save
-/// restore locations of registers for unwinding stack frame variables)
-/// and emulating the instruction is just a bonus.
-//----------------------------------------------------------------------
+/// This class centralizes the code that usually is done in separate code
+/// paths in a debugger (single step prediction, finding save restore
+/// locations of registers for unwinding stack frame variables) and emulating
+/// the instruction is just a bonus.
 
 class EmulateInstruction : public PluginInterface {
 public:
@@ -126,8 +121,8 @@ public:
     // prologue
     eContextPushRegisterOnStack,
 
-    // Exclusively used when restoring a register off the stack as part of
-    // the epilogue
+    // Exclusively used when restoring a register off the stack as part of the
+    // epilogue
     eContextPopRegisterOffStack,
 
     // Add or subtract a value from the stack
@@ -136,8 +131,8 @@ public:
     // Adjust the frame pointer for the current frame
     eContextSetFramePointer,
 
-    // Typically in an epilogue sequence.  Copy the frame pointer back
-    // into the stack pointer, use SP for CFA calculations again.
+    // Typically in an epilogue sequence.  Copy the frame pointer back into the
+    // stack pointer, use SP for CFA calculations again.
     eContextRestoreStackPointer,
 
     // Add or subtract a value from a base address register (other than SP)
@@ -160,8 +155,8 @@ public:
     // Used when performing an absolute branch where the
     eContextAbsoluteBranchRegister,
 
-    // Used when performing a supervisor call to an operating system to
-    // provide a service:
+    // Used when performing a supervisor call to an operating system to provide
+    // a service:
     eContextSupervisorCall,
 
     // Used when performing a MemU operation to read the PC-relative offset
@@ -361,9 +356,8 @@ public:
                                         const RegisterValue &reg_value);
 
   // Type to represent the condition of an instruction. The UINT32 value is
-  // reserved for the
-  // unconditional case and all other value can be used in an architecture
-  // dependent way.
+  // reserved for the unconditional case and all other value can be used in an
+  // architecture dependent way.
   typedef uint32_t InstructionCondition;
   static const InstructionCondition UnconditionalCondition = UINT32_MAX;
 
@@ -371,9 +365,7 @@ public:
 
   ~EmulateInstruction() override = default;
 
-  //----------------------------------------------------------------------
   // Mandatory overrides
-  //----------------------------------------------------------------------
   virtual bool
   SupportsEmulatingInstructionsOfType(InstructionType inst_type) = 0;
 
@@ -393,9 +385,7 @@ public:
   virtual bool GetRegisterInfo(lldb::RegisterKind reg_kind, uint32_t reg_num,
                                RegisterInfo &reg_info) = 0;
 
-  //----------------------------------------------------------------------
   // Optional overrides
-  //----------------------------------------------------------------------
   virtual bool SetInstruction(const Opcode &insn_opcode,
                               const Address &inst_addr, Target *target);
 
@@ -404,9 +394,7 @@ public:
   static const char *TranslateRegister(lldb::RegisterKind reg_kind,
                                        uint32_t reg_num, std::string &reg_name);
 
-  //----------------------------------------------------------------------
   // RegisterInfo variants
-  //----------------------------------------------------------------------
   bool ReadRegister(const RegisterInfo *reg_info, RegisterValue &reg_value);
 
   uint64_t ReadRegisterUnsigned(const RegisterInfo *reg_info,
@@ -418,9 +406,7 @@ public:
   bool WriteRegisterUnsigned(const Context &context,
                              const RegisterInfo *reg_info, uint64_t reg_value);
 
-  //----------------------------------------------------------------------
   // Register kind and number variants
-  //----------------------------------------------------------------------
   bool ReadRegister(lldb::RegisterKind reg_kind, uint32_t reg_num,
                     RegisterValue &reg_value);
 
@@ -515,18 +501,16 @@ public:
 
 protected:
   ArchSpec m_arch;
-  void *m_baton;
-  ReadMemoryCallback m_read_mem_callback;
-  WriteMemoryCallback m_write_mem_callback;
-  ReadRegisterCallback m_read_reg_callback;
-  WriteRegisterCallback m_write_reg_callback;
-  lldb::addr_t m_addr;
+  void *m_baton = nullptr;
+  ReadMemoryCallback m_read_mem_callback = &ReadMemoryDefault;
+  WriteMemoryCallback m_write_mem_callback = &WriteMemoryDefault;
+  ReadRegisterCallback m_read_reg_callback = &ReadRegisterDefault;
+  WriteRegisterCallback m_write_reg_callback = &WriteRegisterDefault;
+  lldb::addr_t m_addr = LLDB_INVALID_ADDRESS;
   Opcode m_opcode;
 
 private:
-  //------------------------------------------------------------------
   // For EmulateInstruction only
-  //------------------------------------------------------------------
   DISALLOW_COPY_AND_ASSIGN(EmulateInstruction);
 };
 

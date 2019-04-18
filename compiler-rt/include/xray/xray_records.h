@@ -1,9 +1,8 @@
 //===-- xray_records.h ------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -54,7 +53,7 @@ struct alignas(32) XRayFileHeader {
 
   union {
     char FreeForm[16];
-    // The current civiltime timestamp, as retrived from 'clock_gettime'. This
+    // The current civiltime timestamp, as retrieved from 'clock_gettime'. This
     // allows readers of the file to determine when the file was created or
     // written down.
     struct timespec TS;
@@ -67,18 +66,23 @@ static_assert(sizeof(XRayFileHeader) == 32, "XRayFileHeader != 32 bytes");
 
 enum RecordTypes {
   NORMAL = 0,
+  ARG_PAYLOAD = 1,
 };
 
 struct alignas(32) XRayRecord {
   // This is the type of the record being written. We use 16 bits to allow us to
   // treat this as a discriminant, and so that the first 4 bytes get packed
   // properly. See RecordTypes for more supported types.
-  uint16_t RecordType = 0;
+  uint16_t RecordType = RecordTypes::NORMAL;
 
   // The CPU where the thread is running. We assume number of CPUs <= 256.
   uint8_t CPU = 0;
 
-  // The type of the event. Usually either ENTER = 0 or EXIT = 1.
+  // The type of the event. One of the following:
+  //   ENTER = 0
+  //   EXIT = 1
+  //   TAIL_EXIT = 2
+  //   ENTER_ARG = 3
   uint8_t Type = 0;
 
   // The function ID for the record.
@@ -90,11 +94,40 @@ struct alignas(32) XRayRecord {
   // The thread ID for the currently running thread.
   uint32_t TId = 0;
 
+  // The ID of process that is currently running
+  uint32_t PId = 0;
+  
   // Use some bytes in the end of the record for buffers.
-  char Buffer[4] = {};
+  char Buffer[8] = {};
 } __attribute__((packed));
 
 static_assert(sizeof(XRayRecord) == 32, "XRayRecord != 32 bytes");
+
+struct alignas(32) XRayArgPayload {
+  // We use the same 16 bits as a discriminant for the records in the log here
+  // too, and so that the first 4 bytes are packed properly.
+  uint16_t RecordType = RecordTypes::ARG_PAYLOAD;
+
+  // Add a few bytes to pad.
+  uint8_t Padding[2] = {};
+
+  // The function ID for the record.
+  int32_t FuncId = 0;
+
+  // The thread ID for the currently running thread.
+  uint32_t TId = 0;
+
+  // The ID of process that is currently running
+  uint32_t PId = 0;
+
+  // The argument payload.
+  uint64_t Arg = 0;
+
+  // The rest of this record ought to be left as padding.
+  uint8_t TailPadding[8] = {};
+} __attribute__((packed));
+
+static_assert(sizeof(XRayArgPayload) == 32, "XRayArgPayload != 32 bytes");
 
 } // namespace __xray
 

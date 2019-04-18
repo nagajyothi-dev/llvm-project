@@ -1,22 +1,25 @@
 #!/usr/bin/env python
 #===- lib/asan/scripts/asan_symbolize.py -----------------------------------===#
 #
-#                     The LLVM Compiler Infrastructure
-#
-# This file is distributed under the University of Illinois Open Source
-# License. See LICENSE.TXT for details.
+# Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #
 #===------------------------------------------------------------------------===#
+"""
+Example of use:
+  asan_symbolize.py -c "$HOME/opt/cross/bin/arm-linux-gnueabi-" -s "$HOME/SymbolFiles" < asan.log
+"""
 import argparse
 import bisect
 import getopt
+import logging
 import os
 import re
 import subprocess
 import sys
 
 symbolizers = {}
-DEBUG = False
 demangle = False
 binutils_prefix = None
 sysroot_path = None
@@ -88,8 +91,7 @@ class LLVMSymbolizer(Symbolizer):
     if self.system == 'Darwin':
       for hint in self.dsym_hints:
         cmd.append('--dsym-hint=%s' % hint)
-    if DEBUG:
-      print(' '.join(cmd))
+    logging.debug(' '.join(cmd))
     try:
       result = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE,
@@ -106,8 +108,7 @@ class LLVMSymbolizer(Symbolizer):
     result = []
     try:
       symbolizer_input = '"%s" %s' % (binary, offset)
-      if DEBUG:
-        print(symbolizer_input)
+      logging.debug(symbolizer_input)
       self.pipe.stdin.write("%s\n" % symbolizer_input)
       while True:
         function_name = self.pipe.stdout.readline().rstrip()
@@ -152,8 +153,7 @@ class Addr2LineSymbolizer(Symbolizer):
     if demangle:
       cmd += ['--demangle']
     cmd += ['-e', self.binary]
-    if DEBUG:
-      print(' '.join(cmd))
+    logging.debug(' '.join(cmd))
     return subprocess.Popen(cmd,
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             bufsize=0,
@@ -222,8 +222,7 @@ class DarwinSymbolizer(Symbolizer):
     self.open_atos()
 
   def open_atos(self):
-    if DEBUG:
-      print('atos -o %s -arch %s' % (self.binary, self.arch))
+    logging.debug('atos -o %s -arch %s', self.binary, self.arch)
     cmdline = ['atos', '-o', self.binary, '-arch', self.arch]
     self.atos = UnbufferedLineConverter(cmdline, close_stderr=True)
 
@@ -231,14 +230,17 @@ class DarwinSymbolizer(Symbolizer):
     """Overrides Symbolizer.symbolize."""
     if self.binary != binary:
       return None
+    if not os.path.exists(binary):
+      # If the binary doesn't exist atos will exit which will lead to IOError
+      # exceptions being raised later on so just don't try to symbolize.
+      return ['{} ({}:{}+{})'.format(addr, binary, self.arch, offset)]
     atos_line = self.atos.convert('0x%x' % int(offset, 16))
     while "got symbolicator for" in atos_line:
       atos_line = self.atos.readline()
     # A well-formed atos response looks like this:
     #   foo(type1, type2) (in object.name) (filename.cc:80)
     match = re.match('^(.*) \(in (.*)\) \((.*:\d*)\)$', atos_line)
-    if DEBUG:
-      print('atos_line: ', atos_line)
+    logging.debug('atos_line: %s', atos_line)
     if match:
       function_name = match.group(1)
       function_name = re.sub('\(.*?\)', '', function_name)
@@ -280,7 +282,7 @@ def BreakpadSymbolizerFactory(binary):
 def SystemSymbolizerFactory(system, addr, binary, arch):
   if system == 'Darwin':
     return DarwinSymbolizer(addr, binary, arch)
-  elif system == 'Linux' or system == 'FreeBSD' or system == 'NetBSD':
+  elif system in ['Linux', 'FreeBSD', 'NetBSD', 'SunOS']:
     return Addr2LineSymbolizer(binary)
 
 
@@ -370,7 +372,7 @@ class SymbolizationLoop(object):
       self.binary_name_filter = binary_name_filter
       self.dsym_hint_producer = dsym_hint_producer
       self.system = os.uname()[0]
-      if self.system not in ['Linux', 'Darwin', 'FreeBSD', 'NetBSD']:
+      if self.system not in ['Linux', 'Darwin', 'FreeBSD', 'NetBSD','SunOS']:
         raise Exception('Unknown system')
       self.llvm_symbolizers = {}
       self.last_llvm_symbolizer = None
@@ -451,8 +453,7 @@ class SymbolizationLoop(object):
     match = re.match(stack_trace_line_format, line)
     if not match:
       return [self.current_line]
-    if DEBUG:
-      print(line)
+    logging.debug(line)
     _, frameno_str, addr, binary, offset = match.groups()
     arch = ""
     # Arch can be embedded in the filename, e.g.: "libabc.dylib:x86_64h"
@@ -473,17 +474,54 @@ class SymbolizationLoop(object):
     symbolized_line = self.symbolize_address(addr, binary, offset, arch)
     if not symbolized_line:
       if original_binary != binary:
-        symbolized_line = self.symbolize_address(addr, binary, offset, arch)
+        symbolized_line = self.symbolize_address(addr, original_binary, offset, arch)
     return self.get_symbolized_lines(symbolized_line)
+
+def add_logging_args(parser):
+  parser.add_argument('--log-dest',
+    default=None,
+    help='Destination path for script logging (default stderr).',
+  )
+  parser.add_argument('--log-level',
+    choices=['debug', 'info', 'warning', 'error', 'critical'],
+    default='info',
+    help='Log level for script (default: %(default)s).'
+  )
+
+def setup_logging():
+  # Set up a parser just for parsing the logging arguments.
+  # This is necessary because logging should be configured before we
+  # perform the main argument parsing.
+  parser = argparse.ArgumentParser(add_help=False)
+  add_logging_args(parser)
+  pargs, unparsed_args = parser.parse_known_args()
+
+  log_level = getattr(logging, pargs.log_level.upper())
+  if log_level == logging.DEBUG:
+    log_format = '%(levelname)s: [%(funcName)s() %(filename)s:%(lineno)d] %(message)s'
+  else:
+    log_format = '%(levelname)s: %(message)s'
+  basic_config = {
+    'level': log_level,
+    'format': log_format
+  }
+  log_dest = pargs.log_dest
+  if log_dest:
+    basic_config['filename'] = log_dest
+  logging.basicConfig(**basic_config)
+  logging.debug('Logging level set to "{}" and directing output to "{}"'.format(
+    pargs.log_level,
+    'stderr' if log_dest is None else log_dest)
+  )
+  return unparsed_args
 
 
 if __name__ == '__main__':
+  remaining_args = setup_logging()
   parser = argparse.ArgumentParser(
       formatter_class=argparse.RawDescriptionHelpFormatter,
       description='ASan symbolization script',
-      epilog='Example of use:\n'
-             'asan_symbolize.py -c "$HOME/opt/cross/bin/arm-linux-gnueabi-" '
-             '-s "$HOME/SymbolFiles" < asan.log')
+      epilog=__doc__)
   parser.add_argument('path_to_cut', nargs='*',
                       help='pattern to be cut from the result file path ')
   parser.add_argument('-d','--demangle', action='store_true',
@@ -497,7 +535,9 @@ if __name__ == '__main__':
                       help='set log file name to parse, default is stdin')
   parser.add_argument('--force-system-symbolizer', action='store_true',
                       help='don\'t use llvm-symbolizer')
-  args = parser.parse_args()
+  # Add logging arguments so that `--help` shows them.
+  add_logging_args(parser)
+  args = parser.parse_args(remaining_args)
   if args.path_to_cut:
     fix_filename_patterns = args.path_to_cut
   if args.demangle:

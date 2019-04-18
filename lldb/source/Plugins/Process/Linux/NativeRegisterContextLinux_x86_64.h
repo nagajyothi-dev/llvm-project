@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextLinux_x86_64.h ---------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,6 +14,7 @@
 #include "Plugins/Process/Linux/NativeRegisterContextLinux.h"
 #include "Plugins/Process/Utility/RegisterContext_x86.h"
 #include "Plugins/Process/Utility/lldb-x86-register-enums.h"
+#include <sys/uio.h>
 
 namespace lldb_private {
 namespace process_linux {
@@ -24,8 +24,7 @@ class NativeProcessLinux;
 class NativeRegisterContextLinux_x86_64 : public NativeRegisterContextLinux {
 public:
   NativeRegisterContextLinux_x86_64(const ArchSpec &target_arch,
-                                    NativeThreadProtocol &native_thread,
-                                    uint32_t concrete_frame_idx);
+                                    NativeThreadProtocol &native_thread);
 
   uint32_t GetRegisterSetCount() const override;
 
@@ -109,8 +108,9 @@ private:
 
   // Private member variables.
   mutable XStateType m_xstate_type;
-  FPR m_fpr; // Extended States Area, named FPR for historical reasons.
-  IOVEC m_iovec;
+  std::unique_ptr<FPR, llvm::FreeDeleter>
+      m_xstate; // Extended States Area, named FPR for historical reasons.
+  struct iovec m_iovec;
   YMM m_ymm_set;
   MPX m_mpx_set;
   RegInfo m_reg_info;
@@ -137,6 +137,8 @@ private:
   bool CopyMPXtoXSTATE(uint32_t reg);
 
   bool IsMPX(uint32_t reg_index) const;
+
+  void UpdateXSTATEforWrite(uint32_t reg_index);
 };
 
 } // namespace process_linux

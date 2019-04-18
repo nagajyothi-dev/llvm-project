@@ -1,9 +1,8 @@
 //===-- IRForTarget.cpp -----------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,7 +24,6 @@
 
 #include "clang/AST/ASTContext.h"
 
-#include "lldb/Core/Scalar.h"
 #include "lldb/Core/dwarf.h"
 #include "lldb/Expression/IRExecutionUnit.h"
 #include "lldb/Expression/IRInterpreter.h"
@@ -36,6 +34,7 @@
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/Endian.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/Scalar.h"
 #include "lldb/Utility/StreamString.h"
 
 #include <map>
@@ -263,8 +262,7 @@ bool IRForTarget::CreateResultVariable(llvm::Function &llvm_function) {
   }
 
   // Get the next available result name from m_decl_map and create the
-  // persistent
-  // variable for it
+  // persistent variable for it
 
   // If the result is an Lvalue, it is emitted as a pointer; see
   // ASTResultSynthesizer::SynthesizeBodyResult.
@@ -311,12 +309,14 @@ bool IRForTarget::CreateResultVariable(llvm::Function &llvm_function) {
 
   lldb::TargetSP target_sp(m_execution_unit.GetTarget());
   lldb_private::ExecutionContext exe_ctx(target_sp, true);
-  if (m_result_type.GetBitSize(exe_ctx.GetBestExecutionContextScope()) == 0) {
+  llvm::Optional<uint64_t> bit_size =
+      m_result_type.GetBitSize(exe_ctx.GetBestExecutionContextScope());
+  if (!bit_size) {
     lldb_private::StreamString type_desc_stream;
     m_result_type.DumpTypeDescription(&type_desc_stream);
 
     if (log)
-      log->Printf("Result type has size 0");
+      log->Printf("Result type has unknown size");
 
     m_error_stream.Printf("Error [IRForTarget]: Size of result type '%s' "
                           "couldn't be determined\n",
@@ -335,7 +335,8 @@ bool IRForTarget::CreateResultVariable(llvm::Function &llvm_function) {
 
   if (log)
     log->Printf("Creating a new result global: \"%s\" with size 0x%" PRIx64,
-                m_result_name.GetCString(), m_result_type.GetByteSize(nullptr));
+                m_result_name.GetCString(),
+                m_result_type.GetByteSize(nullptr).getValueOr(0));
 
   // Construct a new result global and set up its metadata
 
@@ -345,9 +346,9 @@ bool IRForTarget::CreateResultVariable(llvm::Function &llvm_function) {
       GlobalValue::ExternalLinkage, NULL, /* no initializer */
       m_result_name.GetCString());
 
-  // It's too late in compilation to create a new VarDecl for this, but we don't
-  // need to.  We point the metadata at the old VarDecl.  This creates an odd
-  // anomaly: a variable with a Value whose name is something like $0 and a
+  // It's too late in compilation to create a new VarDecl for this, but we
+  // don't need to.  We point the metadata at the old VarDecl.  This creates an
+  // odd anomaly: a variable with a Value whose name is something like $0 and a
   // Decl whose name is $__lldb_expr_result.  This condition is handled in
   // ClangExpressionDeclMap::DoMaterialize, and the name of the variable is
   // fixed up.
@@ -464,9 +465,7 @@ bool IRForTarget::RewriteObjCConstString(llvm::GlobalVariable *ns_str,
     // CFAllocatorRef -> i8*
     // UInt8 * -> i8*
     // CFIndex -> long (i32 or i64, as appropriate; we ask the module for its
-    // pointer size for now)
-    // CFStringEncoding -> i32
-    // Boolean -> i8
+    // pointer size for now) CFStringEncoding -> i32 Boolean -> i8
 
     Type *arg_type_array[5];
 
@@ -478,15 +477,15 @@ bool IRForTarget::RewriteObjCConstString(llvm::GlobalVariable *ns_str,
 
     ArrayRef<Type *> CFSCWB_arg_types(arg_type_array, 5);
 
-    llvm::Type *CFSCWB_ty =
+    llvm::FunctionType *CFSCWB_ty =
         FunctionType::get(ns_str_ty, CFSCWB_arg_types, false);
 
     // Build the constant containing the pointer to the function
     PointerType *CFSCWB_ptr_ty = PointerType::getUnqual(CFSCWB_ty);
     Constant *CFSCWB_addr_int =
         ConstantInt::get(m_intptr_ty, CFStringCreateWithBytes_addr, false);
-    m_CFStringCreateWithBytes =
-        ConstantExpr::getIntToPtr(CFSCWB_addr_int, CFSCWB_ptr_ty);
+    m_CFStringCreateWithBytes = {
+        CFSCWB_ty, ConstantExpr::getIntToPtr(CFSCWB_addr_int, CFSCWB_ptr_ty)};
   }
 
   ConstantDataSequential *string_array = NULL;
@@ -781,11 +780,8 @@ bool IRForTarget::RewriteObjCConstStrings() {
 static bool IsObjCSelectorRef(Value *value) {
   GlobalVariable *global_variable = dyn_cast<GlobalVariable>(value);
 
-  if (!global_variable || !global_variable->hasName() ||
-      !global_variable->getName().startswith("OBJC_SELECTOR_REFERENCES_"))
-    return false;
-
-  return true;
+  return !(!global_variable || !global_variable->hasName() ||
+           !global_variable->getName().startswith("OBJC_SELECTOR_REFERENCES_"));
 }
 
 // This function does not report errors; its callers are responsible.
@@ -801,9 +797,8 @@ bool IRForTarget::RewriteObjCSelector(Instruction *selector_load) {
   // Unpack the message name from the selector.  In LLVM IR, an objc_msgSend
   // gets represented as
   //
-  // %tmp     = load i8** @"OBJC_SELECTOR_REFERENCES_" ; <i8*>
-  // %call    = call i8* (i8*, i8*, ...)* @objc_msgSend(i8* %obj, i8* %tmp, ...)
-  // ; <i8*>
+  // %tmp     = load i8** @"OBJC_SELECTOR_REFERENCES_" ; <i8*> %call    = call
+  // i8* (i8*, i8*, ...)* @objc_msgSend(i8* %obj, i8* %tmp, ...) ; <i8*>
   //
   // where %obj is the object pointer and %tmp is the selector.
   //
@@ -870,7 +865,8 @@ bool IRForTarget::RewriteObjCSelector(Instruction *selector_load) {
       log->Printf("Found sel_registerName at 0x%" PRIx64,
                   sel_registerName_addr);
 
-    // Build the function type: struct objc_selector *sel_registerName(uint8_t*)
+    // Build the function type: struct objc_selector
+    // *sel_registerName(uint8_t*)
 
     // The below code would be "more correct," but in actuality what's required
     // is uint8_t*
@@ -884,14 +880,15 @@ bool IRForTarget::RewriteObjCSelector(Instruction *selector_load) {
 
     ArrayRef<Type *> srN_arg_types(type_array, 1);
 
-    llvm::Type *srN_type =
+    llvm::FunctionType *srN_type =
         FunctionType::get(sel_ptr_type, srN_arg_types, false);
 
     // Build the constant containing the pointer to the function
     PointerType *srN_ptr_ty = PointerType::getUnqual(srN_type);
     Constant *srN_addr_int =
         ConstantInt::get(m_intptr_ty, sel_registerName_addr, false);
-    m_sel_registerName = ConstantExpr::getIntToPtr(srN_addr_int, srN_ptr_ty);
+    m_sel_registerName = {srN_type,
+                          ConstantExpr::getIntToPtr(srN_addr_int, srN_ptr_ty)};
   }
 
   Value *argument_array[1];
@@ -956,11 +953,8 @@ bool IRForTarget::RewriteObjCSelectors(BasicBlock &basic_block) {
 static bool IsObjCClassReference(Value *value) {
   GlobalVariable *global_variable = dyn_cast<GlobalVariable>(value);
 
-  if (!global_variable || !global_variable->hasName() ||
-      !global_variable->getName().startswith("OBJC_CLASS_REFERENCES_"))
-    return false;
-
-  return true;
+  return !(!global_variable || !global_variable->hasName() ||
+           !global_variable->getName().startswith("OBJC_CLASS_REFERENCES_"));
 }
 
 // This function does not report errors; its callers are responsible.
@@ -980,11 +974,10 @@ bool IRForTarget::RewriteObjCClassReference(Instruction *class_load) {
   //            %struct._objc_class** @OBJC_CLASS_REFERENCES_, align 4
   //
   // @"OBJC_CLASS_REFERENCES_ is a bitcast of a character array called
-  // @OBJC_CLASS_NAME_.
-  // @OBJC_CLASS_NAME contains the string.
+  // @OBJC_CLASS_NAME_. @OBJC_CLASS_NAME contains the string.
 
-  // Find the pointer's initializer (a ConstantExpr with opcode BitCast)
-  // and get the string from its target
+  // Find the pointer's initializer (a ConstantExpr with opcode BitCast) and
+  // get the string from its target
 
   GlobalVariable *_objc_class_references_ =
       dyn_cast<GlobalVariable>(load->getPointerOperand());
@@ -1050,14 +1043,15 @@ bool IRForTarget::RewriteObjCClassReference(Instruction *class_load) {
 
     ArrayRef<Type *> ogC_arg_types(type_array, 1);
 
-    llvm::Type *ogC_type =
+    llvm::FunctionType *ogC_type =
         FunctionType::get(class_type, ogC_arg_types, false);
 
     // Build the constant containing the pointer to the function
     PointerType *ogC_ptr_ty = PointerType::getUnqual(ogC_type);
     Constant *ogC_addr_int =
         ConstantInt::get(m_intptr_ty, objc_getClass_addr, false);
-    m_objc_getClass = ConstantExpr::getIntToPtr(ogC_addr_int, ogC_ptr_ty);
+    m_objc_getClass = {ogC_type,
+                       ConstantExpr::getIntToPtr(ogC_addr_int, ogC_ptr_ty)};
   }
 
   Value *argument_array[1];
@@ -1159,8 +1153,8 @@ bool IRForTarget::RewritePersistentAlloc(llvm::Instruction *persistent_alloc) {
       GlobalValue::ExternalLinkage, NULL,   /* no initializer */
       alloc->getName().str());
 
-  // What we're going to do here is make believe this was a regular old external
-  // variable.  That means we need to make the metadata valid.
+  // What we're going to do here is make believe this was a regular old
+  // external variable.  That means we need to make the metadata valid.
 
   NamedMDNode *named_metadata =
       m_module->getOrInsertNamedMetadata("clang.global.decl.ptrs");
@@ -1175,8 +1169,7 @@ bool IRForTarget::RewritePersistentAlloc(llvm::Instruction *persistent_alloc) {
   named_metadata->addOperand(persistent_global_md);
 
   // Now, since the variable is a pointer variable, we will drop in a load of
-  // that
-  // pointer variable.
+  // that pointer variable.
 
   LoadInst *persistent_load = new LoadInst(persistent_global, "", alloc);
 
@@ -1264,12 +1257,9 @@ bool IRForTarget::MaterializeInitializer(uint8_t *data, Constant *initializer) {
         llvm::NextPowerOf2(constant_size) * 8);
 
     lldb_private::Status get_data_error;
-    if (!scalar.GetAsMemoryData(data, constant_size,
-                                lldb_private::endian::InlHostByteOrder(),
-                                get_data_error))
-      return false;
-
-    return true;
+    return scalar.GetAsMemoryData(data, constant_size,
+                                  lldb_private::endian::InlHostByteOrder(),
+                                  get_data_error) != 0;
   } else if (ConstantDataArray *array_initializer =
                  dyn_cast<ConstantDataArray>(initializer)) {
     if (array_initializer->isString()) {
@@ -1366,16 +1356,13 @@ bool IRForTarget::MaybeHandleVariable(Value *llvm_value_ptr) {
 
     if (name[0] == '$') {
       // The $__lldb_expr_result name indicates the return value has allocated
-      // as
-      // a static variable.  Per the comment at
-      // ASTResultSynthesizer::SynthesizeBodyResult,
-      // accesses to this static variable need to be redirected to the result of
-      // dereferencing
-      // a pointer that is passed in as one of the arguments.
+      // as a static variable.  Per the comment at
+      // ASTResultSynthesizer::SynthesizeBodyResult, accesses to this static
+      // variable need to be redirected to the result of dereferencing a
+      // pointer that is passed in as one of the arguments.
       //
       // Consequently, when reporting the size of the type, we report a pointer
-      // type pointing
-      // to the type of $__lldb_expr_result, not the type itself.
+      // type pointing to the type of $__lldb_expr_result, not the type itself.
       //
       // We also do this for any user-declared persistent variables.
       compiler_type = compiler_type.GetPointerType();
@@ -1384,7 +1371,9 @@ bool IRForTarget::MaybeHandleVariable(Value *llvm_value_ptr) {
       value_type = global_variable->getType();
     }
 
-    const uint64_t value_size = compiler_type.GetByteSize(nullptr);
+    llvm::Optional<uint64_t> value_size = compiler_type.GetByteSize(nullptr);
+    if (!value_size)
+      return false;
     lldb::offset_t value_alignment =
         (compiler_type.GetTypeBitAlign() + 7ull) / 8ull;
 
@@ -1395,13 +1384,13 @@ bool IRForTarget::MaybeHandleVariable(Value *llvm_value_ptr) {
                   lldb_private::ClangUtil::GetQualType(compiler_type)
                       .getAsString()
                       .c_str(),
-                  PrintType(value_type).c_str(), value_size, value_alignment);
+                  PrintType(value_type).c_str(), *value_size, value_alignment);
     }
 
     if (named_decl &&
         !m_decl_map->AddValueToStruct(
             named_decl, lldb_private::ConstString(name.c_str()), llvm_value_ptr,
-            value_size, value_alignment)) {
+            *value_size, value_alignment)) {
       if (!global_variable->hasExternalLinkage())
         return true;
       else
@@ -1965,12 +1954,11 @@ bool IRForTarget::ReplaceVariables(Function &llvm_function) {
       FunctionValueCache body_result_maker(
           [this, name, offset_type, offset, argument,
            value](llvm::Function *function) -> llvm::Value * {
-            // Per the comment at ASTResultSynthesizer::SynthesizeBodyResult, in
-            // cases where the result
-            // variable is an rvalue, we have to synthesize a dereference of the
-            // appropriate structure
-            // entry in order to produce the static variable that the AST thinks
-            // it is accessing.
+            // Per the comment at ASTResultSynthesizer::SynthesizeBodyResult,
+            // in cases where the result variable is an rvalue, we have to
+            // synthesize a dereference of the appropriate structure entry in
+            // order to produce the static variable that the AST thinks it is
+            // accessing.
 
             llvm::Instruction *entry_instruction = llvm::cast<Instruction>(
                 m_entry_instruction_finder.GetValue(function));
@@ -2194,7 +2182,8 @@ bool IRForTarget::runOnModule(Module &llvm_module) {
         if (log)
           log->Printf("RewriteObjCSelectors() failed");
 
-        // RewriteObjCSelectors() reports its own errors, so we don't do so here
+        // RewriteObjCSelectors() reports its own errors, so we don't do so
+        // here
 
         return false;
       }

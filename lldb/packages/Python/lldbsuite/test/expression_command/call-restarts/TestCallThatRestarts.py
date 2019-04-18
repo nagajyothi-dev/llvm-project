@@ -26,6 +26,7 @@ class ExprCommandThatRestartsTestCase(TestBase):
     @skipIfFreeBSD  # llvm.org/pr19246: intermittent failure
     @skipIfDarwin  # llvm.org/pr19246: intermittent failure
     @skipIfWindows  # Test relies on signals, unsupported on Windows
+    @expectedFailureNetBSD
     @expectedFlakeyAndroid(bugnumber="llvm.org/pr19246")
     def test(self):
         """Test calling function that hits a signal and restarts."""
@@ -48,7 +49,7 @@ class ExprCommandThatRestartsTestCase(TestBase):
             "Restored the zeroth frame correctly")
 
     def call_function(self):
-        (target, process, self.thread, bkpt) = lldbutil.run_to_source_breakpoint(self, 
+        (target, process, self.thread, bkpt) = lldbutil.run_to_source_breakpoint(self,
                                       'Stop here in main.', self.main_source_spec)
 
         # Make sure the SIGCHLD behavior is pass/no-stop/no-notify:

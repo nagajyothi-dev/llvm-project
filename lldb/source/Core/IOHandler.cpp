@@ -1,36 +1,31 @@
 //===-- IOHandler.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Core/IOHandler.h"
 
-// C Includes
 #ifndef LLDB_DISABLE_CURSES
 #include <curses.h>
 #include <panel.h>
 #endif
 
-// C++ Includes
 #if defined(__APPLE__)
 #include <deque>
 #endif
 #include <string>
 
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/StreamFile.h"
-#include "lldb/Host/File.h"            // for File
-#include "lldb/Host/Predicate.h"       // for Predicate, ::eBroad...
-#include "lldb/Utility/Status.h"       // for Status
-#include "lldb/Utility/StreamString.h" // for StreamString
-#include "lldb/Utility/StringList.h"   // for StringList
-#include "lldb/lldb-forward.h"         // for StreamFileSP
+#include "lldb/Host/File.h"
+#include "lldb/Utility/Predicate.h"
+#include "lldb/Utility/Status.h"
+#include "lldb/Utility/StreamString.h"
+#include "lldb/Utility/StringList.h"
+#include "lldb/lldb-forward.h"
 
 #ifndef LLDB_DISABLE_LIBEDIT
 #include "lldb/Host/Editline.h"
@@ -40,7 +35,6 @@
 #ifndef LLDB_DISABLE_CURSES
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Module.h"
-#include "lldb/Core/State.h"
 #include "lldb/Core/ValueObject.h"
 #include "lldb/Core/ValueObjectRegister.h"
 #include "lldb/Symbol/Block.h"
@@ -53,24 +47,26 @@
 #include "lldb/Target/StopInfo.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
+#include "lldb/Utility/State.h"
 #endif
 
-#include "llvm/ADT/StringRef.h" // for StringRef
+#include "llvm/ADT/StringRef.h"
 
 #ifdef _MSC_VER
 #include "lldb/Host/windows/windows.h"
 #endif
 
-#include <memory> // for shared_ptr
-#include <mutex>  // for recursive_mutex
+#include <memory>
+#include <mutex>
 
-#include <assert.h>    // for assert
-#include <ctype.h>     // for isspace
-#include <errno.h>     // for EINTR, errno
-#include <stdint.h>    // for uint32_t, UINT32_MAX
-#include <stdio.h>     // for size_t, fprintf, feof
-#include <string.h>    // for strlen
-#include <type_traits> // for move
+#include <assert.h>
+#include <ctype.h>
+#include <errno.h>
+#include <locale.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <type_traits>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -80,16 +76,19 @@ IOHandler::IOHandler(Debugger &debugger, IOHandler::Type type)
                 StreamFileSP(), // Adopt STDIN from top input reader
                 StreamFileSP(), // Adopt STDOUT from top input reader
                 StreamFileSP(), // Adopt STDERR from top input reader
-                0)              // Flags
-{}
+                0,              // Flags
+                nullptr         // Shadow file recorder
+      ) {}
 
 IOHandler::IOHandler(Debugger &debugger, IOHandler::Type type,
                      const lldb::StreamFileSP &input_sp,
                      const lldb::StreamFileSP &output_sp,
-                     const lldb::StreamFileSP &error_sp, uint32_t flags)
+                     const lldb::StreamFileSP &error_sp, uint32_t flags,
+                     repro::DataRecorder *data_recorder)
     : m_debugger(debugger), m_input_sp(input_sp), m_output_sp(output_sp),
-      m_error_sp(error_sp), m_popped(false), m_flags(flags), m_type(type),
-      m_user_data(nullptr), m_done(false), m_active(false) {
+      m_error_sp(error_sp), m_data_recorder(data_recorder), m_popped(false),
+      m_flags(flags), m_type(type), m_user_data(nullptr), m_done(false),
+      m_active(false) {
   // If any files are not specified, then adopt them from the top input reader.
   if (!m_input_sp || !m_output_sp || !m_error_sp)
     debugger.AdoptTopIOHandlerFilesIfInvalid(m_input_sp, m_output_sp,
@@ -157,7 +156,7 @@ IOHandlerConfirm::IOHandlerConfirm(Debugger &debugger, llvm::StringRef prompt,
           llvm::StringRef(), // No continuation prompt
           false,             // Multi-line
           false, // Don't colorize the prompt (i.e. the confirm message.)
-          0, *this),
+          0, *this, nullptr),
       m_default_response(default_response), m_user_response(default_response) {
   StreamString prompt_stream;
   prompt_stream.PutCString(prompt);
@@ -171,12 +170,10 @@ IOHandlerConfirm::IOHandlerConfirm(Debugger &debugger, llvm::StringRef prompt,
 
 IOHandlerConfirm::~IOHandlerConfirm() = default;
 
-int IOHandlerConfirm::IOHandlerComplete(IOHandler &io_handler,
-                                        const char *current_line,
-                                        const char *cursor,
-                                        const char *last_char,
-                                        int skip_first_n_matches,
-                                        int max_matches, StringList &matches) {
+int IOHandlerConfirm::IOHandlerComplete(
+    IOHandler &io_handler, const char *current_line, const char *cursor,
+    const char *last_char, int skip_first_n_matches, int max_matches,
+    StringList &matches, StringList &descriptions) {
   if (current_line == cursor) {
     if (m_default_response) {
       matches.AppendString("y");
@@ -222,12 +219,10 @@ void IOHandlerConfirm::IOHandlerInputComplete(IOHandler &io_handler,
   }
 }
 
-int IOHandlerDelegate::IOHandlerComplete(IOHandler &io_handler,
-                                         const char *current_line,
-                                         const char *cursor,
-                                         const char *last_char,
-                                         int skip_first_n_matches,
-                                         int max_matches, StringList &matches) {
+int IOHandlerDelegate::IOHandlerComplete(
+    IOHandler &io_handler, const char *current_line, const char *cursor,
+    const char *last_char, int skip_first_n_matches, int max_matches,
+    StringList &matches, StringList &descriptions) {
   switch (m_completion) {
   case Completion::None:
     break;
@@ -235,30 +230,26 @@ int IOHandlerDelegate::IOHandlerComplete(IOHandler &io_handler,
   case Completion::LLDBCommand:
     return io_handler.GetDebugger().GetCommandInterpreter().HandleCompletion(
         current_line, cursor, last_char, skip_first_n_matches, max_matches,
-        matches);
-
+        matches, descriptions);
   case Completion::Expression: {
-    bool word_complete = false;
-    const char *word_start = cursor;
-    if (cursor > current_line)
-      --word_start;
-    while (word_start > current_line && !isspace(*word_start))
-      --word_start;
+    CompletionResult result;
+    CompletionRequest request(current_line, current_line - cursor,
+                              skip_first_n_matches, max_matches, result);
     CommandCompletions::InvokeCommonCompletionCallbacks(
         io_handler.GetDebugger().GetCommandInterpreter(),
-        CommandCompletions::eVariablePathCompletion, word_start,
-        skip_first_n_matches, max_matches, nullptr, word_complete, matches);
+        CommandCompletions::eVariablePathCompletion, request, nullptr);
+    result.GetMatches(matches);
+    result.GetDescriptions(descriptions);
 
-    size_t num_matches = matches.GetSize();
+    size_t num_matches = request.GetNumberOfMatches();
     if (num_matches > 0) {
       std::string common_prefix;
       matches.LongestCommonPrefix(common_prefix);
-      const size_t partial_name_len = strlen(word_start);
+      const size_t partial_name_len = request.GetCursorArgumentPrefix().size();
 
-      // If we matched a unique single command, add a space...
-      // Only do this if the completer told us this was a complete word,
-      // however...
-      if (num_matches == 1 && word_complete) {
+      // If we matched a unique single command, add a space... Only do this if
+      // the completer told us this was a complete word, however...
+      if (num_matches == 1 && request.GetWordComplete()) {
         common_prefix.push_back(' ');
       }
       common_prefix.erase(0, partial_name_len);
@@ -276,7 +267,7 @@ IOHandlerEditline::IOHandlerEditline(
     const char *editline_name, // Used for saving history files
     llvm::StringRef prompt, llvm::StringRef continuation_prompt,
     bool multi_line, bool color_prompts, uint32_t line_number_start,
-    IOHandlerDelegate &delegate)
+    IOHandlerDelegate &delegate, repro::DataRecorder *data_recorder)
     : IOHandlerEditline(debugger, type,
                         StreamFileSP(), // Inherit input from top input reader
                         StreamFileSP(), // Inherit output from top input reader
@@ -284,7 +275,7 @@ IOHandlerEditline::IOHandlerEditline(
                         0,              // Flags
                         editline_name,  // Used for saving history files
                         prompt, continuation_prompt, multi_line, color_prompts,
-                        line_number_start, delegate) {}
+                        line_number_start, delegate, data_recorder) {}
 
 IOHandlerEditline::IOHandlerEditline(
     Debugger &debugger, IOHandler::Type type,
@@ -293,10 +284,11 @@ IOHandlerEditline::IOHandlerEditline(
     const char *editline_name, // Used for saving history files
     llvm::StringRef prompt, llvm::StringRef continuation_prompt,
     bool multi_line, bool color_prompts, uint32_t line_number_start,
-    IOHandlerDelegate &delegate)
-    : IOHandler(debugger, type, input_sp, output_sp, error_sp, flags),
+    IOHandlerDelegate &delegate, repro::DataRecorder *data_recorder)
+    : IOHandler(debugger, type, input_sp, output_sp, error_sp, flags,
+                data_recorder),
 #ifndef LLDB_DISABLE_LIBEDIT
-      m_editline_ap(),
+      m_editline_up(),
 #endif
       m_delegate(delegate), m_prompt(), m_continuation_prompt(),
       m_current_lines_ptr(nullptr), m_base_line_number(line_number_start),
@@ -311,18 +303,17 @@ IOHandlerEditline::IOHandlerEditline(
   use_editline = m_input_sp->GetFile().GetIsRealTerminal();
 
   if (use_editline) {
-    m_editline_ap.reset(new Editline(editline_name, GetInputFILE(),
+    m_editline_up.reset(new Editline(editline_name, GetInputFILE(),
                                      GetOutputFILE(), GetErrorFILE(),
                                      m_color_prompts));
-    m_editline_ap->SetIsInputCompleteCallback(IsInputCompleteCallback, this);
-    m_editline_ap->SetAutoCompleteCallback(AutoCompleteCallback, this);
+    m_editline_up->SetIsInputCompleteCallback(IsInputCompleteCallback, this);
+    m_editline_up->SetAutoCompleteCallback(AutoCompleteCallback, this);
     // See if the delegate supports fixing indentation
     const char *indent_chars = delegate.IOHandlerGetFixIndentationCharacters();
     if (indent_chars) {
       // The delegate does support indentation, hook it up so when any
-      // indentation
-      // character is typed, the delegate gets a chance to fix it
-      m_editline_ap->SetFixIndentationCallback(FixIndentationCallback, this,
+      // indentation character is typed, the delegate gets a chance to fix it
+      m_editline_up->SetFixIndentationCallback(FixIndentationCallback, this,
                                                indent_chars);
     }
   }
@@ -334,13 +325,13 @@ IOHandlerEditline::IOHandlerEditline(
 
 IOHandlerEditline::~IOHandlerEditline() {
 #ifndef LLDB_DISABLE_LIBEDIT
-  m_editline_ap.reset();
+  m_editline_up.reset();
 #endif
 }
 
 void IOHandlerEditline::Activate() {
   IOHandler::Activate();
-  m_delegate.IOHandlerActivated(*this);
+  m_delegate.IOHandlerActivated(*this, GetIsInteractive());
 }
 
 void IOHandlerEditline::Deactivate() {
@@ -350,8 +341,11 @@ void IOHandlerEditline::Deactivate() {
 
 bool IOHandlerEditline::GetLine(std::string &line, bool &interrupted) {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap) {
-    return m_editline_ap->GetLine(line, interrupted);
+  if (m_editline_up) {
+    bool b = m_editline_up->GetLine(line, interrupted);
+    if (m_data_recorder)
+      m_data_recorder->Record(line, true);
+    return b;
   } else {
 #endif
     line.clear();
@@ -407,8 +401,10 @@ bool IOHandlerEditline::GetLine(std::string &line, bool &interrupted) {
         }
       }
       m_editing = false;
-      // We might have gotten a newline on a line by itself
-      // make sure to return true in this case.
+      if (m_data_recorder && got_line)
+        m_data_recorder->Record(line, true);
+      // We might have gotten a newline on a line by itself make sure to return
+      // true in this case.
       return got_line;
     } else {
       // No more input file, we are done...
@@ -438,25 +434,23 @@ int IOHandlerEditline::FixIndentationCallback(Editline *editline,
       *editline_reader, lines, cursor_position);
 }
 
-int IOHandlerEditline::AutoCompleteCallback(const char *current_line,
-                                            const char *cursor,
-                                            const char *last_char,
-                                            int skip_first_n_matches,
-                                            int max_matches,
-                                            StringList &matches, void *baton) {
+int IOHandlerEditline::AutoCompleteCallback(
+    const char *current_line, const char *cursor, const char *last_char,
+    int skip_first_n_matches, int max_matches, StringList &matches,
+    StringList &descriptions, void *baton) {
   IOHandlerEditline *editline_reader = (IOHandlerEditline *)baton;
   if (editline_reader)
     return editline_reader->m_delegate.IOHandlerComplete(
         *editline_reader, current_line, cursor, last_char, skip_first_n_matches,
-        max_matches, matches);
+        max_matches, matches, descriptions);
   return 0;
 }
 #endif
 
 const char *IOHandlerEditline::GetPrompt() {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap) {
-    return m_editline_ap->GetPrompt();
+  if (m_editline_up) {
+    return m_editline_up->GetPrompt();
   } else {
 #endif
     if (m_prompt.empty())
@@ -471,8 +465,8 @@ bool IOHandlerEditline::SetPrompt(llvm::StringRef prompt) {
   m_prompt = prompt;
 
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    m_editline_ap->SetPrompt(m_prompt.empty() ? nullptr : m_prompt.c_str());
+  if (m_editline_up)
+    m_editline_up->SetPrompt(m_prompt.empty() ? nullptr : m_prompt.c_str());
 #endif
   return true;
 }
@@ -486,8 +480,8 @@ void IOHandlerEditline::SetContinuationPrompt(llvm::StringRef prompt) {
   m_continuation_prompt = prompt;
 
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    m_editline_ap->SetContinuationPrompt(m_continuation_prompt.empty()
+  if (m_editline_up)
+    m_editline_up->SetContinuationPrompt(m_continuation_prompt.empty()
                                              ? nullptr
                                              : m_continuation_prompt.c_str());
 #endif
@@ -499,8 +493,8 @@ void IOHandlerEditline::SetBaseLineNumber(uint32_t line) {
 
 uint32_t IOHandlerEditline::GetCurrentLineIndex() const {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    return m_editline_ap->GetCurrentLine();
+  if (m_editline_up)
+    return m_editline_up->GetCurrentLine();
 #endif
   return m_curr_line_idx;
 }
@@ -510,8 +504,8 @@ bool IOHandlerEditline::GetLines(StringList &lines, bool &interrupted) {
 
   bool success = false;
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap) {
-    return m_editline_ap->GetLines(m_base_line_number, lines, interrupted);
+  if (m_editline_up) {
+    return m_editline_up->GetLines(m_base_line_number, lines, interrupted);
   } else {
 #endif
     bool done = false;
@@ -544,9 +538,8 @@ bool IOHandlerEditline::GetLines(StringList &lines, bool &interrupted) {
   return success;
 }
 
-// Each IOHandler gets to run until it is done. It should read data
-// from the "in" and place output into "out" and "err and return
-// when done.
+// Each IOHandler gets to run until it is done. It should read data from the
+// "in" and place output into "out" and "err and return when done.
 void IOHandlerEditline::Run() {
   std::string line;
   while (IsActive()) {
@@ -580,8 +573,8 @@ void IOHandlerEditline::Run() {
 
 void IOHandlerEditline::Cancel() {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    m_editline_ap->Cancel();
+  if (m_editline_up)
+    m_editline_up->Cancel();
 #endif
 }
 
@@ -591,23 +584,23 @@ bool IOHandlerEditline::Interrupt() {
     return true;
 
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    return m_editline_ap->Interrupt();
+  if (m_editline_up)
+    return m_editline_up->Interrupt();
 #endif
   return false;
 }
 
 void IOHandlerEditline::GotEOF() {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    m_editline_ap->Interrupt();
+  if (m_editline_up)
+    m_editline_up->Interrupt();
 #endif
 }
 
 void IOHandlerEditline::PrintAsync(Stream *stream, const char *s, size_t len) {
 #ifndef LLDB_DISABLE_LIBEDIT
-  if (m_editline_ap)
-    m_editline_ap->PrintAsync(stream, s, len);
+  if (m_editline_up)
+    m_editline_up->PrintAsync(stream, s, len);
   else
 #endif
   {
@@ -634,8 +627,7 @@ void IOHandlerEditline::PrintAsync(Stream *stream, const char *s, size_t len) {
   }
 }
 
-// we may want curses to be disabled for some builds
-// for instance, windows
+// we may want curses to be disabled for some builds for instance, windows
 #ifndef LLDB_DISABLE_CURSES
 
 #define KEY_RETURN 10
@@ -737,9 +729,8 @@ struct Rect {
     origin.y += h;
   }
 
-  // Return a status bar rectangle which is the last line of
-  // this rectangle. This rectangle will be modified to not
-  // include the status bar area.
+  // Return a status bar rectangle which is the last line of this rectangle.
+  // This rectangle will be modified to not include the status bar area.
   Rect MakeStatusBar() {
     Rect status_bar;
     if (size.height > 1) {
@@ -752,9 +743,8 @@ struct Rect {
     return status_bar;
   }
 
-  // Return a menubar rectangle which is the first line of
-  // this rectangle. This rectangle will be modified to not
-  // include the menubar area.
+  // Return a menubar rectangle which is the first line of this rectangle. This
+  // rectangle will be modified to not include the menubar area.
   Rect MakeMenuBar() {
     Rect menubar;
     if (size.height > 1) {
@@ -1012,20 +1002,15 @@ public:
 
   WindowSP CreateSubWindow(const char *name, const Rect &bounds,
                            bool make_active) {
-    WindowSP subwindow_sp;
-    if (m_window) {
-      subwindow_sp.reset(new Window(
-          name, ::subwin(m_window, bounds.size.height, bounds.size.width,
-                         bounds.origin.y, bounds.origin.x),
-          true));
-      subwindow_sp->m_is_subwin = true;
-    } else {
-      subwindow_sp.reset(
-          new Window(name, ::newwin(bounds.size.height, bounds.size.width,
-                                    bounds.origin.y, bounds.origin.x),
-                     true));
-      subwindow_sp->m_is_subwin = false;
-    }
+    auto get_window = [this, &bounds]() {
+      return m_window
+                 ? ::subwin(m_window, bounds.size.height, bounds.size.width,
+                            bounds.origin.y, bounds.origin.x)
+                 : ::newwin(bounds.size.height, bounds.size.width,
+                            bounds.origin.y, bounds.origin.x);
+    };
+    WindowSP subwindow_sp = std::make_shared<Window>(name, get_window(), true);
+    subwindow_sp->m_is_subwin = subwindow_sp.operator bool();
     subwindow_sp->m_parent = this;
     if (make_active) {
       m_prev_active_window_idx = m_curr_active_window_idx;
@@ -1070,7 +1055,7 @@ public:
     Windows::iterator pos, end = m_subwindows.end();
     size_t i = 0;
     for (pos = m_subwindows.begin(); pos != end; ++pos, ++i) {
-      if ((*pos)->m_name.compare(name) == 0)
+      if ((*pos)->m_name == name)
         return *pos;
     }
     return WindowSP();
@@ -1093,9 +1078,7 @@ public:
 
   operator WINDOW *() { return m_window; }
 
-  //----------------------------------------------------------------------
   // Window drawing utilities
-  //----------------------------------------------------------------------
   void DrawTitleBox(const char *title, const char *bottom_message = nullptr) {
     attr_t attr = 0;
     if (IsActive())
@@ -1146,10 +1129,10 @@ public:
       const char *text = m_delegate_sp->WindowDelegateGetHelpText();
       KeyHelp *key_help = m_delegate_sp->WindowDelegateGetKeyHelp();
       if ((text && text[0]) || key_help) {
-        std::auto_ptr<HelpDialogDelegate> help_delegate_ap(
+        std::unique_ptr<HelpDialogDelegate> help_delegate_up(
             new HelpDialogDelegate(text, key_help));
-        const size_t num_lines = help_delegate_ap->GetNumLines();
-        const size_t max_length = help_delegate_ap->GetMaxLineLength();
+        const size_t num_lines = help_delegate_up->GetNumLines();
+        const size_t max_length = help_delegate_up->GetMaxLineLength();
         Rect bounds = GetBounds();
         bounds.Inset(1, 1);
         if (max_length + 4 < static_cast<size_t>(bounds.size.width)) {
@@ -1180,7 +1163,7 @@ public:
         else
           help_window_sp = CreateSubWindow("Help", bounds, true);
         help_window_sp->SetDelegate(
-            WindowDelegateSP(help_delegate_ap.release()));
+            WindowDelegateSP(help_delegate_up.release()));
         return true;
       }
     }
@@ -1203,12 +1186,10 @@ public:
         return result;
     }
 
-    // Then check for any windows that want any keys
-    // that weren't handled. This is typically only
-    // for a menubar.
-    // Make a copy of the subwindows in case any HandleChar()
-    // functions muck with the subwindows. If we don't do this,
-    // we can crash when iterating over the subwindows.
+    // Then check for any windows that want any keys that weren't handled. This
+    // is typically only for a menubar. Make a copy of the subwindows in case
+    // any HandleChar() functions muck with the subwindows. If we don't do
+    // this, we can crash when iterating over the subwindows.
     Windows subwindows(m_subwindows);
     for (auto subwindow_sp : subwindows) {
       if (!subwindow_sp->m_can_activate) {
@@ -1395,8 +1376,8 @@ public:
   }
 
   MenuActionResult Action() {
-    // Call the recursive action so it can try to handle it
-    // with the menu delegate, and if not, try our parent menu
+    // Call the recursive action so it can try to handle it with the menu
+    // delegate, and if not, try our parent menu
     return ActionPrivate(*this);
   }
 
@@ -1665,9 +1646,9 @@ HandleCharResult Menu::WindowDelegateHandleChar(Window &window, int key) {
     }
 
     if (run_menu_sp) {
-      // Run the action on this menu in case we need to populate the
-      // menu with dynamic content and also in case check marks, and
-      // any other menu decorations need to be calculated
+      // Run the action on this menu in case we need to populate the menu with
+      // dynamic content and also in case check marks, and any other menu
+      // decorations need to be calculated
       if (run_menu_sp->Action() == MenuActionResult::Quit)
         return eQuitApplication;
 
@@ -1764,11 +1745,7 @@ public:
   void Initialize() {
     ::setlocale(LC_ALL, "");
     ::setlocale(LC_CTYPE, "");
-#if 0
-            ::initscr();
-#else
     m_screen = ::newterm(nullptr, m_out, m_in);
-#endif
     ::start_color();
     ::curs_set(0);
     ::noecho();
@@ -1781,12 +1758,11 @@ public:
     bool done = false;
     int delay_in_tenths_of_a_second = 1;
 
-    // Alas the threading model in curses is a bit lame so we need to
-    // resort to polling every 0.5 seconds. We could poll for stdin
-    // ourselves and then pass the keys down but then we need to
-    // translate all of the escape sequences ourselves. So we resort to
-    // polling for input because we need to receive async process events
-    // while in this loop.
+    // Alas the threading model in curses is a bit lame so we need to resort to
+    // polling every 0.5 seconds. We could poll for stdin ourselves and then
+    // pass the keys down but then we need to translate all of the escape
+    // sequences ourselves. So we resort to polling for input because we need
+    // to receive async process events while in this loop.
 
     halfdelay(delay_in_tenths_of_a_second); // Poll using some number of tenths
                                             // of seconds seconds when calling
@@ -1807,9 +1783,9 @@ public:
     while (!done) {
       if (update) {
         m_window_sp->Draw(false);
-        // All windows should be calling Window::DeferredRefresh() instead
-        // of Window::Refresh() so we can do a single update and avoid
-        // any screen blinking
+        // All windows should be calling Window::DeferredRefresh() instead of
+        // Window::Refresh() so we can do a single update and avoid any screen
+        // blinking
         update_panels();
 
         // Cursor hiding isn't working on MacOSX, so hide it in the top left
@@ -1821,8 +1797,8 @@ public:
       }
 
 #if defined(__APPLE__)
-      // Terminal.app doesn't map its function keys correctly, F1-F4 default to:
-      // \033OP, \033OQ, \033OR, \033OS, so lets take care of this here if
+      // Terminal.app doesn't map its function keys correctly, F1-F4 default
+      // to: \033OP, \033OQ, \033OR, \033OS, so lets take care of this here if
       // possible
       int ch;
       if (escape_chars.empty())
@@ -1907,7 +1883,7 @@ public:
 
   WindowSP &GetMainWindow() {
     if (!m_window_sp)
-      m_window_sp.reset(new Window("main", stdscr, false));
+      m_window_sp = std::make_shared<Window>("main", stdscr, false);
     return m_window_sp;
   }
 
@@ -1985,8 +1961,8 @@ struct Row {
       parent->DrawTreeForChild(window, this, 0);
 
     if (might_have_children) {
-      // It we can get UTF8 characters to work we should try to use the "symbol"
-      // UTF8 string below
+      // It we can get UTF8 characters to work we should try to use the
+      // "symbol" UTF8 string below
       //            const char *symbol = "";
       //            if (row.expanded)
       //                symbol = "\xe2\x96\xbd ";
@@ -1994,14 +1970,14 @@ struct Row {
       //                symbol = "\xe2\x96\xb7 ";
       //            window.PutCString (symbol);
 
-      // The ACS_DARROW and ACS_RARROW don't look very nice they are just a
-      // 'v' or '>' character...
+      // The ACS_DARROW and ACS_RARROW don't look very nice they are just a 'v'
+      // or '>' character...
       //            if (expanded)
       //                window.PutChar (ACS_DARROW);
       //            else
       //                window.PutChar (ACS_RARROW);
-      // Since we can't find any good looking right arrow/down arrow
-      // symbols, just use a diamond...
+      // Since we can't find any good looking right arrow/down arrow symbols,
+      // just use a diamond...
       window.PutChar(ACS_DIAMOND);
       window.PutChar(ACS_HLINE);
     }
@@ -2101,9 +2077,8 @@ public:
 
     const bool expanded = IsExpanded();
 
-    // The root item must calculate its children,
-    // or we must calculate the number of children
-    // if the item is expanded
+    // The root item must calculate its children, or we must calculate the
+    // number of children if the item is expanded
     if (m_parent == nullptr || expanded)
       GetNumChildren();
 
@@ -2136,8 +2111,7 @@ public:
 
       if (m_might_have_children) {
         // It we can get UTF8 characters to work we should try to use the
-        // "symbol"
-        // UTF8 string below
+        // "symbol" UTF8 string below
         //            const char *symbol = "";
         //            if (row.expanded)
         //                symbol = "\xe2\x96\xbd ";
@@ -2151,8 +2125,8 @@ public:
         //                window.PutChar (ACS_DARROW);
         //            else
         //                window.PutChar (ACS_RARROW);
-        // Since we can't find any good looking right arrow/down arrow
-        // symbols, just use a diamond...
+        // Since we can't find any good looking right arrow/down arrow symbols,
+        // just use a diamond...
         window.PutChar(ACS_DIAMOND);
         window.PutChar(ACS_HLINE);
       }
@@ -2175,8 +2149,8 @@ public:
 
     if (IsExpanded()) {
       for (auto &item : m_children) {
-        // If we displayed all the rows and item.Draw() returns
-        // false we are done drawing and can exit this for loop
+        // If we displayed all the rows and item.Draw() returns false we are
+        // done drawing and can exit this for loop
         if (!item.Draw(window, first_visible_row, selected_row_idx, row_idx,
                        num_rows_left))
           break;
@@ -2286,10 +2260,9 @@ public:
       m_num_rows = 0;
       m_root.CalculateRowIndexes(m_num_rows);
 
-      // If we unexpanded while having something selected our
-      // total number of rows is less than the num visible rows,
-      // then make sure we show all the rows by setting the first
-      // visible row accordingly.
+      // If we unexpanded while having something selected our total number of
+      // rows is less than the num visible rows, then make sure we show all the
+      // rows by setting the first visible row accordingly.
       if (m_first_visible_row > 0 && m_num_rows < num_visible_rows)
         m_first_visible_row = 0;
 
@@ -2537,7 +2510,7 @@ public:
             return; // Children are already up to date
           if (!m_frame_delegate_sp) {
             // Always expand the thread item the first time we show it
-            m_frame_delegate_sp.reset(new FrameTreeDelegate());
+            m_frame_delegate_sp = std::make_shared<FrameTreeDelegate>();
           }
 
           m_stop_id = process_sp->GetStopID();
@@ -2629,7 +2602,8 @@ public:
         if (!m_thread_delegate_sp) {
           // Always expand the thread item the first time we show it
           // item.Expand();
-          m_thread_delegate_sp.reset(new ThreadTreeDelegate(m_debugger));
+          m_thread_delegate_sp =
+              std::make_shared<ThreadTreeDelegate>(m_debugger);
         }
 
         TreeItem t(&item, *m_thread_delegate_sp, false);
@@ -2695,10 +2669,9 @@ public:
     const int num_visible_rows = NumVisibleRows();
     const int num_rows = CalculateTotalNumberRows(m_rows);
 
-    // If we unexpanded while having something selected our
-    // total number of rows is less than the num visible rows,
-    // then make sure we show all the rows by setting the first
-    // visible row accordingly.
+    // If we unexpanded while having something selected our total number of
+    // rows is less than the num visible rows, then make sure we show all the
+    // rows by setting the first visible row accordingly.
     if (m_first_visible_row > 0 && num_rows < num_visible_rows)
       m_first_visible_row = 0;
 
@@ -2714,8 +2687,8 @@ public:
 
     // Get the selected row
     m_selected_row = GetRowForRowIndex(m_selected_row_idx);
-    // Keep the cursor on the selected row so the highlight and the cursor
-    // are always on the same line
+    // Keep the cursor on the selected row so the highlight and the cursor are
+    // always on the same line
     if (m_selected_row)
       window.MoveCursor(m_selected_row->x, m_selected_row->y);
 
@@ -3127,8 +3100,8 @@ public:
       if (process && process->IsAlive())
         return true; // Don't do any updating if we are running
       else {
-        // Update the values with an empty list if there
-        // is no process or the process isn't alive anymore
+        // Update the values with an empty list if there is no process or the
+        // process isn't alive anymore
         SetValues(value_list);
       }
     }
@@ -3392,8 +3365,8 @@ HandleCharResult HelpDialogDelegate::WindowDelegateHandleChar(Window &window,
 
   if (num_lines <= num_visible_lines) {
     done = true;
-    // If we have all lines visible and don't need scrolling, then any
-    // key press will cause us to exit
+    // If we have all lines visible and don't need scrolling, then any key
+    // press will cause us to exit
   } else {
     switch (key) {
     case KEY_UP:
@@ -3606,8 +3579,8 @@ public:
 
     case eMenuID_Process: {
       // Populate the menu with all of the threads if the process is stopped
-      // when
-      // the Process menu gets selected and is about to display its submenu.
+      // when the Process menu gets selected and is about to display its
+      // submenu.
       Menus &submenus = menu.GetSubmenus();
       ExecutionContext exe_ctx =
           m_debugger.GetCommandInterpreter().GetExecutionContext();
@@ -3642,8 +3615,8 @@ public:
                               nullptr, menu_char, thread_sp->GetID())));
         }
       } else if (submenus.size() > 7) {
-        // Remove the separator and any other thread submenu items
-        // that were previously added
+        // Remove the separator and any other thread submenu items that were
+        // previously added
         submenus.erase(submenus.begin() + 7, submenus.end());
       }
       // Since we are adding and removing items we need to recalculate the name
@@ -3671,8 +3644,8 @@ public:
           registers_bounds.size.width = source_bounds.size.width;
           registers_window_sp->SetBounds(registers_bounds);
         } else {
-          // We have no registers window showing so give the bottom
-          // area back to the source view
+          // We have no registers window showing so give the bottom area back
+          // to the source view
           source_window_sp->Resize(source_bounds.size.width,
                                    source_bounds.size.height +
                                        variables_bounds.size.height);
@@ -3721,8 +3694,8 @@ public:
                                           registers_window_sp->GetWidth(),
                                       variables_bounds.size.height);
         } else {
-          // We have no variables window showing so give the bottom
-          // area back to the source view
+          // We have no variables window showing so give the bottom area back
+          // to the source view
           source_window_sp->Resize(source_bounds.size.width,
                                    source_bounds.size.height +
                                        registers_window_sp->GetHeight());
@@ -3731,9 +3704,9 @@ public:
       } else {
         Rect new_regs_rect;
         if (variables_window_sp) {
-          // We have a variables window, split it into two columns
-          // where the left hand side will be the variables and the
-          // right hand side will be the registers
+          // We have a variables window, split it into two columns where the
+          // left hand side will be the variables and the right hand side will
+          // be the registers
           const Rect variables_bounds = variables_window_sp->GetBounds();
           Rect new_vars_rect;
           variables_bounds.VerticalSplitPercentage(0.50, new_vars_rect,
@@ -3945,8 +3918,8 @@ public:
             m_selected_line = m_pc_line;
 
           if (m_file_sp && m_file_sp->FileSpecMatches(m_sc.line_entry.file)) {
-            // Same file, nothing to do, we should either have the
-            // lines or not (source file missing)
+            // Same file, nothing to do, we should either have the lines or not
+            // (source file missing)
             if (m_selected_line >= static_cast<size_t>(m_first_visible_line)) {
               if (m_selected_line >= m_first_visible_line + num_visible_lines)
                 m_first_visible_line = m_selected_line - 10;
@@ -3963,12 +3936,10 @@ public:
                 m_debugger.GetSourceManager().GetFile(m_sc.line_entry.file);
             if (m_file_sp) {
               const size_t num_lines = m_file_sp->GetNumLines();
-              int m_line_width = 1;
+              m_line_width = 1;
               for (size_t n = num_lines; n >= 10; n = n / 10)
                 ++m_line_width;
 
-              snprintf(m_line_format, sizeof(m_line_format), " %%%iu ",
-                       m_line_width);
               if (num_lines < num_visible_lines ||
                   m_selected_line < num_visible_lines)
                 m_first_visible_line = 0;
@@ -4085,7 +4056,7 @@ public:
           if (bp_attr)
             window.AttributeOn(bp_attr);
 
-          window.Printf(m_line_format, curr_line + 1);
+          window.Printf(" %*u ", m_line_width, curr_line + 1);
 
           if (bp_attr)
             window.AttributeOff(bp_attr);
@@ -4357,6 +4328,7 @@ public:
               m_file_sp->GetFileSpec(), // Source file
               m_selected_line +
                   1, // Source line number (m_selected_line is zero based)
+              0,     // Unspecified column.
               0,     // No offset
               eLazyBoolCalculate,  // Check inlines using global setting
               eLazyBoolCalculate,  // Skip prologue using global setting,
@@ -4396,6 +4368,7 @@ public:
               m_file_sp->GetFileSpec(), // Source file
               m_selected_line +
                   1, // Source line number (m_selected_line is zero based)
+              0,     // No column specified.
               0,     // No offset
               eLazyBoolCalculate,  // Check inlines using global setting
               eLazyBoolCalculate,  // Skip prologue using global setting,
@@ -4509,7 +4482,6 @@ protected:
   AddressRange m_disassembly_range;
   StreamString m_title;
   lldb::user_id_t m_tid;
-  char m_line_format[8];
   int m_line_width;
   uint32_t m_selected_line; // The selected line
   uint32_t m_pc_line;       // The line with the PC
@@ -4627,8 +4599,8 @@ void IOHandlerCursesGUI::Activate() {
 
     WindowSP menubar_window_sp =
         main_window_sp->CreateSubWindow("Menubar", menubar_bounds, false);
-    // Let the menubar get keys if the active window doesn't handle the
-    // keys that are typed so it can respond to menubar key presses.
+    // Let the menubar get keys if the active window doesn't handle the keys
+    // that are typed so it can respond to menubar key presses.
     menubar_window_sp->SetCanBeActive(
         false); // Don't let the menubar become the active window
     menubar_window_sp->SetDelegate(menubar_sp);

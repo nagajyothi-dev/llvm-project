@@ -13,6 +13,7 @@ from lldbsuite.test import lldbutil
 class ChangeProcessGroupTestCase(TestBase):
 
     mydir = TestBase.compute_mydir(__file__)
+    NO_DEBUG_INFO_TESTCASE = True
 
     def setUp(self):
         # Call super's setUp().
@@ -23,12 +24,13 @@ class ChangeProcessGroupTestCase(TestBase):
     @skipIfFreeBSD  # Times out on FreeBSD llvm.org/pr23731
     @skipIfWindows  # setpgid call does not exist on Windows
     @expectedFailureAndroid("http://llvm.org/pr23762", api_levels=[16])
+    @expectedFailureNetBSD
     def test_setpgid(self):
         self.build()
-        exe = os.path.join(os.getcwd(), 'a.out')
+        exe = self.getBuildArtifact("a.out")
 
         # Use a file as a synchronization point between test and inferior.
-        pid_file_path = lldbutil.append_to_process_working_directory(
+        pid_file_path = lldbutil.append_to_process_working_directory(self,
             "pid_file_%d" % (int(time.time())))
         self.addTearDownHook(
             lambda: self.run_platform_command(

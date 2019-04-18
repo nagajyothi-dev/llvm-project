@@ -1,9 +1,8 @@
 //===--------------------- JSON.cpp -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,7 +57,6 @@ uint64_t JSONNumber::GetAsUnsigned() const {
   case DataType::Double:
     return (uint64_t)m_data.m_double;
   }
-  assert("Unhandled data type");
 }
 
 int64_t JSONNumber::GetAsSigned() const {
@@ -70,7 +68,6 @@ int64_t JSONNumber::GetAsSigned() const {
   case DataType::Double:
     return (int64_t)m_data.m_double;
   }
-  assert("Unhandled data type");
 }
 
 double JSONNumber::GetAsDouble() const {
@@ -82,7 +79,6 @@ double JSONNumber::GetAsDouble() const {
   case DataType::Double:
     return m_data.m_double;
   }
-  assert("Unhandled data type");
 }
 
 void JSONNumber::Write(std::ostream &s) {

@@ -1,17 +1,14 @@
 //===-- ThreadGDBRemote.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "ThreadGDBRemote.h"
 
 #include "lldb/Breakpoint/Watchpoint.h"
-#include "lldb/Core/ArchSpec.h"
-#include "lldb/Core/State.h"
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -21,19 +18,20 @@
 #include "lldb/Target/UnixSignals.h"
 #include "lldb/Target/Unwind.h"
 #include "lldb/Utility/DataExtractor.h"
+#include "lldb/Utility/State.h"
 #include "lldb/Utility/StreamString.h"
+#include "lldb/Utility/StringExtractorGDBRemote.h"
 
 #include "ProcessGDBRemote.h"
 #include "ProcessGDBRemoteLog.h"
-#include "Utility/StringExtractorGDBRemote.h"
+
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
 using namespace lldb_private::process_gdb_remote;
 
-//----------------------------------------------------------------------
 // Thread Registers
-//----------------------------------------------------------------------
 
 ThreadGDBRemote::ThreadGDBRemote(Process &process, lldb::tid_t tid)
     : Thread(process, tid), m_thread_name(), m_dispatch_queue_name(),
@@ -56,7 +54,7 @@ ThreadGDBRemote::~ThreadGDBRemote() {
 
 const char *ThreadGDBRemote::GetName() {
   if (m_thread_name.empty())
-    return NULL;
+    return nullptr;
   return m_thread_name.c_str();
 }
 
@@ -81,10 +79,9 @@ void ThreadGDBRemote::SetQueueInfo(std::string &&queue_name,
 
 const char *ThreadGDBRemote::GetQueueName() {
   // If our cached queue info is valid, then someone called
-  // ThreadGDBRemote::SetQueueInfo(...)
-  // with valid information that was gleaned from the stop reply packet. In this
-  // case we trust
-  // that the info is valid in m_dispatch_queue_name without refetching it
+  // ThreadGDBRemote::SetQueueInfo(...) with valid information that was gleaned
+  // from the stop reply packet. In this case we trust that the info is valid
+  // in m_dispatch_queue_name without refetching it
   if (CachedQueueInfoIsValid()) {
     if (m_dispatch_queue_name.empty())
       return nullptr;
@@ -111,15 +108,14 @@ const char *ThreadGDBRemote::GetQueueName() {
         return m_dispatch_queue_name.c_str();
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 QueueKind ThreadGDBRemote::GetQueueKind() {
   // If our cached queue info is valid, then someone called
-  // ThreadGDBRemote::SetQueueInfo(...)
-  // with valid information that was gleaned from the stop reply packet. In this
-  // case we trust
-  // that the info is valid in m_dispatch_queue_name without refetching it
+  // ThreadGDBRemote::SetQueueInfo(...) with valid information that was gleaned
+  // from the stop reply packet. In this case we trust that the info is valid
+  // in m_dispatch_queue_name without refetching it
   if (CachedQueueInfoIsValid()) {
     return m_queue_kind;
   }
@@ -142,10 +138,9 @@ QueueKind ThreadGDBRemote::GetQueueKind() {
 
 queue_id_t ThreadGDBRemote::GetQueueID() {
   // If our cached queue info is valid, then someone called
-  // ThreadGDBRemote::SetQueueInfo(...)
-  // with valid information that was gleaned from the stop reply packet. In this
-  // case we trust
-  // that the info is valid in m_dispatch_queue_name without refetching it
+  // ThreadGDBRemote::SetQueueInfo(...) with valid information that was gleaned
+  // from the stop reply packet. In this case we trust that the info is valid
+  // in m_dispatch_queue_name without refetching it
   if (CachedQueueInfoIsValid())
     return m_queue_serial_number;
 
@@ -201,13 +196,10 @@ void ThreadGDBRemote::SetQueueLibdispatchQueueAddress(
 }
 
 bool ThreadGDBRemote::ThreadHasQueueInformation() const {
-  if (m_thread_dispatch_qaddr != 0 &&
-      m_thread_dispatch_qaddr != LLDB_INVALID_ADDRESS &&
-      m_dispatch_queue_t != LLDB_INVALID_ADDRESS &&
-      m_queue_kind != eQueueKindUnknown && m_queue_serial_number != 0) {
-    return true;
-  }
-  return false;
+  return m_thread_dispatch_qaddr != 0 &&
+         m_thread_dispatch_qaddr != LLDB_INVALID_ADDRESS &&
+         m_dispatch_queue_t != LLDB_INVALID_ADDRESS &&
+         m_queue_kind != eQueueKindUnknown && m_queue_serial_number != 0;
 }
 
 LazyBool ThreadGDBRemote::GetAssociatedWithLibdispatchQueue() {
@@ -276,11 +268,11 @@ void ThreadGDBRemote::RefreshStateAfterStop() {
   // Invalidate all registers in our register context. We don't set "force" to
   // true because the stop reply packet might have had some register values
   // that were expedited and these will already be copied into the register
-  // context by the time this function gets called. The GDBRemoteRegisterContext
-  // class has been made smart enough to detect when it needs to invalidate
-  // which registers are valid by putting hooks in the register read and
-  // register supply functions where they check the process stop ID and do
-  // the right thing.
+  // context by the time this function gets called. The
+  // GDBRemoteRegisterContext class has been made smart enough to detect when
+  // it needs to invalidate which registers are valid by putting hooks in the
+  // register read and register supply functions where they check the process
+  // stop ID and do the right thing.
   const bool force = false;
   GetRegisterContext()->InvalidateIfNeeded(force);
 }
@@ -293,8 +285,8 @@ void ThreadGDBRemote::Dump(Log *log, uint32_t index) {}
 
 bool ThreadGDBRemote::ShouldStop(bool &step_more) { return true; }
 lldb::RegisterContextSP ThreadGDBRemote::GetRegisterContext() {
-  if (m_reg_context_sp.get() == NULL)
-    m_reg_context_sp = CreateRegisterContextForFrame(NULL);
+  if (!m_reg_context_sp)
+    m_reg_context_sp = CreateRegisterContextForFrame(nullptr);
   return m_reg_context_sp;
 }
 
@@ -311,16 +303,17 @@ ThreadGDBRemote::CreateRegisterContextForFrame(StackFrame *frame) {
     if (process_sp) {
       ProcessGDBRemote *gdb_process =
           static_cast<ProcessGDBRemote *>(process_sp.get());
-      // read_all_registers_at_once will be true if 'p' packet is not supported.
+      // read_all_registers_at_once will be true if 'p' packet is not
+      // supported.
       bool read_all_registers_at_once =
           !gdb_process->GetGDBRemote().GetpPacketSupported(GetID());
-      reg_ctx_sp.reset(new GDBRemoteRegisterContext(
+      reg_ctx_sp = std::make_shared<GDBRemoteRegisterContext>(
           *this, concrete_frame_idx, gdb_process->m_register_info,
-          read_all_registers_at_once));
+          read_all_registers_at_once);
     }
   } else {
     Unwind *unwinder = GetUnwinder();
-    if (unwinder)
+    if (unwinder != nullptr)
       reg_ctx_sp = unwinder->CreateRegisterContextForFrame(frame);
   }
   return reg_ctx_sp;

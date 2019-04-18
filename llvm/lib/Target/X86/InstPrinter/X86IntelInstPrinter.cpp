@@ -1,9 +1,8 @@
 //===-- X86IntelInstPrinter.cpp - Intel assembly instruction printing -----===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -19,6 +18,7 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cassert>
@@ -28,6 +28,8 @@ using namespace llvm;
 
 #define DEBUG_TYPE "asm-printer"
 
+// Include the auto-generated portion of the assembly writer.
+#define PRINT_ALIAS_INSTR
 #include "X86GenAsmWriter1.inc"
 
 void X86IntelInstPrinter::printRegName(raw_ostream &OS, unsigned RegNo) const {
@@ -37,110 +39,292 @@ void X86IntelInstPrinter::printRegName(raw_ostream &OS, unsigned RegNo) const {
 void X86IntelInstPrinter::printInst(const MCInst *MI, raw_ostream &OS,
                                     StringRef Annot,
                                     const MCSubtargetInfo &STI) {
-  const MCInstrDesc &Desc = MII.get(MI->getOpcode());
-  uint64_t TSFlags = Desc.TSFlags;
+  printInstFlags(MI, OS);
 
-  if (TSFlags & X86II::LOCK)
-    OS << "\tlock\n";
-
-  printInstruction(MI, OS);
+  // In 16-bit mode, print data16 as data32.
+  if (MI->getOpcode() == X86::DATA16_PREFIX &&
+      STI.getFeatureBits()[X86::Mode16Bit]) {
+    OS << "\tdata32";
+  } else if (!printAliasInstr(MI, OS) &&
+             !printVecCompareInstr(MI, OS))
+    printInstruction(MI, OS);
 
   // Next always print the annotation.
   printAnnotation(OS, Annot);
 
   // If verbose assembly is enabled, we can print some informative comments.
   if (CommentStream)
-    EmitAnyX86InstComments(MI, *CommentStream, getRegisterName);
+    EmitAnyX86InstComments(MI, *CommentStream, MII);
 }
 
-void X86IntelInstPrinter::printSSEAVXCC(const MCInst *MI, unsigned Op,
-                                        raw_ostream &O) {
-  int64_t Imm = MI->getOperand(Op).getImm();
-  switch (Imm) {
-  default: llvm_unreachable("Invalid avxcc argument!");
-  case    0: O << "eq"; break;
-  case    1: O << "lt"; break;
-  case    2: O << "le"; break;
-  case    3: O << "unord"; break;
-  case    4: O << "neq"; break;
-  case    5: O << "nlt"; break;
-  case    6: O << "nle"; break;
-  case    7: O << "ord"; break;
-  case    8: O << "eq_uq"; break;
-  case    9: O << "nge"; break;
-  case  0xa: O << "ngt"; break;
-  case  0xb: O << "false"; break;
-  case  0xc: O << "neq_oq"; break;
-  case  0xd: O << "ge"; break;
-  case  0xe: O << "gt"; break;
-  case  0xf: O << "true"; break;
-  case 0x10: O << "eq_os"; break;
-  case 0x11: O << "lt_oq"; break;
-  case 0x12: O << "le_oq"; break;
-  case 0x13: O << "unord_s"; break;
-  case 0x14: O << "neq_us"; break;
-  case 0x15: O << "nlt_uq"; break;
-  case 0x16: O << "nle_uq"; break;
-  case 0x17: O << "ord_s"; break;
-  case 0x18: O << "eq_us"; break;
-  case 0x19: O << "nge_uq"; break;
-  case 0x1a: O << "ngt_uq"; break;
-  case 0x1b: O << "false_os"; break;
-  case 0x1c: O << "neq_os"; break;
-  case 0x1d: O << "ge_oq"; break;
-  case 0x1e: O << "gt_oq"; break;
-  case 0x1f: O << "true_us"; break;
-  }
-}
+bool X86IntelInstPrinter::printVecCompareInstr(const MCInst *MI, raw_ostream &OS) {
+  if (MI->getNumOperands() == 0 ||
+      !MI->getOperand(MI->getNumOperands() - 1).isImm())
+    return false;
 
-void X86IntelInstPrinter::printXOPCC(const MCInst *MI, unsigned Op,
-                                     raw_ostream &O) {
-  int64_t Imm = MI->getOperand(Op).getImm();
-  switch (Imm) {
-  default: llvm_unreachable("Invalid xopcc argument!");
-  case 0: O << "lt"; break;
-  case 1: O << "le"; break;
-  case 2: O << "gt"; break;
-  case 3: O << "ge"; break;
-  case 4: O << "eq"; break;
-  case 5: O << "neq"; break;
-  case 6: O << "false"; break;
-  case 7: O << "true"; break;
-  }
-}
+  int64_t Imm = MI->getOperand(MI->getNumOperands() - 1).getImm();
 
-void X86IntelInstPrinter::printRoundingControl(const MCInst *MI, unsigned Op,
-                                               raw_ostream &O) {
-  int64_t Imm = MI->getOperand(Op).getImm() & 0x3;
-  switch (Imm) {
-  case 0: O << "{rn-sae}"; break;
-  case 1: O << "{rd-sae}"; break;
-  case 2: O << "{ru-sae}"; break;
-  case 3: O << "{rz-sae}"; break;
-  }
-}
+  const MCInstrDesc &Desc = MII.get(MI->getOpcode());
 
-/// printPCRelImm - This is used to print an immediate value that ends up
-/// being encoded as a pc-relative value.
-void X86IntelInstPrinter::printPCRelImm(const MCInst *MI, unsigned OpNo,
-                                        raw_ostream &O) {
-  const MCOperand &Op = MI->getOperand(OpNo);
-  if (Op.isImm())
-    O << formatImm(Op.getImm());
-  else {
-    assert(Op.isExpr() && "unknown pcrel immediate operand");
-    // If a symbolic branch target was added as a constant expression then print
-    // that address in hex.
-    const MCConstantExpr *BranchTarget = dyn_cast<MCConstantExpr>(Op.getExpr());
-    int64_t Address;
-    if (BranchTarget && BranchTarget->evaluateAsAbsolute(Address)) {
-      O << formatHex((uint64_t)Address);
+  // Custom print the vector compare instructions to get the immediate
+  // translated into the mnemonic.
+  switch (MI->getOpcode()) {
+  case X86::CMPPDrmi:    case X86::CMPPDrri:
+  case X86::CMPPSrmi:    case X86::CMPPSrri:
+  case X86::CMPSDrm:     case X86::CMPSDrr:
+  case X86::CMPSDrm_Int: case X86::CMPSDrr_Int:
+  case X86::CMPSSrm:     case X86::CMPSSrr:
+  case X86::CMPSSrm_Int: case X86::CMPSSrr_Int:
+    if (Imm >= 0 && Imm <= 7) {
+      OS << '\t';
+      printCMPMnemonic(MI, /*IsVCMP*/false, OS);
+      printOperand(MI, 0, OS);
+      OS << ", ";
+      // Skip operand 1 as its tied to the dest.
+
+      if ((Desc.TSFlags & X86II::FormMask) == X86II::MRMSrcMem) {
+        if ((Desc.TSFlags & X86II::OpPrefixMask) == X86II::XS)
+          printdwordmem(MI, 2, OS);
+        else if ((Desc.TSFlags & X86II::OpPrefixMask) == X86II::XD)
+          printqwordmem(MI, 2, OS);
+        else
+          printxmmwordmem(MI, 2, OS);
+      } else
+        printOperand(MI, 2, OS);
+
+      return true;
     }
-    else {
-      // Otherwise, just print the expression.
-      Op.getExpr()->print(O, &MAI);
+    break;
+
+  case X86::VCMPPDrmi:      case X86::VCMPPDrri:
+  case X86::VCMPPDYrmi:     case X86::VCMPPDYrri:
+  case X86::VCMPPDZ128rmi:  case X86::VCMPPDZ128rri:
+  case X86::VCMPPDZ256rmi:  case X86::VCMPPDZ256rri:
+  case X86::VCMPPDZrmi:     case X86::VCMPPDZrri:
+  case X86::VCMPPSrmi:      case X86::VCMPPSrri:
+  case X86::VCMPPSYrmi:     case X86::VCMPPSYrri:
+  case X86::VCMPPSZ128rmi:  case X86::VCMPPSZ128rri:
+  case X86::VCMPPSZ256rmi:  case X86::VCMPPSZ256rri:
+  case X86::VCMPPSZrmi:     case X86::VCMPPSZrri:
+  case X86::VCMPSDrm:       case X86::VCMPSDrr:
+  case X86::VCMPSDZrm:      case X86::VCMPSDZrr:
+  case X86::VCMPSDrm_Int:   case X86::VCMPSDrr_Int:
+  case X86::VCMPSDZrm_Int:  case X86::VCMPSDZrr_Int:
+  case X86::VCMPSSrm:       case X86::VCMPSSrr:
+  case X86::VCMPSSZrm:      case X86::VCMPSSZrr:
+  case X86::VCMPSSrm_Int:   case X86::VCMPSSrr_Int:
+  case X86::VCMPSSZrm_Int:  case X86::VCMPSSZrr_Int:
+  case X86::VCMPPDZ128rmik: case X86::VCMPPDZ128rrik:
+  case X86::VCMPPDZ256rmik: case X86::VCMPPDZ256rrik:
+  case X86::VCMPPDZrmik:    case X86::VCMPPDZrrik:
+  case X86::VCMPPSZ128rmik: case X86::VCMPPSZ128rrik:
+  case X86::VCMPPSZ256rmik: case X86::VCMPPSZ256rrik:
+  case X86::VCMPPSZrmik:    case X86::VCMPPSZrrik:
+  case X86::VCMPSDZrm_Intk: case X86::VCMPSDZrr_Intk:
+  case X86::VCMPSSZrm_Intk: case X86::VCMPSSZrr_Intk:
+  case X86::VCMPPDZ128rmbi: case X86::VCMPPDZ128rmbik:
+  case X86::VCMPPDZ256rmbi: case X86::VCMPPDZ256rmbik:
+  case X86::VCMPPDZrmbi:    case X86::VCMPPDZrmbik:
+  case X86::VCMPPSZ128rmbi: case X86::VCMPPSZ128rmbik:
+  case X86::VCMPPSZ256rmbi: case X86::VCMPPSZ256rmbik:
+  case X86::VCMPPSZrmbi:    case X86::VCMPPSZrmbik:
+  case X86::VCMPPDZrrib:    case X86::VCMPPDZrribk:
+  case X86::VCMPPSZrrib:    case X86::VCMPPSZrribk:
+  case X86::VCMPSDZrrb_Int: case X86::VCMPSDZrrb_Intk:
+  case X86::VCMPSSZrrb_Int: case X86::VCMPSSZrrb_Intk:
+    if (Imm >= 0 && Imm <= 31) {
+      OS << '\t';
+      printCMPMnemonic(MI, /*IsVCMP*/true, OS);
+
+      unsigned CurOp = 0;
+      printOperand(MI, CurOp++, OS);
+
+      if (Desc.TSFlags & X86II::EVEX_K) {
+        // Print mask operand.
+        OS << " {";
+        printOperand(MI, CurOp++, OS);
+        OS << "}";
+      }
+      OS << ", ";
+      printOperand(MI, CurOp++, OS);
+      OS << ", ";
+
+      if ((Desc.TSFlags & X86II::FormMask) == X86II::MRMSrcMem) {
+        if (Desc.TSFlags & X86II::EVEX_B) {
+          // Broadcast form.
+          // Load size is based on W-bit.
+          if (Desc.TSFlags & X86II::VEX_W)
+            printqwordmem(MI, CurOp++, OS);
+          else
+            printdwordmem(MI, CurOp++, OS);
+
+          // Print the number of elements broadcasted.
+          unsigned NumElts;
+          if (Desc.TSFlags & X86II::EVEX_L2)
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 8 : 16;
+          else if (Desc.TSFlags & X86II::VEX_L)
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 4 : 8;
+          else
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 2 : 4;
+          OS << "{1to" << NumElts << "}";
+        } else {
+          if ((Desc.TSFlags & X86II::OpPrefixMask) == X86II::XS)
+            printdwordmem(MI, CurOp++, OS);
+          else if ((Desc.TSFlags & X86II::OpPrefixMask) == X86II::XD)
+            printqwordmem(MI, CurOp++, OS);
+          else if (Desc.TSFlags & X86II::EVEX_L2)
+            printzmmwordmem(MI, CurOp++, OS);
+          else if (Desc.TSFlags & X86II::VEX_L)
+            printymmwordmem(MI, CurOp++, OS);
+          else
+            printxmmwordmem(MI, CurOp++, OS);
+        }
+      } else {
+        printOperand(MI, CurOp++, OS);
+        if (Desc.TSFlags & X86II::EVEX_B)
+          OS << ", {sae}";
+      }
+
+      return true;
     }
+    break;
+
+  case X86::VPCOMBmi:  case X86::VPCOMBri:
+  case X86::VPCOMDmi:  case X86::VPCOMDri:
+  case X86::VPCOMQmi:  case X86::VPCOMQri:
+  case X86::VPCOMUBmi: case X86::VPCOMUBri:
+  case X86::VPCOMUDmi: case X86::VPCOMUDri:
+  case X86::VPCOMUQmi: case X86::VPCOMUQri:
+  case X86::VPCOMUWmi: case X86::VPCOMUWri:
+  case X86::VPCOMWmi:  case X86::VPCOMWri:
+    if (Imm >= 0 && Imm <= 7) {
+      OS << '\t';
+      printVPCOMMnemonic(MI, OS);
+      printOperand(MI, 0, OS);
+      OS << ", ";
+      printOperand(MI, 1, OS);
+      OS << ", ";
+      if ((Desc.TSFlags & X86II::FormMask) == X86II::MRMSrcMem)
+        printxmmwordmem(MI, 2, OS);
+      else
+        printOperand(MI, 2, OS);
+      return true;
+    }
+    break;
+
+  case X86::VPCMPBZ128rmi:   case X86::VPCMPBZ128rri:
+  case X86::VPCMPBZ256rmi:   case X86::VPCMPBZ256rri:
+  case X86::VPCMPBZrmi:      case X86::VPCMPBZrri:
+  case X86::VPCMPDZ128rmi:   case X86::VPCMPDZ128rri:
+  case X86::VPCMPDZ256rmi:   case X86::VPCMPDZ256rri:
+  case X86::VPCMPDZrmi:      case X86::VPCMPDZrri:
+  case X86::VPCMPQZ128rmi:   case X86::VPCMPQZ128rri:
+  case X86::VPCMPQZ256rmi:   case X86::VPCMPQZ256rri:
+  case X86::VPCMPQZrmi:      case X86::VPCMPQZrri:
+  case X86::VPCMPUBZ128rmi:  case X86::VPCMPUBZ128rri:
+  case X86::VPCMPUBZ256rmi:  case X86::VPCMPUBZ256rri:
+  case X86::VPCMPUBZrmi:     case X86::VPCMPUBZrri:
+  case X86::VPCMPUDZ128rmi:  case X86::VPCMPUDZ128rri:
+  case X86::VPCMPUDZ256rmi:  case X86::VPCMPUDZ256rri:
+  case X86::VPCMPUDZrmi:     case X86::VPCMPUDZrri:
+  case X86::VPCMPUQZ128rmi:  case X86::VPCMPUQZ128rri:
+  case X86::VPCMPUQZ256rmi:  case X86::VPCMPUQZ256rri:
+  case X86::VPCMPUQZrmi:     case X86::VPCMPUQZrri:
+  case X86::VPCMPUWZ128rmi:  case X86::VPCMPUWZ128rri:
+  case X86::VPCMPUWZ256rmi:  case X86::VPCMPUWZ256rri:
+  case X86::VPCMPUWZrmi:     case X86::VPCMPUWZrri:
+  case X86::VPCMPWZ128rmi:   case X86::VPCMPWZ128rri:
+  case X86::VPCMPWZ256rmi:   case X86::VPCMPWZ256rri:
+  case X86::VPCMPWZrmi:      case X86::VPCMPWZrri:
+  case X86::VPCMPBZ128rmik:  case X86::VPCMPBZ128rrik:
+  case X86::VPCMPBZ256rmik:  case X86::VPCMPBZ256rrik:
+  case X86::VPCMPBZrmik:     case X86::VPCMPBZrrik:
+  case X86::VPCMPDZ128rmik:  case X86::VPCMPDZ128rrik:
+  case X86::VPCMPDZ256rmik:  case X86::VPCMPDZ256rrik:
+  case X86::VPCMPDZrmik:     case X86::VPCMPDZrrik:
+  case X86::VPCMPQZ128rmik:  case X86::VPCMPQZ128rrik:
+  case X86::VPCMPQZ256rmik:  case X86::VPCMPQZ256rrik:
+  case X86::VPCMPQZrmik:     case X86::VPCMPQZrrik:
+  case X86::VPCMPUBZ128rmik: case X86::VPCMPUBZ128rrik:
+  case X86::VPCMPUBZ256rmik: case X86::VPCMPUBZ256rrik:
+  case X86::VPCMPUBZrmik:    case X86::VPCMPUBZrrik:
+  case X86::VPCMPUDZ128rmik: case X86::VPCMPUDZ128rrik:
+  case X86::VPCMPUDZ256rmik: case X86::VPCMPUDZ256rrik:
+  case X86::VPCMPUDZrmik:    case X86::VPCMPUDZrrik:
+  case X86::VPCMPUQZ128rmik: case X86::VPCMPUQZ128rrik:
+  case X86::VPCMPUQZ256rmik: case X86::VPCMPUQZ256rrik:
+  case X86::VPCMPUQZrmik:    case X86::VPCMPUQZrrik:
+  case X86::VPCMPUWZ128rmik: case X86::VPCMPUWZ128rrik:
+  case X86::VPCMPUWZ256rmik: case X86::VPCMPUWZ256rrik:
+  case X86::VPCMPUWZrmik:    case X86::VPCMPUWZrrik:
+  case X86::VPCMPWZ128rmik:  case X86::VPCMPWZ128rrik:
+  case X86::VPCMPWZ256rmik:  case X86::VPCMPWZ256rrik:
+  case X86::VPCMPWZrmik:     case X86::VPCMPWZrrik:
+  case X86::VPCMPDZ128rmib:  case X86::VPCMPDZ128rmibk:
+  case X86::VPCMPDZ256rmib:  case X86::VPCMPDZ256rmibk:
+  case X86::VPCMPDZrmib:     case X86::VPCMPDZrmibk:
+  case X86::VPCMPQZ128rmib:  case X86::VPCMPQZ128rmibk:
+  case X86::VPCMPQZ256rmib:  case X86::VPCMPQZ256rmibk:
+  case X86::VPCMPQZrmib:     case X86::VPCMPQZrmibk:
+  case X86::VPCMPUDZ128rmib: case X86::VPCMPUDZ128rmibk:
+  case X86::VPCMPUDZ256rmib: case X86::VPCMPUDZ256rmibk:
+  case X86::VPCMPUDZrmib:    case X86::VPCMPUDZrmibk:
+  case X86::VPCMPUQZ128rmib: case X86::VPCMPUQZ128rmibk:
+  case X86::VPCMPUQZ256rmib: case X86::VPCMPUQZ256rmibk:
+  case X86::VPCMPUQZrmib:    case X86::VPCMPUQZrmibk:
+    if ((Imm >= 0 && Imm <= 2) || (Imm >= 4 && Imm <= 6)) {
+      OS << '\t';
+      printVPCMPMnemonic(MI, OS);
+
+      unsigned CurOp = 0;
+      printOperand(MI, CurOp++, OS);
+
+      if (Desc.TSFlags & X86II::EVEX_K) {
+        // Print mask operand.
+        OS << " {";
+        printOperand(MI, CurOp++, OS);
+        OS << "}";
+      }
+      OS << ", ";
+      printOperand(MI, CurOp++, OS);
+      OS << ", ";
+
+      if ((Desc.TSFlags & X86II::FormMask) == X86II::MRMSrcMem) {
+        if (Desc.TSFlags & X86II::EVEX_B) {
+          // Broadcast form.
+          // Load size is based on W-bit as only D and Q are supported.
+          if (Desc.TSFlags & X86II::VEX_W)
+            printqwordmem(MI, CurOp++, OS);
+          else
+            printdwordmem(MI, CurOp++, OS);
+
+          // Print the number of elements broadcasted.
+          unsigned NumElts;
+          if (Desc.TSFlags & X86II::EVEX_L2)
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 8 : 16;
+          else if (Desc.TSFlags & X86II::VEX_L)
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 4 : 8;
+          else
+            NumElts = (Desc.TSFlags & X86II::VEX_W) ? 2 : 4;
+          OS << "{1to" << NumElts << "}";
+        } else {
+          if (Desc.TSFlags & X86II::EVEX_L2)
+            printzmmwordmem(MI, CurOp++, OS);
+          else if (Desc.TSFlags & X86II::VEX_L)
+            printymmwordmem(MI, CurOp++, OS);
+          else
+            printxmmwordmem(MI, CurOp++, OS);
+        }
+      } else {
+        printOperand(MI, CurOp++, OS);
+      }
+
+      return true;
+    }
+    break;
   }
+
+  return false;
 }
 
 void X86IntelInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
@@ -152,6 +336,7 @@ void X86IntelInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
     O << formatImm((int64_t)Op.getImm());
   } else {
     assert(Op.isExpr() && "unknown operand kind in printOperand");
+    O << "offset ";
     Op.getExpr()->print(O, &MAI);
   }
 }
@@ -162,13 +347,9 @@ void X86IntelInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
   unsigned ScaleVal         = MI->getOperand(Op+X86::AddrScaleAmt).getImm();
   const MCOperand &IndexReg = MI->getOperand(Op+X86::AddrIndexReg);
   const MCOperand &DispSpec = MI->getOperand(Op+X86::AddrDisp);
-  const MCOperand &SegReg   = MI->getOperand(Op+X86::AddrSegmentReg);
 
   // If this has a segment register, print it.
-  if (SegReg.getReg()) {
-    printOperand(MI, Op+X86::AddrSegmentReg, O);
-    O << ':';
-  }
+  printOptionalSegReg(MI, Op + X86::AddrSegmentReg, O);
 
   O << '[';
 
@@ -210,13 +391,8 @@ void X86IntelInstPrinter::printMemReference(const MCInst *MI, unsigned Op,
 
 void X86IntelInstPrinter::printSrcIdx(const MCInst *MI, unsigned Op,
                                       raw_ostream &O) {
-  const MCOperand &SegReg   = MI->getOperand(Op+1);
-
   // If this has a segment register, print it.
-  if (SegReg.getReg()) {
-    printOperand(MI, Op+1, O);
-    O << ':';
-  }
+  printOptionalSegReg(MI, Op + 1, O);
   O << '[';
   printOperand(MI, Op, O);
   O << ']';
@@ -233,13 +409,9 @@ void X86IntelInstPrinter::printDstIdx(const MCInst *MI, unsigned Op,
 void X86IntelInstPrinter::printMemOffset(const MCInst *MI, unsigned Op,
                                          raw_ostream &O) {
   const MCOperand &DispSpec = MI->getOperand(Op);
-  const MCOperand &SegReg   = MI->getOperand(Op+1);
 
   // If this has a segment register, print it.
-  if (SegReg.getReg()) {
-    printOperand(MI, Op+1, O);
-    O << ':';
-  }
+  printOptionalSegReg(MI, Op + 1, O);
 
   O << '[';
 
@@ -259,4 +431,15 @@ void X86IntelInstPrinter::printU8Imm(const MCInst *MI, unsigned Op,
     return MI->getOperand(Op).getExpr()->print(O, &MAI);
 
   O << formatImm(MI->getOperand(Op).getImm() & 0xff);
+}
+
+void X86IntelInstPrinter::printSTiRegOperand(const MCInst *MI, unsigned OpNo,
+                                            raw_ostream &OS) {
+  const MCOperand &Op = MI->getOperand(OpNo);
+  unsigned Reg = Op.getReg();
+  // Override the default printing to print st(0) instead st.
+  if (Reg == X86::ST0)
+    OS << "st(0)";
+  else
+    printRegName(OS, Reg);
 }

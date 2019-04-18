@@ -1,27 +1,22 @@
 //===-- GDBRemoteCommunicationServerLLGS.h ----------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_GDBRemoteCommunicationServerLLGS_h_
 #define liblldb_GDBRemoteCommunicationServerLLGS_h_
 
-// C Includes
-// C++ Includes
 #include <mutex>
 #include <unordered_map>
 
-// Other libraries and framework includes
 #include "lldb/Core/Communication.h"
 #include "lldb/Host/MainLoop.h"
 #include "lldb/Host/common/NativeProcessProtocol.h"
 #include "lldb/lldb-private-forward.h"
 
-// Project includes
 #include "GDBRemoteCommunicationServerCommon.h"
 
 class StringExtractorGDBRemote;
@@ -36,68 +31,35 @@ class GDBRemoteCommunicationServerLLGS
     : public GDBRemoteCommunicationServerCommon,
       public NativeProcessProtocol::NativeDelegate {
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
   GDBRemoteCommunicationServerLLGS(
       MainLoop &mainloop,
       const NativeProcessProtocol::Factory &process_factory);
 
-  //------------------------------------------------------------------
-  /// Specify the program to launch and its arguments.
-  ///
-  /// @param[in] args
-  ///     The command line to launch.
-  ///
-  /// @param[in] argc
-  ///     The number of elements in the args array of cstring pointers.
-  ///
-  /// @return
-  ///     An Status object indicating the success or failure of making
-  ///     the setting.
-  //------------------------------------------------------------------
-  Status SetLaunchArguments(const char *const args[], int argc);
+  void SetLaunchInfo(const ProcessLaunchInfo &info);
 
-  //------------------------------------------------------------------
-  /// Specify the launch flags for the process.
-  ///
-  /// @param[in] launch_flags
-  ///     The launch flags to use when launching this process.
-  ///
-  /// @return
-  ///     An Status object indicating the success or failure of making
-  ///     the setting.
-  //------------------------------------------------------------------
-  Status SetLaunchFlags(unsigned int launch_flags);
-
-  //------------------------------------------------------------------
   /// Launch a process with the current launch settings.
   ///
   /// This method supports running an lldb-gdbserver or similar
   /// server in a situation where the startup code has been provided
   /// with all the information for a child process to be launched.
   ///
-  /// @return
+  /// \return
   ///     An Status object indicating the success or failure of the
   ///     launch.
-  //------------------------------------------------------------------
   Status LaunchProcess() override;
 
-  //------------------------------------------------------------------
   /// Attach to a process.
   ///
   /// This method supports attaching llgs to a process accessible via the
   /// configured Platform.
   ///
-  /// @return
+  /// \return
   ///     An Status object indicating the success or failure of the
   ///     attach operation.
-  //------------------------------------------------------------------
   Status AttachToProcess(lldb::pid_t pid);
 
-  //------------------------------------------------------------------
   // NativeProcessProtocol::NativeDelegate overrides
-  //------------------------------------------------------------------
   void InitializeDelegate(NativeProcessProtocol *process) override;
 
   void ProcessStateChanged(NativeProcessProtocol *process,
@@ -234,7 +196,7 @@ private:
 
   void HandleInferiorState_Stopped(NativeProcessProtocol *process);
 
-  NativeThreadProtocolSP GetThreadFromSuffix(StringExtractorGDBRemote &packet);
+  NativeThreadProtocol *GetThreadFromSuffix(StringExtractorGDBRemote &packet);
 
   uint32_t GetNextSavedRegistersID();
 
@@ -252,9 +214,7 @@ private:
 
   void StopSTDIOForwarding();
 
-  //------------------------------------------------------------------
   // For GDBRemoteCommunicationServerLLGS only
-  //------------------------------------------------------------------
   DISALLOW_COPY_AND_ASSIGN(GDBRemoteCommunicationServerLLGS);
 };
 

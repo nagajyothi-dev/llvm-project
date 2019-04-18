@@ -1,19 +1,14 @@
 //===-- NativeRegisterContext.h ---------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_NativeRegisterContext_h_
 #define liblldb_NativeRegisterContext_h_
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "lldb/Host/common/NativeWatchpointList.h"
 #include "lldb/lldb-private.h"
 
@@ -24,20 +19,15 @@ class NativeThreadProtocol;
 class NativeRegisterContext
     : public std::enable_shared_from_this<NativeRegisterContext> {
 public:
-  //------------------------------------------------------------------
   // Constructors and Destructors
-  //------------------------------------------------------------------
-  NativeRegisterContext(NativeThreadProtocol &thread,
-                        uint32_t concrete_frame_idx);
+  NativeRegisterContext(NativeThreadProtocol &thread);
 
   virtual ~NativeRegisterContext();
 
   // void
   // InvalidateIfNeeded (bool force);
 
-  //------------------------------------------------------------------
   // Subclasses must override these functions
-  //------------------------------------------------------------------
   // virtual void
   // InvalidateAllRegisters () = 0;
 
@@ -66,9 +56,7 @@ public:
   uint32_t ConvertRegisterKindToRegisterNumber(uint32_t kind,
                                                uint32_t num) const;
 
-  //------------------------------------------------------------------
   // Subclasses can override these functions if desired
-  //------------------------------------------------------------------
   virtual uint32_t NumSupportedHardwareBreakpoints();
 
   virtual uint32_t SetHardwareBreakpoint(lldb::addr_t addr, size_t size);
@@ -99,17 +87,14 @@ public:
   virtual lldb::addr_t GetWatchpointAddress(uint32_t wp_index);
 
   // MIPS Linux kernel returns a masked address (last 3bits are masked)
-  // when a HW watchpoint is hit. However user may not have set a watchpoint
-  // on this address. This function emulates the instruction at PC and
-  // finds the base address used in the load/store instruction. This gives the
-  // exact address used to read/write the variable being watched.
-  // For example:
-  // 'n' is at 0x120010d00 and 'm' is 0x120010d04. When a watchpoint is set at
-  // 'm',
+  // when a HW watchpoint is hit. However user may not have set a watchpoint on
+  // this address. This function emulates the instruction at PC and finds the
+  // base address used in the load/store instruction. This gives the exact
+  // address used to read/write the variable being watched. For example: 'n' is
+  // at 0x120010d00 and 'm' is 0x120010d04. When a watchpoint is set at 'm',
   // then watch exception is generated even when 'n' is read/written. This
-  // function
-  // returns address of 'n' so that client can check whether a watchpoint is set
-  // on this address or not.
+  // function returns address of 'n' so that client can check whether a
+  // watchpoint is set on this address or not.
   virtual lldb::addr_t GetWatchpointHitAddress(uint32_t wp_index);
 
   virtual bool HardwareSingleStep(bool enable);
@@ -124,9 +109,7 @@ public:
                              lldb::addr_t dst_addr, size_t dst_len,
                              const RegisterValue &reg_value);
 
-  //------------------------------------------------------------------
   // Subclasses should not override these
-  //------------------------------------------------------------------
   virtual lldb::tid_t GetThreadID() const;
 
   virtual NativeThreadProtocol &GetThread() { return m_thread; }
@@ -179,20 +162,14 @@ public:
   // }
 
 protected:
-  //------------------------------------------------------------------
   // Classes that inherit from RegisterContext can see and modify these
-  //------------------------------------------------------------------
   NativeThreadProtocol
       &m_thread; // The thread that this register context belongs to.
-  uint32_t m_concrete_frame_idx; // The concrete frame index for this register
-                                 // context
   // uint32_t m_stop_id;             // The stop ID that any data in this
   // context is valid for
 
 private:
-  //------------------------------------------------------------------
   // For RegisterContext only
-  //------------------------------------------------------------------
   DISALLOW_COPY_AND_ASSIGN(NativeRegisterContext);
 };
 

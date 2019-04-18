@@ -1,9 +1,8 @@
 //===-- llvm-nm.cpp - Symbol table dumping utility for llvm ---------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -20,10 +19,7 @@
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/Function.h"
-#include "llvm/IR/GlobalAlias.h"
-#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Module.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
@@ -36,20 +32,14 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Format.h"
-#include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
-#include <cctype>
-#include <cerrno>
-#include <cstring>
-#include <system_error>
 #include <vector>
-#include <string.h>
 
 using namespace llvm;
 using namespace object;
@@ -85,14 +75,23 @@ cl::alias DefinedOnly2("U", cl::desc("Alias for --defined-only"),
                        cl::aliasopt(DefinedOnly), cl::Grouping);
 
 cl::opt<bool> ExternalOnly("extern-only",
-                           cl::desc("Show only external symbols"));
+                           cl::desc("Show only external symbols"),
+                           cl::ZeroOrMore);
 cl::alias ExternalOnly2("g", cl::desc("Alias for --extern-only"),
-                        cl::aliasopt(ExternalOnly), cl::Grouping);
+                        cl::aliasopt(ExternalOnly), cl::Grouping,
+                        cl::ZeroOrMore);
+
+cl::opt<bool> NoWeakSymbols("no-weak",
+                            cl::desc("Show only non-weak symbols"));
+cl::alias NoWeakSymbols2("W", cl::desc("Alias for --no-weak"),
+                         cl::aliasopt(NoWeakSymbols), cl::Grouping);
 
 cl::opt<bool> BSDFormat("B", cl::desc("Alias for --format=bsd"),
                         cl::Grouping);
 cl::opt<bool> POSIXFormat("P", cl::desc("Alias for --format=posix"),
                           cl::Grouping);
+cl::alias Portability("portability", cl::desc("Alias for --format=posix"),
+                      cl::aliasopt(POSIXFormat), cl::NotHidden);
 cl::opt<bool> DarwinFormat("m", cl::desc("Alias for --format=darwin"),
                            cl::Grouping);
 
@@ -125,9 +124,12 @@ cl::opt<bool> NoSort("no-sort", cl::desc("Show symbols in order encountered"));
 cl::alias NoSortp("p", cl::desc("Alias for --no-sort"), cl::aliasopt(NoSort),
                   cl::Grouping);
 
-cl::opt<bool> Demangle("demangle", cl::desc("Demangle C++ symbol names"));
-cl::alias DemangleC("C", cl::desc("Alias for --demangle"), cl::aliasopt(Demangle),
-                    cl::Grouping);
+cl::opt<bool> Demangle("demangle", cl::ZeroOrMore,
+                       cl::desc("Demangle C++ symbol names"));
+cl::alias DemangleC("C", cl::desc("Alias for --demangle"),
+                    cl::aliasopt(Demangle), cl::Grouping);
+cl::opt<bool> NoDemangle("no-demangle", cl::init(false), cl::ZeroOrMore,
+                         cl::desc("Don't demangle symbol names"));
 
 cl::opt<bool> ReverseSort("reverse-sort", cl::desc("Sort in reverse order"));
 cl::alias ReverseSortr("r", cl::desc("Alias for --reverse-sort"),
@@ -186,6 +188,8 @@ cl::opt<bool> DyldInfoOnly("dyldinfo-only",
 cl::opt<bool> NoLLVMBitcode("no-llvm-bc",
                             cl::desc("Disable LLVM bitcode reader"));
 
+cl::extrahelp HelpResponse("\nPass @FILE as argument to read options from FILE.\n");
+
 bool PrintAddress = true;
 
 bool MultipleFiles = false;
@@ -197,7 +201,7 @@ std::string ToolName;
 
 static void error(Twine Message, Twine Path = Twine()) {
   HadError = true;
-  errs() << ToolName << ": " << Path << ": " << Message << ".\n";
+  WithColor::error(errs(), ToolName) << Path << ": " << Message << ".\n";
 }
 
 static bool error(std::error_code EC, Twine Path = Twine()) {
@@ -210,11 +214,11 @@ static bool error(std::error_code EC, Twine Path = Twine()) {
 
 // This version of error() prints the archive name and member name, for example:
 // "libx.a(foo.o)" after the ToolName before the error message.  It sets
-// HadError but returns allowing the code to move on to other archive members. 
+// HadError but returns allowing the code to move on to other archive members.
 static void error(llvm::Error E, StringRef FileName, const Archive::Child &C,
                   StringRef ArchitectureName = StringRef()) {
   HadError = true;
-  errs() << ToolName << ": " << FileName;
+  WithColor::error(errs(), ToolName) << FileName;
 
   Expected<StringRef> NameOrErr = C.getName();
   // TODO: if we have a error getting the name then it would be nice to print
@@ -231,7 +235,7 @@ static void error(llvm::Error E, StringRef FileName, const Archive::Child &C,
 
   std::string Buf;
   raw_string_ostream OS(Buf);
-  logAllUnhandledErrors(std::move(E), OS, "");
+  logAllUnhandledErrors(std::move(E), OS);
   OS.flush();
   errs() << " " << Buf << "\n";
 }
@@ -239,18 +243,18 @@ static void error(llvm::Error E, StringRef FileName, const Archive::Child &C,
 // This version of error() prints the file name and which architecture slice it
 // is from, for example: "foo.o (for architecture i386)" after the ToolName
 // before the error message.  It sets HadError but returns allowing the code to
-// move on to other architecture slices. 
+// move on to other architecture slices.
 static void error(llvm::Error E, StringRef FileName,
                   StringRef ArchitectureName = StringRef()) {
   HadError = true;
-  errs() << ToolName << ": " << FileName;
+  WithColor::error(errs(), ToolName) << FileName;
 
   if (!ArchitectureName.empty())
     errs() << " (for architecture " << ArchitectureName << ") ";
 
   std::string Buf;
   raw_string_ostream OS(Buf);
-  logAllUnhandledErrors(std::move(E), OS, "");
+  logAllUnhandledErrors(std::move(E), OS);
   OS.flush();
   errs() << " " << Buf << "\n";
 }
@@ -261,6 +265,8 @@ struct NMSymbol {
   uint64_t Size;
   char TypeChar;
   StringRef Name;
+  StringRef SectionName;
+  StringRef TypeName;
   BasicSymbolRef Sym;
   // The Sym field above points to the native symbol in the object file,
   // for Mach-O when we are creating symbols from the dyld info the above
@@ -277,8 +283,16 @@ struct NMSymbol {
 } // anonymous namespace
 
 static bool compareSymbolAddress(const NMSymbol &A, const NMSymbol &B) {
-  bool ADefined = !(A.Sym.getFlags() & SymbolRef::SF_Undefined);
-  bool BDefined = !(B.Sym.getFlags() & SymbolRef::SF_Undefined);
+  bool ADefined;
+  if (A.Sym.getRawDataRefImpl().p)
+    ADefined = !(A.Sym.getFlags() & SymbolRef::SF_Undefined);
+  else
+    ADefined = A.TypeChar != 'U';
+  bool BDefined;
+  if (B.Sym.getRawDataRefImpl().p)
+    BDefined = !(B.Sym.getFlags() & SymbolRef::SF_Undefined);
+  else
+    BDefined = B.TypeChar != 'U';
   return std::make_tuple(ADefined, A.Address, A.Name, A.Size) <
          std::make_tuple(BDefined, B.Address, B.Name, B.Size);
 }
@@ -486,6 +500,10 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
         break;
       }
       Sec = *SecOrErr;
+      if (Sec == MachO->section_end()) {
+        outs() << "(?,?) ";
+        break;
+      }
     } else {
       Sec = I->Section;
     }
@@ -540,6 +558,11 @@ static void darwinPrintSymbol(SymbolicFile &Obj, SymbolListT::iterator I,
       ((NType & MachO::N_TYPE) != MachO::N_UNDF) &&
       (NDesc & MachO::N_ALT_ENTRY) == MachO::N_ALT_ENTRY)
     outs() << "[alt entry] ";
+
+  if (Filetype == MachO::MH_OBJECT &&
+      ((NType & MachO::N_TYPE) != MachO::N_UNDF) &&
+      (NDesc & MachO::N_COLD_FUNC) == MachO::N_COLD_FUNC)
+    outs() << "[cold func] ";
 
   if ((NDesc & MachO::N_ARM_THUMB_DEF) == MachO::N_ARM_THUMB_DEF)
     outs() << "[Thumb] ";
@@ -665,7 +688,7 @@ static void darwinPrintStab(MachOObjectFile *MachO, SymbolListT::iterator I) {
 }
 
 static Optional<std::string> demangle(StringRef Name, bool StripUnderscore) {
-  if (StripUnderscore && Name.size() > 0 && Name[0] == '_')
+  if (StripUnderscore && !Name.empty() && Name[0] == '_')
     Name = Name.substr(1);
 
   if (!Name.startswith("_Z"))
@@ -700,7 +723,7 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
 
     if (ReverseSort)
       Cmp = [=](const NMSymbol &A, const NMSymbol &B) { return Cmp(B, A); };
-    std::sort(SymbolList.begin(), SymbolList.end(), Cmp);
+    llvm::sort(SymbolList, Cmp);
   }
 
   if (!PrintFileName) {
@@ -709,9 +732,13 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     } else if (OutputFormat == bsd && MultipleFiles && printName) {
       outs() << "\n" << CurrentFilename << ":\n";
     } else if (OutputFormat == sysv) {
-      outs() << "\n\nSymbols from " << CurrentFilename << ":\n\n"
-             << "Name                  Value   Class        Type"
-             << "         Size   Line  Section\n";
+      outs() << "\n\nSymbols from " << CurrentFilename << ":\n\n";
+      if (isSymbolList64Bit(Obj))
+        outs() << "Name                  Value           Class        Type"
+               << "         Size             Line  Section\n";
+      else
+        outs() << "Name                  Value   Class        Type"
+               << "         Size     Line  Section\n";
     }
   }
 
@@ -744,6 +771,24 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
     }
   }
 
+  auto writeFileName = [&](raw_ostream &S) {
+    if (!ArchitectureName.empty())
+      S << "(for architecture " << ArchitectureName << "):";
+    if (OutputFormat == posix && !ArchiveName.empty())
+      S << ArchiveName << "[" << CurrentFilename << "]: ";
+    else {
+      if (!ArchiveName.empty())
+        S << ArchiveName << ":";
+      S << CurrentFilename << ": ";
+    }
+  };
+
+  if (SymbolList.empty()) {
+    if (PrintFileName)
+      writeFileName(errs());
+    errs() << "no symbols\n";
+  }
+
   for (SymbolListT::iterator I = SymbolList.begin(), E = SymbolList.end();
        I != E; ++I) {
     uint32_t SymFlags;
@@ -760,20 +805,12 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
 
     bool Undefined = SymFlags & SymbolRef::SF_Undefined;
     bool Global = SymFlags & SymbolRef::SF_Global;
+    bool Weak = SymFlags & SymbolRef::SF_Weak;
     if ((!Undefined && UndefinedOnly) || (Undefined && DefinedOnly) ||
-        (!Global && ExternalOnly) || (SizeSort && !PrintAddress))
+        (!Global && ExternalOnly) || (Weak && NoWeakSymbols))
       continue;
-    if (PrintFileName) {
-      if (!ArchitectureName.empty())
-        outs() << "(for architecture " << ArchitectureName << "):";
-      if (OutputFormat == posix && !ArchiveName.empty())
-        outs() << ArchiveName << "[" << CurrentFilename << "]: ";
-      else {
-        if (!ArchiveName.empty())
-          outs() << ArchiveName << ":";
-        outs() << CurrentFilename << ": ";
-      }
-    }
+    if (PrintFileName)
+      writeFileName(outs());
     if ((JustSymbolName ||
          (UndefinedOnly && MachO && OutputFormat != darwin)) &&
         OutputFormat != posix) {
@@ -850,8 +887,12 @@ static void sortAndPrintSymbolList(SymbolicFile &Obj, bool printName,
       std::string PaddedName(Name);
       while (PaddedName.length() < 20)
         PaddedName += " ";
+      std::string TypeName = I->TypeName;
+      if (TypeName.size() < 18)
+        TypeName = std::string(18-TypeName.size(), ' ') + TypeName;
       outs() << PaddedName << "|" << SymbolAddrStr << "|   " << I->TypeChar
-             << "  |                  |" << SymbolSizeStr << "|     |\n";
+             << "  |" << TypeName << "|" << SymbolSizeStr << "|     |"
+             << I->SectionName << "\n";
     }
   }
 
@@ -903,6 +944,7 @@ static char getSymbolNMTypeChar(ELFObjectFileBase &Obj,
     return StringSwitch<char>(*Name)
         .StartsWith(".debug", 'N')
         .StartsWith(".note", 'n')
+        .StartsWith(".comment", 'n')
         .Default('?');
   }
 
@@ -938,6 +980,10 @@ static char getSymbolNMTypeChar(COFFObjectFile &Obj, symbol_iterator I) {
     section_iterator SecI = *SecIOrErr;
     const coff_section *Section = Obj.getCOFFSection(*SecI);
     Characteristics = Section->Characteristics;
+    StringRef SectionName;
+    Obj.getSectionName(Section, SectionName);
+    if (SectionName.startswith(".idata"))
+      return 'i';
   }
 
   switch (Symb.getSectionNumber()) {
@@ -993,10 +1039,15 @@ static char getSymbolNMTypeChar(MachOObjectFile &Obj, basic_symbol_iterator I) {
       return 's';
     }
     section_iterator Sec = *SecOrErr;
+    if (Sec == Obj.section_end())
+      return 's';
     DataRefImpl Ref = Sec->getRawDataRefImpl();
     StringRef SectionName;
     Obj.getSectionName(Ref, SectionName);
     StringRef SegmentName = Obj.getSectionFinalSegmentName(Ref);
+    if (Obj.is64Bit() && Obj.getHeader64().filetype == MachO::MH_KEXT_BUNDLE &&
+        SegmentName == "__TEXT_EXEC" && SectionName == "__text")
+      return 't';
     if (SegmentName == "__TEXT" && SectionName == "__text")
       return 't';
     if (SegmentName == "__DATA" && SectionName == "__data")
@@ -1036,8 +1087,40 @@ static bool isObject(SymbolicFile &Obj, basic_symbol_iterator I) {
              : elf_symbol_iterator(I)->getELFType() == ELF::STT_OBJECT;
 }
 
-static char getNMTypeChar(SymbolicFile &Obj, basic_symbol_iterator I) {
+// For ELF object files, Set TypeName to the symbol typename, to be printed
+// in the 'Type' column of the SYSV format output.
+static StringRef getNMTypeName(SymbolicFile &Obj, basic_symbol_iterator I) {
+  if (isa<ELFObjectFileBase>(&Obj)) {
+    elf_symbol_iterator SymI(I);
+    return SymI->getELFTypeName();
+  }
+  return "";
+}
+
+// Return Posix nm class type tag (single letter), but also set SecName and
+// section and name, to be used in format=sysv output.
+static char getNMSectionTagAndName(SymbolicFile &Obj, basic_symbol_iterator I,
+                                   StringRef &SecName) {
   uint32_t Symflags = I->getFlags();
+  if (isa<ELFObjectFileBase>(&Obj)) {
+    if (Symflags & object::SymbolRef::SF_Absolute)
+      SecName = "*ABS*";
+    else if (Symflags & object::SymbolRef::SF_Common)
+      SecName = "*COM*";
+    else if (Symflags & object::SymbolRef::SF_Undefined)
+      SecName = "*UND*";
+    else {
+      elf_symbol_iterator SymI(I);
+      Expected<elf_section_iterator> SecIOrErr = SymI->getSection();
+      if (!SecIOrErr) {
+        consumeError(SecIOrErr.takeError());
+        return '?';
+      }
+      elf_section_iterator secT = *SecIOrErr;
+      secT->getName(SecName);
+    }
+  }
+
   if ((Symflags & object::SymbolRef::SF_Weak) && !isa<MachOObjectFile>(Obj)) {
     char Ret = isObject(Obj, I) ? 'v' : 'w';
     return (!(Symflags & object::SymbolRef::SF_Undefined)) ? toupper(Ret) : Ret;
@@ -1127,7 +1210,7 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
   // file get the section number for that section in this object file.
   unsigned int Nsect = 0;
   MachOObjectFile *MachO = dyn_cast<MachOObjectFile>(&Obj);
-  if (SegSect.size() != 0 && MachO) {
+  if (!SegSect.empty() && MachO) {
     Nsect = getNsectForSegSect(MachO);
     // If this section is not in the object file no symbols are printed.
     if (Nsect == 0)
@@ -1145,14 +1228,11 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
       // see if this symbol is a symbol from that section and if not skip it.
       if (Nsect && Nsect != getNsectInMachO(*MachO, Sym))
         continue;
-      NMSymbol S;
-      memset(&S, '\0', sizeof(S));
+      NMSymbol S = {};
       S.Size = 0;
       S.Address = 0;
-      if (PrintSize) {
-        if (isa<ELFObjectFileBase>(&Obj))
-          S.Size = ELFSymbolRef(Sym).getSize();
-      }
+      if (isa<ELFObjectFileBase>(&Obj))
+        S.Size = ELFSymbolRef(Sym).getSize();
       if (PrintAddress && isa<ObjectFile>(Obj)) {
         SymbolRef SymRef(Sym);
         Expected<uint64_t> AddressOrErr = SymRef.getAddress();
@@ -1162,7 +1242,8 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
         }
         S.Address = *AddressOrErr;
       }
-      S.TypeChar = getNMTypeChar(Obj, Sym);
+      S.TypeName = getNMTypeName(Obj, Sym);
+      S.TypeChar = getNMSectionTagAndName(Obj, Sym, S.SectionName);
       std::error_code EC = Sym.printName(OS);
       if (EC && MachO)
         OS << "bad string index";
@@ -1196,6 +1277,8 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
   raw_string_ostream LOS(LazysNameBuffer);
   std::string WeaksNameBuffer;
   raw_string_ostream WOS(WeaksNameBuffer);
+  std::string FunctionStartsNameBuffer;
+  raw_string_ostream FOS(FunctionStartsNameBuffer);
   if (MachO && !NoDyldInfo) {
     MachO::mach_header H;
     MachO::mach_header_64 H_64;
@@ -1238,8 +1321,7 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
           }
         }
         if (!found) {
-          NMSymbol S;
-          memset(&S, '\0', sizeof(NMSymbol));
+          NMSymbol S = {};
           S.Address = Entry.address() + BaseSegmentAddress;
           S.Size = 0;
           S.TypeChar = '\0';
@@ -1329,8 +1411,7 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
 
             // Now create the undefined symbol using the referened dynamic
             // library.
-            NMSymbol U;
-            memset(&U, '\0', sizeof(NMSymbol));
+            NMSymbol U = {};
             U.Address = 0;
             U.Size = 0;
             U.TypeChar = 'U';
@@ -1396,8 +1477,7 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
         }
         if (!found) {
           LastSymbolName = Entry.symbolName();
-          NMSymbol B;
-          memset(&B, '\0', sizeof(NMSymbol));
+          NMSymbol B = {};
           B.Address = 0;
           B.Size = 0;
           B.TypeChar = 'U';
@@ -1456,8 +1536,7 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
         }
         if (!found) {
           LastSymbolName = Entry.symbolName();
-          NMSymbol L;
-          memset(&L, '\0', sizeof(NMSymbol));
+          NMSymbol L = {};
           L.Name = Entry.symbolName();
           L.Address = 0;
           L.Size = 0;
@@ -1566,6 +1645,92 @@ dumpSymbolNamesFromObject(SymbolicFile &Obj, bool printName,
           I++;
         }
       }
+
+      // Trying adding symbol from the function starts table and LC_MAIN entry
+      // point.
+      SmallVector<uint64_t, 8> FoundFns;
+      uint64_t lc_main_offset = UINT64_MAX;
+      for (const auto &Command : MachO->load_commands()) {
+        if (Command.C.cmd == MachO::LC_FUNCTION_STARTS) {
+          // We found a function starts segment, parse the addresses for
+          // consumption.
+          MachO::linkedit_data_command LLC =
+            MachO->getLinkeditDataLoadCommand(Command);
+
+          MachO->ReadULEB128s(LLC.dataoff, FoundFns);
+        } else if (Command.C.cmd == MachO::LC_MAIN) {
+          MachO::entry_point_command LCmain =
+            MachO->getEntryPointCommand(Command);
+          lc_main_offset = LCmain.entryoff;
+        }
+      }
+      // See if these addresses are already in the symbol table.
+      unsigned FunctionStartsAdded = 0;
+      for (uint64_t f = 0; f < FoundFns.size(); f++) {
+        bool found = false;
+        for (unsigned J = 0; J < SymbolList.size() && !found; ++J) {
+          if (SymbolList[J].Address == FoundFns[f] + BaseSegmentAddress)
+            found = true;
+        }
+        // See this address is not already in the symbol table fake up an
+        // nlist for it.
+        if (!found) {
+          NMSymbol F = {};
+          F.Name = "<redacted function X>";
+          F.Address = FoundFns[f] + BaseSegmentAddress;
+          F.Size = 0;
+          // There is no symbol in the nlist symbol table for this so we set
+          // Sym effectivly to null and the rest of code in here must test for
+          // it and not do things like Sym.getFlags() for it.
+          F.Sym = BasicSymbolRef();
+          F.SymFlags = 0;
+          F.NType = MachO::N_SECT;
+          F.NSect = 0;
+          StringRef SegmentName = StringRef();
+          StringRef SectionName = StringRef();
+          for (const SectionRef &Section : MachO->sections()) {
+            Section.getName(SectionName);
+            SegmentName = MachO->getSectionFinalSegmentName(
+                                                Section.getRawDataRefImpl());
+            F.NSect++;
+            if (F.Address >= Section.getAddress() &&
+                F.Address < Section.getAddress() + Section.getSize()) {
+              F.Section = Section;
+              break;
+            }
+          }
+          if (SegmentName == "__TEXT" && SectionName == "__text")
+            F.TypeChar = 't';
+          else if (SegmentName == "__DATA" && SectionName == "__data")
+            F.TypeChar = 'd';
+          else if (SegmentName == "__DATA" && SectionName == "__bss")
+            F.TypeChar = 'b';
+          else
+            F.TypeChar = 's';
+          F.NDesc = 0;
+          F.IndirectName = StringRef();
+          SymbolList.push_back(F);
+          if (FoundFns[f] == lc_main_offset)
+            FOS << "<redacted LC_MAIN>";
+          else
+            FOS << "<redacted function " << f << ">";
+          FOS << '\0';
+          FunctionStartsAdded++;
+        }
+      }
+      if (FunctionStartsAdded) {
+        FOS.flush();
+        const char *Q = FunctionStartsNameBuffer.c_str();
+        for (unsigned K = 0; K < FunctionStartsAdded; K++) {
+          SymbolList[I].Name = Q;
+          Q += strlen(Q) + 1;
+          if (SymbolList[I].TypeChar == 'I') {
+            SymbolList[I].IndirectName = Q;
+            Q += strlen(Q) + 1;
+          }
+          I++;
+        }
+      }
     }
   }
 
@@ -1614,8 +1779,9 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     return;
 
   LLVMContext Context;
-  Expected<std::unique_ptr<Binary>> BinaryOrErr = createBinary(
-      BufferOrErr.get()->getMemBufferRef(), NoLLVMBitcode ? nullptr : &Context);
+  LLVMContext *ContextPtr = NoLLVMBitcode ? nullptr : &Context;
+  Expected<std::unique_ptr<Binary>> BinaryOrErr =
+      createBinary(BufferOrErr.get()->getMemBufferRef(), ContextPtr);
   if (!BinaryOrErr) {
     error(BinaryOrErr.takeError(), Filename);
     return;
@@ -1630,12 +1796,14 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
         outs() << "Archive map\n";
         for (; I != E; ++I) {
           Expected<Archive::Child> C = I->getMember();
-          if (!C)
+          if (!C) {
             error(C.takeError(), Filename);
+            break;
+          }
           Expected<StringRef> FileNameOrErr = C->getName();
           if (!FileNameOrErr) {
             error(FileNameOrErr.takeError(), Filename);
-            return;
+            break;
           }
           StringRef SymName = I->getName();
           outs() << SymName << " in " << FileNameOrErr.get() << "\n";
@@ -1647,7 +1815,8 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     {
       Error Err = Error::success();
       for (auto &C : A->children(Err)) {
-        Expected<std::unique_ptr<Binary>> ChildOrErr = C.getAsBinary(&Context);
+        Expected<std::unique_ptr<Binary>> ChildOrErr =
+            C.getAsBinary(ContextPtr);
         if (!ChildOrErr) {
           if (auto E = isNotObjectErrorInvalidFileType(ChildOrErr.takeError()))
             error(std::move(E), Filename, C);
@@ -1655,8 +1824,8 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
         }
         if (SymbolicFile *O = dyn_cast<SymbolicFile>(&*ChildOrErr.get())) {
           if (!MachOPrintSizeWarning && PrintSize &&  isa<MachOObjectFile>(O)) {
-            errs() << ToolName << ": warning sizes with -print-size for Mach-O "
-                      "files are always zero.\n";
+            WithColor::warning(errs(), ToolName)
+                << "sizes with -print-size for Mach-O files are always zero.\n";
             MachOPrintSizeWarning = true;
           }
           if (!checkMachOAndArchFlags(O, Filename))
@@ -1679,7 +1848,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
   }
   if (MachOUniversalBinary *UB = dyn_cast<MachOUniversalBinary>(&Bin)) {
     // If we have a list of architecture flags specified dump only those.
-    if (!ArchAll && ArchFlags.size() != 0) {
+    if (!ArchAll && !ArchFlags.empty()) {
       // Look for a slice in the universal binary that matches each ArchFlag.
       bool ArchFound;
       for (unsigned i = 0; i < ArchFlags.size(); ++i) {
@@ -1718,7 +1887,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
               Error Err = Error::success();
               for (auto &C : A->children(Err)) {
                 Expected<std::unique_ptr<Binary>> ChildOrErr =
-                    C.getAsBinary(&Context);
+                    C.getAsBinary(ContextPtr);
                 if (!ChildOrErr) {
                   if (auto E = isNotObjectErrorInvalidFileType(
                                        ChildOrErr.takeError())) {
@@ -1768,14 +1937,14 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
     // No architecture flags were specified so if this contains a slice that
     // matches the host architecture dump only that.
     if (!ArchAll) {
-      StringRef HostArchName = MachOObjectFile::getHostArch().getArchName();
+      Triple HostTriple = MachOObjectFile::getHostArch();
+      StringRef HostArchName = HostTriple.getArchName();
       for (MachOUniversalBinary::object_iterator I = UB->begin_objects(),
                                                  E = UB->end_objects();
            I != E; ++I) {
         if (HostArchName == I->getArchFlagName()) {
           Expected<std::unique_ptr<ObjectFile>> ObjOrErr = I->getAsObjectFile();
           std::string ArchiveName;
-          ArchiveName.clear();
           if (ObjOrErr) {
             ObjectFile &Obj = *ObjOrErr.get();
             dumpSymbolNamesFromObject(Obj, false);
@@ -1789,7 +1958,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
             Error Err = Error::success();
             for (auto &C : A->children(Err)) {
               Expected<std::unique_ptr<Binary>> ChildOrErr =
-                  C.getAsBinary(&Context);
+                  C.getAsBinary(ContextPtr);
               if (!ChildOrErr) {
                 if (auto E = isNotObjectErrorInvalidFileType(
                                      ChildOrErr.takeError()))
@@ -1856,7 +2025,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
         Error Err = Error::success();
         for (auto &C : A->children(Err)) {
           Expected<std::unique_ptr<Binary>> ChildOrErr =
-            C.getAsBinary(&Context);
+            C.getAsBinary(ContextPtr);
           if (!ChildOrErr) {
             if (auto E = isNotObjectErrorInvalidFileType(
                                  ChildOrErr.takeError()))
@@ -1897,8 +2066,8 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
   }
   if (SymbolicFile *O = dyn_cast<SymbolicFile>(&Bin)) {
     if (!MachOPrintSizeWarning && PrintSize &&  isa<MachOObjectFile>(O)) {
-      errs() << ToolName << ": warning sizes with -print-size for Mach-O files "
-                "are always zero.\n";
+      WithColor::warning(errs(), ToolName)
+          << "sizes with -print-size for Mach-O files are always zero.\n";
       MachOPrintSizeWarning = true;
     }
     if (!checkMachOAndArchFlags(O, Filename))
@@ -1908,11 +2077,7 @@ static void dumpSymbolNamesFromFile(std::string &Filename) {
 }
 
 int main(int argc, char **argv) {
-  // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal(argv[0]);
-  PrettyStackTraceProgram X(argc, argv);
-
-  llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
+  InitLLVM X(argc, argv);
   cl::ParseCommandLineOptions(argc, argv, "llvm symbol table dumper\n");
 
   // llvm-nm only reads binary files.
@@ -1944,6 +2109,10 @@ int main(int argc, char **argv) {
   if (InputFilenames.size() > 1)
     MultipleFiles = true;
 
+  // If both --demangle and --no-demangle are specified then pick the last one.
+  if (NoDemangle.getPosition() > Demangle.getPosition())
+    Demangle = !NoDemangle;
+
   for (unsigned i = 0; i < ArchFlags.size(); ++i) {
     if (ArchFlags[i] == "all") {
       ArchAll = true;
@@ -1954,15 +2123,14 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (SegSect.size() != 0 && SegSect.size() != 2)
+  if (!SegSect.empty() && SegSect.size() != 2)
     error("bad number of arguments (must be two arguments)",
           "for the -s option");
 
   if (NoDyldInfo && (AddDyldInfo || DyldInfoOnly))
     error("-no-dyldinfo can't be used with -add-dyldinfo or -dyldinfo-only");
 
-  std::for_each(InputFilenames.begin(), InputFilenames.end(),
-                dumpSymbolNamesFromFile);
+  llvm::for_each(InputFilenames, dumpSymbolNamesFromFile);
 
   if (HadError)
     return 1;

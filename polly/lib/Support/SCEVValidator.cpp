@@ -1,6 +1,6 @@
 
 #include "polly/Support/SCEVValidator.h"
-#include "polly/ScopInfo.h"
+#include "polly/ScopDetection.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -205,11 +205,12 @@ public:
       }
 
       if ((Op.isIV() || Op.isPARAM()) && !Return.isINT()) {
-        DEBUG(dbgs() << "INVALID: More than one non-int operand in MulExpr\n"
-                     << "\tExpr: " << *Expr << "\n"
-                     << "\tPrevious expression type: " << Return << "\n"
-                     << "\tNext operand (" << Op
-                     << "): " << *Expr->getOperand(i) << "\n");
+        LLVM_DEBUG(
+            dbgs() << "INVALID: More than one non-int operand in MulExpr\n"
+                   << "\tExpr: " << *Expr << "\n"
+                   << "\tPrevious expression type: " << Return << "\n"
+                   << "\tNext operand (" << Op << "): " << *Expr->getOperand(i)
+                   << "\n");
 
         return ValidatorResult(SCEVType::INVALID);
       }
@@ -225,7 +226,7 @@ public:
 
   class ValidatorResult visitAddRecExpr(const SCEVAddRecExpr *Expr) {
     if (!Expr->isAffine()) {
-      DEBUG(dbgs() << "INVALID: AddRec is not affine");
+      LLVM_DEBUG(dbgs() << "INVALID: AddRec is not affine");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -240,9 +241,10 @@ public:
 
     auto *L = Expr->getLoop();
     if (R->contains(L) && (!Scope || !L->contains(Scope))) {
-      DEBUG(dbgs() << "INVALID: Loop of AddRec expression boxed in an a "
-                      "non-affine subregion or has a non-synthesizable exit "
-                      "value.");
+      LLVM_DEBUG(
+          dbgs() << "INVALID: Loop of AddRec expression boxed in an a "
+                    "non-affine subregion or has a non-synthesizable exit "
+                    "value.");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -253,8 +255,8 @@ public:
         return Result;
       }
 
-      DEBUG(dbgs() << "INVALID: AddRec within scop has non-int"
-                      "recurrence part");
+      LLVM_DEBUG(dbgs() << "INVALID: AddRec within scop has non-int"
+                           "recurrence part");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -299,7 +301,7 @@ public:
       ValidatorResult Op = visit(Expr->getOperand(i));
 
       if (!Op.isConstant()) {
-        DEBUG(dbgs() << "INVALID: UMaxExpr has a non-constant operand");
+        LLVM_DEBUG(dbgs() << "INVALID: UMaxExpr has a non-constant operand");
         return ValidatorResult(SCEVType::INVALID);
       }
     }
@@ -309,8 +311,8 @@ public:
 
   ValidatorResult visitGenericInst(Instruction *I, const SCEV *S) {
     if (R->contains(I)) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr references an instruction "
-                      "within the region\n");
+      LLVM_DEBUG(dbgs() << "INVALID: UnknownExpr references an instruction "
+                           "within the region\n");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -358,7 +360,8 @@ public:
     if (LHS.isConstant() && RHS.isConstant())
       return ValidatorResult(SCEVType::PARAM, DivExpr);
 
-    DEBUG(dbgs() << "INVALID: unsigned division of non-constant expressions");
+    LLVM_DEBUG(
+        dbgs() << "INVALID: unsigned division of non-constant expressions");
     return ValidatorResult(SCEVType::INVALID);
   }
 
@@ -398,12 +401,12 @@ public:
     Value *V = Expr->getValue();
 
     if (!Expr->getType()->isIntegerTy() && !Expr->getType()->isPointerTy()) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer or pointer");
+      LLVM_DEBUG(dbgs() << "INVALID: UnknownExpr is not an integer or pointer");
       return ValidatorResult(SCEVType::INVALID);
     }
 
     if (isa<UndefValue>(V)) {
-      DEBUG(dbgs() << "INVALID: UnknownExpr references an undef value");
+      LLVM_DEBUG(dbgs() << "INVALID: UnknownExpr references an undef value");
       return ValidatorResult(SCEVType::INVALID);
     }
 
@@ -605,7 +608,7 @@ bool isAffineExpr(const Region *R, llvm::Loop *Scope, const SCEV *Expr,
     return false;
 
   SCEVValidator Validator(R, Scope, SE, ILS);
-  DEBUG({
+  LLVM_DEBUG({
     dbgs() << "\n";
     dbgs() << "Expr: " << *Expr << "\n";
     dbgs() << "Region: " << R->getNameStr() << "\n";
@@ -614,7 +617,7 @@ bool isAffineExpr(const Region *R, llvm::Loop *Scope, const SCEV *Expr,
 
   ValidatorResult Result = Validator.visit(Expr);
 
-  DEBUG({
+  LLVM_DEBUG({
     if (Result.isValid())
       dbgs() << "VALID\n";
     dbgs() << "\n";
@@ -734,5 +737,46 @@ extractConstantFactor(const SCEV *S, ScalarEvolution &SE) {
       LeftOvers.push_back(Op);
 
   return std::make_pair(ConstPart, SE.getMulExpr(LeftOvers));
+}
+
+const SCEV *tryForwardThroughPHI(const SCEV *Expr, Region &R,
+                                 ScalarEvolution &SE, LoopInfo &LI,
+                                 const DominatorTree &DT) {
+  if (auto *Unknown = dyn_cast<SCEVUnknown>(Expr)) {
+    Value *V = Unknown->getValue();
+    auto *PHI = dyn_cast<PHINode>(V);
+    if (!PHI)
+      return Expr;
+
+    Value *Final = nullptr;
+
+    for (unsigned i = 0; i < PHI->getNumIncomingValues(); i++) {
+      BasicBlock *Incoming = PHI->getIncomingBlock(i);
+      if (isErrorBlock(*Incoming, R, LI, DT) && R.contains(Incoming))
+        continue;
+      if (Final)
+        return Expr;
+      Final = PHI->getIncomingValue(i);
+    }
+
+    if (Final)
+      return SE.getSCEV(Final);
+  }
+  return Expr;
+}
+
+Value *getUniqueNonErrorValue(PHINode *PHI, Region *R, LoopInfo &LI,
+                              const DominatorTree &DT) {
+  Value *V = nullptr;
+  for (unsigned i = 0; i < PHI->getNumIncomingValues(); i++) {
+    BasicBlock *BB = PHI->getIncomingBlock(i);
+    if (!isErrorBlock(*BB, *R, LI, DT)) {
+      if (V)
+        return nullptr;
+      V = PHI->getIncomingValue(i);
+    }
+  }
+
+  return V;
 }
 } // namespace polly

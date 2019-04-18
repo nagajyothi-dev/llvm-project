@@ -3,7 +3,7 @@
 # RUN: echo "LIBSAMPLE_1.0 { global: a; local: *; };" > %t.script
 # RUN: echo "LIBSAMPLE_2.0 { global: b; local: *; };" >> %t.script
 # RUN: echo "LIBSAMPLE_3.0 { global: c; local: *; };" >> %t.script
-# RUN: ld.lld --version-script %t.script -shared -soname shared %t.o -o %t.so
+# RUN: ld.lld --hash-style=sysv --version-script %t.script -shared -soname shared %t.o -o %t.so
 # RUN: llvm-readobj -V -dyn-symbols %t.so | FileCheck --check-prefix=DSO %s
 
 # DSO:        Version symbols {
@@ -14,7 +14,7 @@
 # DSO-NEXT:   Symbols [
 # DSO-NEXT:     Symbol {
 # DSO-NEXT:       Version: 0
-# DSO-NEXT:       Name: @
+# DSO-NEXT:       Name:
 # DSO-NEXT:     }
 # DSO-NEXT:     Symbol {
 # DSO-NEXT:       Version: 2
@@ -65,18 +65,18 @@
 
 ## Check that we can link agains DSO we produced.
 # RUN: llvm-mc -filetype=obj -triple=x86_64-unknown-linux %S/Inputs/verdef.s -o %tmain.o
-# RUN: ld.lld %tmain.o %t.so -o %tout
+# RUN: ld.lld --hash-style=sysv %tmain.o %t.so -o %tout
 # RUN: llvm-readobj -V %tout | FileCheck --check-prefix=MAIN %s
 
 # MAIN:      Version symbols {
 # MAIN-NEXT:   Section Name: .gnu.version
-# MAIN-NEXT:   Address: 0x200228
-# MAIN-NEXT:   Offset: 0x228
+# MAIN-NEXT:   Address: 0x200260
+# MAIN-NEXT:   Offset: 0x260
 # MAIN-NEXT:   Link: 1
 # MAIN-NEXT:   Symbols [
 # MAIN-NEXT:     Symbol {
 # MAIN-NEXT:       Version: 0
-# MAIN-NEXT:       Name: @
+# MAIN-NEXT:       Name:
 # MAIN-NEXT:     }
 # MAIN-NEXT:     Symbol {
 # MAIN-NEXT:       Version: 2
@@ -100,7 +100,7 @@
 # RUN: echo "LIBSAMPLE_2.0 { global: b; local: *; };" >> %t.script
 # RUN: echo "LIBSAMPLE_3.0 { global: c; local: *; };" >> %t.script
 # RUN: echo "}" >> %t.script
-# RUN: ld.lld --script %t.script -shared -soname shared %t.o -o %t2.so
+# RUN: ld.lld --hash-style=sysv --script %t.script -shared -soname shared %t.o -o %t2.so
 # RUN: llvm-readobj -V -dyn-symbols %t2.so | FileCheck --check-prefix=DSO %s
 
 .globl a

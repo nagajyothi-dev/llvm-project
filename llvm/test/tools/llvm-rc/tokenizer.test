@@ -1,4 +1,4 @@
-; RUN: not llvm-rc /V %p/Inputs/tokens.rc | FileCheck %s
+; RUN: not llvm-rc /V /FO %t.res -- %p/Inputs/tokens.rc | FileCheck %s
 ; llvm-rc fails now on this sample because it is an invalid resource file
 ; script. We silence the error message and just analyze the output.
 
@@ -34,4 +34,13 @@
 ; CHECK-NEXT:  Int: 42; int value = 42
 ; CHECK-NEXT:  Comma: ,
 ; CHECK-NEXT:  Int: 100; int value = 100
+; CHECK-NEXT:  Identifier: Block
+; CHECK-NEXT:  Identifier: Comment
+; CHECK-NEXT:  Identifier: Ident
+; CHECK-NEXT:  Identifier: ifier
+; CHECK-NEXT:  Identifier: Line
+; CHECK-NEXT:  Identifier: Comment
+; CHECK-NEXT:  Identifier: Multiple
+; CHECK-NEXT:  Identifier: on
+; CHECK-NEXT:  Identifier: single
 ; CHECK-NEXT:  String: ":))"

@@ -1,31 +1,25 @@
 //===-- RegisterContextDarwin_arm.cpp ---------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#if defined(__APPLE__)
-
 #include "RegisterContextDarwin_arm.h"
+#include "RegisterContextDarwinConstants.h"
 
-// C Includes
-#include <mach/mach_types.h>
-#include <mach/thread_act.h>
-
-// C++ Includes
-// Other libraries and framework includes
-#include "lldb/Core/RegisterValue.h"
-#include "lldb/Core/Scalar.h"
 #include "lldb/Utility/DataBufferHeap.h"
 #include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Endian.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RegisterValue.h"
+#include "lldb/Utility/Scalar.h"
 #include "llvm/Support/Compiler.h"
 
 #include "Plugins/Process/Utility/InstructionUtils.h"
+
+#include <memory>
 
 // Support building against older versions of LLVM, this macro was added
 // recently.
@@ -33,8 +27,7 @@
 #define LLVM_EXTENSION
 #endif
 
-// Project includes
-#include "ARM_DWARF_Registers.h"
+#include "Utility/ARM_DWARF_Registers.h"
 #include "Utility/ARM_ehframe_Registers.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -967,11 +960,9 @@ const size_t k_num_gpr_registers = llvm::array_lengthof(g_gpr_regnums);
 const size_t k_num_fpu_registers = llvm::array_lengthof(g_fpu_regnums);
 const size_t k_num_exc_registers = llvm::array_lengthof(g_exc_regnums);
 
-//----------------------------------------------------------------------
-// Register set definitions. The first definitions at register set index
-// of zero is for all registers, followed by other registers sets. The
-// register information for the all register set need not be filled in.
-//----------------------------------------------------------------------
+// Register set definitions. The first definitions at register set index of
+// zero is for all registers, followed by other registers sets. The register
+// information for the all register set need not be filled in.
 static const RegisterSet g_reg_sets[] = {
     {
         "General Purpose Registers", "gpr", k_num_gpr_registers, g_gpr_regnums,
@@ -991,9 +982,7 @@ const RegisterSet *RegisterContextDarwin_arm::GetRegisterSet(size_t reg_set) {
   return NULL;
 }
 
-//----------------------------------------------------------------------
 // Register information definitions for 32 bit i386.
-//----------------------------------------------------------------------
 int RegisterContextDarwin_arm::GetSetForNativeRegNum(int reg) {
   if (reg < fpu_s0)
     return GPRRegSet;
@@ -1305,7 +1294,7 @@ bool RegisterContextDarwin_arm::WriteRegister(const RegisterInfo *reg_info,
 
 bool RegisterContextDarwin_arm::ReadAllRegisterValues(
     lldb::DataBufferSP &data_sp) {
-  data_sp.reset(new DataBufferHeap(REG_CONTEXT_SIZE, 0));
+  data_sp = std::make_shared<DataBufferHeap>(REG_CONTEXT_SIZE, 0);
   if (data_sp && ReadGPR(false) == KERN_SUCCESS &&
       ReadFPU(false) == KERN_SUCCESS && ReadEXC(false) == KERN_SUCCESS) {
     uint8_t *dst = data_sp->GetBytes();
@@ -1510,7 +1499,7 @@ uint32_t RegisterContextDarwin_arm::ConvertRegisterKindToRegisterNumber(
 }
 
 uint32_t RegisterContextDarwin_arm::NumSupportedHardwareBreakpoints() {
-#if defined(__arm__)
+#if defined(__APPLE__) && defined(__arm__)
   // Set the init value to something that will let us know that we need to
   // autodetect how many breakpoints are supported dynamically...
   static uint32_t g_num_supported_hw_breakpoints = UINT32_MAX;
@@ -1642,7 +1631,7 @@ bool RegisterContextDarwin_arm::ClearHardwareBreakpoint(uint32_t hw_index) {
 }
 
 uint32_t RegisterContextDarwin_arm::NumSupportedHardwareWatchpoints() {
-#if defined(__arm__)
+#if defined(__APPLE__) && defined(__arm__)
   // Set the init value to something that will let us know that we need to
   // autodetect how many watchpoints are supported dynamically...
   static uint32_t g_num_supported_hw_watchpoints = UINT32_MAX;
@@ -1678,7 +1667,7 @@ uint32_t RegisterContextDarwin_arm::SetHardwareWatchpoint(lldb::addr_t addr,
     return LLDB_INVALID_INDEX32;
 
   // We must watch for either read or write
-  if (read == false && write == false)
+  if (!read && !write)
     return LLDB_INVALID_INDEX32;
 
   // Can't watch more than 4 bytes per WVR/WCR pair
@@ -1766,5 +1755,3 @@ bool RegisterContextDarwin_arm::ClearHardwareWatchpoint(uint32_t hw_index) {
   }
   return false;
 }
-
-#endif

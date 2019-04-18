@@ -1,9 +1,8 @@
 /* ===-- fixunssfdi.c - Implement __fixunssfdi -----------------------------===
  *
- *                     The LLVM Compiler Infrastructure
- *
- * This file is dual licensed under the MIT and the University of Illinois Open
- * Source Licenses. See LICENSE.TXT for details.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  * ===----------------------------------------------------------------------===
  */
@@ -43,13 +42,11 @@ __fixunssfdi(fp_t a) {
 #endif
 
 #if defined(__ARM_EABI__)
-AEABI_RTABI du_int
-#if defined(__SOFT_FP__)
-__aeabi_f2ulz(fp_t a) {
-#else
-__aeabi_f2ulz(float a) {
-#endif
+#if defined(COMPILER_RT_ARMHF_TARGET)
+AEABI_RTABI du_int __aeabi_f2ulz(fp_t a) {
   return __fixunssfdi(a);
 }
+#else
+AEABI_RTABI du_int __aeabi_f2ulz(fp_t a) COMPILER_RT_ALIAS(__fixunssfdi);
 #endif
-
+#endif

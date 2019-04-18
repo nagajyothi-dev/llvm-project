@@ -9,18 +9,13 @@ set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(ppoll poll.h HAVE_PPOLL)
 set(CMAKE_REQUIRED_DEFINITIONS)
 check_symbol_exists(sigaction signal.h HAVE_SIGACTION)
+check_cxx_symbol_exists(accept4 "sys/socket.h" HAVE_ACCEPT4)
 
 check_include_file(termios.h HAVE_TERMIOS_H)
 check_include_files("sys/types.h;sys/event.h" HAVE_SYS_EVENT_H)
 
-check_cxx_source_compiles("
-  #include <sys/uio.h>
-  int main() { process_vm_readv(0, nullptr, 0, nullptr, 0, 0); return 0; }"
-  HAVE_PROCESS_VM_READV)
-check_cxx_source_compiles("
-    #include <sys/syscall.h>
-    int main() { return __NR_process_vm_readv; }"
-    HAVE_NR_PROCESS_VM_READV)
+check_cxx_symbol_exists(process_vm_readv "sys/uio.h" HAVE_PROCESS_VM_READV)
+check_cxx_symbol_exists(__NR_process_vm_readv "sys/syscall.h" HAVE_NR_PROCESS_VM_READV)
 
 check_library_exists(compression compression_encode_buffer "" HAVE_LIBCOMPRESSION)
 

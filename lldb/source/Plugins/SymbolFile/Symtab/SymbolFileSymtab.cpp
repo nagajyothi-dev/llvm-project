@@ -1,13 +1,13 @@
 //===-- SymbolFileSymtab.cpp ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "SymbolFileSymtab.h"
+
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Symbol/CompileUnit.h"
@@ -19,6 +19,8 @@
 #include "lldb/Symbol/TypeList.h"
 #include "lldb/Utility/RegularExpression.h"
 #include "lldb/Utility/Timer.h"
+
+#include <memory>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -46,7 +48,7 @@ SymbolFile *SymbolFileSymtab::CreateInstance(ObjectFile *obj_file) {
 }
 
 size_t SymbolFileSymtab::GetTypes(SymbolContextScope *sc_scope,
-                                  uint32_t type_mask,
+                                  TypeClass type_mask,
                                   lldb_private::TypeList &type_list) {
   return 0;
 }
@@ -62,11 +64,9 @@ uint32_t SymbolFileSymtab::CalculateAbilities() {
   if (m_obj_file) {
     const Symtab *symtab = m_obj_file->GetSymtab();
     if (symtab) {
-      //----------------------------------------------------------------------
-      // The snippet of code below will get the indexes the module symbol
-      // table entries that are code, data, or function related (debug info),
-      // sort them by value (address) and dump the sorted symbols.
-      //----------------------------------------------------------------------
+      // The snippet of code below will get the indexes the module symbol table
+      // entries that are code, data, or function related (debug info), sort
+      // them by value (address) and dump the sorted symbols.
       if (symtab->AppendSymbolIndexesWithType(eSymbolTypeSourceFile,
                                               m_source_indexes)) {
         abilities |= CompileUnits;
@@ -105,44 +105,39 @@ uint32_t SymbolFileSymtab::CalculateAbilities() {
 }
 
 uint32_t SymbolFileSymtab::GetNumCompileUnits() {
-  // If we don't have any source file symbols we will just have one compile unit
-  // for
-  // the entire object file
+  // If we don't have any source file symbols we will just have one compile
+  // unit for the entire object file
   if (m_source_indexes.empty())
     return 0;
 
   // If we have any source file symbols we will logically organize the object
-  // symbols
-  // using these.
+  // symbols using these.
   return m_source_indexes.size();
 }
 
 CompUnitSP SymbolFileSymtab::ParseCompileUnitAtIndex(uint32_t idx) {
   CompUnitSP cu_sp;
 
-  // If we don't have any source file symbols we will just have one compile unit
-  // for
-  // the entire object file
+  // If we don't have any source file symbols we will just have one compile
+  // unit for the entire object file
   if (idx < m_source_indexes.size()) {
     const Symbol *cu_symbol =
         m_obj_file->GetSymtab()->SymbolAtIndex(m_source_indexes[idx]);
     if (cu_symbol)
-      cu_sp.reset(new CompileUnit(m_obj_file->GetModule(), NULL,
+      cu_sp = std::make_shared<CompileUnit>(m_obj_file->GetModule(), nullptr,
                                   cu_symbol->GetName().AsCString(), 0,
-                                  eLanguageTypeUnknown, eLazyBoolNo));
+                                            eLanguageTypeUnknown, eLazyBoolNo);
   }
   return cu_sp;
 }
 
-lldb::LanguageType
-SymbolFileSymtab::ParseCompileUnitLanguage(const SymbolContext &sc) {
+lldb::LanguageType SymbolFileSymtab::ParseLanguage(CompileUnit &comp_unit) {
   return eLanguageTypeUnknown;
 }
 
-size_t SymbolFileSymtab::ParseCompileUnitFunctions(const SymbolContext &sc) {
+size_t SymbolFileSymtab::ParseFunctions(CompileUnit &comp_unit) {
   size_t num_added = 0;
   // We must at least have a valid compile unit
-  assert(sc.comp_unit != NULL);
   const Symtab *symtab = m_obj_file->GetSymtab();
   const Symbol *curr_symbol = NULL;
   const Symbol *next_symbol = NULL;
@@ -152,13 +147,12 @@ size_t SymbolFileSymtab::ParseCompileUnitFunctions(const SymbolContext &sc) {
   //
   //  const uint32_t prefix_len = strlen(prefix);
 
-  // If we don't have any source file symbols we will just have one compile unit
-  // for
-  // the entire object file
+  // If we don't have any source file symbols we will just have one compile
+  // unit for the entire object file
   if (m_source_indexes.empty()) {
-    // The only time we will have a user ID of zero is when we don't have
-    // and source file symbols and we declare one compile unit for the
-    // entire object file
+    // The only time we will have a user ID of zero is when we don't have and
+    // source file symbols and we declare one compile unit for the entire
+    // object file
     if (!m_func_indexes.empty()) {
     }
 
@@ -189,7 +183,7 @@ size_t SymbolFileSymtab::ParseCompileUnitFunctions(const SymbolContext &sc) {
             }
 
             FunctionSP func_sp(
-                new Function(sc.comp_unit,
+                new Function(&comp_unit,
                              symbol_idx,       // UserID is the DIE offset
                              LLDB_INVALID_UID, // We don't have any type info
                                                // for this function
@@ -198,7 +192,7 @@ size_t SymbolFileSymtab::ParseCompileUnitFunctions(const SymbolContext &sc) {
                              func_range)); // first address range
 
             if (func_sp.get() != NULL) {
-              sc.comp_unit->AddFunction(func_sp);
+              comp_unit.AddFunction(func_sp);
               ++num_added;
             }
           }
@@ -211,29 +205,25 @@ size_t SymbolFileSymtab::ParseCompileUnitFunctions(const SymbolContext &sc) {
   return num_added;
 }
 
-bool SymbolFileSymtab::ParseCompileUnitLineTable(const SymbolContext &sc) {
+size_t SymbolFileSymtab::ParseTypes(CompileUnit &comp_unit) { return 0; }
+
+bool SymbolFileSymtab::ParseLineTable(CompileUnit &comp_unit) { return false; }
+
+bool SymbolFileSymtab::ParseDebugMacros(CompileUnit &comp_unit) {
   return false;
 }
 
-bool SymbolFileSymtab::ParseCompileUnitDebugMacros(const SymbolContext &sc) {
-  return false;
-}
-
-bool SymbolFileSymtab::ParseCompileUnitSupportFiles(
-    const SymbolContext &sc, FileSpecList &support_files) {
+bool SymbolFileSymtab::ParseSupportFiles(CompileUnit &comp_unit,
+                                         FileSpecList &support_files) {
   return false;
 }
 
 bool SymbolFileSymtab::ParseImportedModules(
-    const SymbolContext &sc, std::vector<ConstString> &imported_modules) {
+    const SymbolContext &sc, std::vector<SourceModule> &imported_modules) {
   return false;
 }
 
-size_t SymbolFileSymtab::ParseFunctionBlocks(const SymbolContext &sc) {
-  return 0;
-}
-
-size_t SymbolFileSymtab::ParseTypes(const SymbolContext &sc) { return 0; }
+size_t SymbolFileSymtab::ParseBlocksRecursive(Function &func) { return 0; }
 
 size_t SymbolFileSymtab::ParseVariablesForContext(const SymbolContext &sc) {
   return 0;
@@ -243,12 +233,18 @@ Type *SymbolFileSymtab::ResolveTypeUID(lldb::user_id_t type_uid) {
   return NULL;
 }
 
+llvm::Optional<SymbolFile::ArrayInfo>
+SymbolFileSymtab::GetDynamicArrayInfoForUID(
+    lldb::user_id_t type_uid, const lldb_private::ExecutionContext *exe_ctx) {
+  return llvm::None;
+}
+
 bool SymbolFileSymtab::CompleteType(lldb_private::CompilerType &compiler_type) {
   return false;
 }
 
 uint32_t SymbolFileSymtab::ResolveSymbolContext(const Address &so_addr,
-                                                uint32_t resolve_scope,
+                                                SymbolContextItem resolve_scope,
                                                 SymbolContext &sc) {
   if (m_obj_file->GetSymtab() == NULL)
     return 0;
@@ -263,9 +259,7 @@ uint32_t SymbolFileSymtab::ResolveSymbolContext(const Address &so_addr,
   return resolved_flags;
 }
 
-//------------------------------------------------------------------
 // PluginInterface protocol
-//------------------------------------------------------------------
 lldb_private::ConstString SymbolFileSymtab::GetPluginName() {
   return GetPluginNameStatic();
 }

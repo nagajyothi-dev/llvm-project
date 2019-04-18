@@ -1,9 +1,8 @@
 //===- PDBFile.h - Low level interface to a PDB file ------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,6 +60,7 @@ public:
   uint64_t getBlockMapOffset() const;
 
   uint32_t getNumStreams() const override;
+  uint32_t getMaxStreamSize() const;
   uint32_t getStreamByteSize(uint32_t StreamIndex) const override;
   ArrayRef<support::ulittle32_t>
   getStreamBlockList(uint32_t StreamIndex) const override;
@@ -83,6 +83,8 @@ public:
 
   ArrayRef<support::ulittle32_t> getDirectoryBlockArray() const;
 
+  std::unique_ptr<msf::MappedBlockStream> createIndexedStream(uint16_t SN);
+
   msf::MSFStreamLayout getStreamLayout(uint32_t StreamIdx) const;
   msf::MSFStreamLayout getFpmStreamLayout() const;
 
@@ -102,7 +104,7 @@ public:
 
   bool hasPDBDbiStream() const;
   bool hasPDBGlobalsStream();
-  bool hasPDBInfoStream();
+  bool hasPDBInfoStream() const;
   bool hasPDBIpiStream() const;
   bool hasPDBPublicsStream();
   bool hasPDBSymbolStream();

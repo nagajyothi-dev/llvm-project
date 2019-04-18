@@ -1,38 +1,38 @@
 ===================================================
-Extra Clang Tools 6.0.0 (In-Progress) Release Notes
+Extra Clang Tools 9.0.0 (In-Progress) Release Notes
 ===================================================
 
 .. contents::
    :local:
    :depth: 3
 
-Written by the `LLVM Team <http://llvm.org/>`_
+Written by the `LLVM Team <https://llvm.org/>`_
 
 .. warning::
 
-   These are in-progress notes for the upcoming Extra Clang Tools 6 release.
+   These are in-progress notes for the upcoming Extra Clang Tools 9 release.
    Release notes for previous releases can be found on
-   `the Download Page <http://releases.llvm.org/download.html>`_.
+   `the Download Page <https://releases.llvm.org/download.html>`_.
 
 Introduction
 ============
 
 This document contains the release notes for the Extra Clang Tools, part of the
-Clang release 6.0.0. Here we describe the status of the Extra Clang Tools in
+Clang release 9.0.0. Here we describe the status of the Extra Clang Tools in
 some detail, including major improvements from the previous release and new
 feature work. All LLVM releases may be downloaded from the `LLVM releases web
-site <http://llvm.org/releases/>`_.
+site <https://llvm.org/releases/>`_.
 
 For more information about Clang or LLVM, including information about
-the latest release, please see the `Clang Web Site <http://clang.llvm.org>`_ or
-the `LLVM Web Site <http://llvm.org>`_.
+the latest release, please see the `Clang Web Site <https://clang.llvm.org>`_ or
+the `LLVM Web Site <https://llvm.org>`_.
 
 Note that if you are reading this file from a Subversion checkout or the
 main Clang web page, this document applies to the *next* release, not
 the current one. To see the release notes for a specific release, please
-see the `releases page <http://llvm.org/releases/>`_.
+see the `releases page <https://llvm.org/releases/>`_.
 
-What's New in Extra Clang Tools 6.0.0?
+What's New in Extra Clang Tools 9.0.0?
 ======================================
 
 Some of the major new features and improvements to Extra Clang Tools are listed
@@ -44,10 +44,20 @@ Major New Features
 
 ...
 
+Improvements to clangd
+----------------------
+
+The improvements are...
+
+Improvements to clang-doc
+-------------------------
+
+The improvements are...
+
 Improvements to clang-query
 ---------------------------
 
-The improvements are...
+- ...
 
 Improvements to clang-rename
 ----------------------------
@@ -57,89 +67,84 @@ The improvements are...
 Improvements to clang-tidy
 --------------------------
 
-- Renamed checks to use correct term "implicit conversion" instead of "implicit
-  cast" and modified messages and option names accordingly:
+- New OpenMP module.
 
-    * **performance-implicit-cast-in-loop** was renamed to
-      `performance-implicit-conversion-in-loop
-      <http://clang.llvm.org/extra/clang-tidy/checks/performance-implicit-conversion-in-loop.html>`_
-    * **readability-implicit-bool-cast** was renamed to
-      `readability-implicit-bool-conversion
-      <http://clang.llvm.org/extra/clang-tidy/checks/readability-implicit-bool-conversion.html>`_;
-      the check's options were renamed as follows:
-      ``AllowConditionalIntegerCasts`` -> ``AllowIntegerConditions``,
-      ``AllowConditionalPointerCasts`` -> ``AllowPointerConditions``.
+  For checks specific to `OpenMP <https://www.openmp.org/>`_ API.
 
-- New `android-cloexec-accept
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-accept.html>`_ check
+- New :doc:`abseil-duration-addition
+  <clang-tidy/checks/abseil-duration-addition>` check.
 
-  Detects usage of ``accept()``.
+  Checks for cases where addition should be performed in the ``absl::Time``
+  domain.
 
-- New `android-cloexec-accept4
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-accept4.html>`_ check
+- New :doc:`abseil-duration-conversion-cast
+  <clang-tidy/checks/abseil-duration-conversion-cast>` check.
 
-  Checks if the required file flag ``SOCK_CLOEXEC`` is present in the argument of
-  ``accept4()``.
+  Checks for casts of ``absl::Duration`` conversion functions, and recommends
+  the right conversion function instead.
 
-- New `android-cloexec-dup
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-dup.html>`_ check
+- New :doc:`abseil-duration-unnecessary-conversion
+  <clang-tidy/checks/abseil-duration-unnecessary-conversion>` check.
 
-  Detects usage of ``dup()``.
+  Finds and fixes cases where ``absl::Duration`` values are being converted to
+  numeric types and back again.
 
-- New `android-cloexec-inotify-init
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-inotify-init.html>`_ check
+- New :doc:`abseil-time-comparison
+  <clang-tidy/checks/abseil-time-comparison>` check.
 
-  Detects usage of ``inotify_init()``.
+  Prefer comparisons in the ``absl::Time`` domain instead of the integer
+  domain.
 
-- New `android-cloexec-epoll-create1
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-epoll-create1.html>`_ check
+- New :doc:`abseil-time-subtraction
+  <clang-tidy/checks/abseil-time-subtraction>` check.
 
-  Checks if the required file flag ``EPOLL_CLOEXEC`` is present in the argument of
-  ``epoll_create1()``.
+  Finds and fixes ``absl::Time`` subtraction expressions to do subtraction
+  in the Time domain instead of the numeric domain.
 
-- New `android-cloexec-epoll-create
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-epoll-create.html>`_ check
+- New :doc:`google-readability-avoid-underscore-in-googletest-name
+  <clang-tidy/checks/google-readability-avoid-underscore-in-googletest-name>`
+  check.
 
-  Detects usage of ``epoll_create()``.
+  Checks whether there are underscores in googletest test and test case names in
+  test macros, which is prohibited by the Googletest FAQ.
 
-- New `android-cloexec-memfd_create
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-memfd_create.html>`_ check
+- New alias :doc:`cppcoreguidelines-explicit-virtual-functions
+  <clang-tidy/checks/cppcoreguidelines-explicit-virtual-functions>` to
+  :doc:`modernize-use-override
+  <clang-tidy/checks/modernize-use-override>` was added.
 
-  Checks if the required file flag ``MFD_CLOEXEC`` is present in the argument
-  of ``memfd_create()``.
+- The :doc:`bugprone-argument-comment
+  <clang-tidy/checks/bugprone-argument-comment>` now supports
+  `CommentBoolLiterals`, `CommentIntegerLiterals`, `CommentFloatLiterals`,
+  `CommentUserDefiniedLiterals`, `CommentStringLiterals`,
+  `CommentCharacterLiterals` & `CommentNullPtrs` options.
 
-- New `bugprone-integer-division
-  <http://clang.llvm.org/extra/clang-tidy/checks/bugprone-integer-division.html>`_ check
+- The :doc:`google-runtime-int <clang-tidy/checks/google-runtime-int>`
+  check has been disabled in Objective-C++.
 
-  Finds cases where integer division in a floating point context is likely to
-  cause unintended loss of precision.
+- The `Acronyms` and `IncludeDefaultAcronyms` options for the
+  :doc:`objc-property-declaration <clang-tidy/checks/objc-property-declaration>`
+  check have been removed.
 
-- New `hicpp-exception-baseclass
-  <http://clang.llvm.org/extra/clang-tidy/checks/hicpp-exception-baseclass.html>`_ check
+- The :doc:`modernize-use-override
+  <clang-tidy/checks/modernize-use-override>` now supports `OverrideSpelling`
+  and `FinalSpelling` options.
 
-  Ensures that all exception will be instances of ``std::exception`` and classes 
-  that are derived from it.
+- New :doc:`openmp-exception-escape
+  <clang-tidy/checks/openmp-exception-escape>` check.
 
-- New `android-cloexec-inotify-init1
-  <http://clang.llvm.org/extra/clang-tidy/checks/android-cloexec-inotify-init1.html>`_ check
+  Analyzes OpenMP Structured Blocks and checks that no exception escapes
+  out of the Structured Block it was thrown in.
 
-  Checks if the required file flag ``IN_CLOEXEC`` is present in the argument of
-  ``inotify_init1()``.
+- New :doc:`openmp-use-default-none
+  <clang-tidy/checks/openmp-use-default-none>` check.
 
-- New `readability-static-accessed-through-instance
-  <http://clang.llvm.org/extra/clang-tidy/checks/readability-static-accessed-through-instance.html>`_ check
+  Finds OpenMP directives that are allowed to contain a ``default`` clause,
+  but either don't specify it or the clause is specified but with the kind
+  other than ``none``, and suggests to use the ``default(none)`` clause.
 
-  Finds member expressions that access static members through instances and
-  replaces them with uses of the appropriate qualified-id.
-
-- Added `modernize-use-emplace.IgnoreImplicitConstructors
-  <http://clang.llvm.org/extra/clang-tidy/checks/modernize-use-emplace.html#cmdoption-arg-IgnoreImplicitConstructors>`_
-  option.
-
-- Added alias `hicpp-braces-around-statements <http://clang.llvm.org/extra/clang-tidy/checks/hicpp-braces-around-statements.html>`_ 
-
-Improvements to include-fixer
------------------------------
+Improvements to clang-include-fixer
+-----------------------------------
 
 The improvements are...
 
@@ -147,3 +152,9 @@ Improvements to modularize
 --------------------------
 
 The improvements are...
+
+Improvements to pp-trace
+------------------------
+
+- Added a new option `-callbacks` to filter preprocessor callbacks. It replaces
+  the `-ignore` option.

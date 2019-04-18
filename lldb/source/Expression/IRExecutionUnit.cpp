@@ -1,9 +1,8 @@
 //===-- IRExecutionUnit.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,17 +32,18 @@
 #include "lldb/Utility/Log.h"
 
 #include "lldb/../../source/Plugins/Language/CPlusPlus/CPlusPlusLanguage.h"
+#include "lldb/../../source/Plugins/ObjectFile/JIT/ObjectFileJIT.h"
 
 using namespace lldb_private;
 
-IRExecutionUnit::IRExecutionUnit(std::unique_ptr<llvm::LLVMContext> &context_ap,
-                                 std::unique_ptr<llvm::Module> &module_ap,
+IRExecutionUnit::IRExecutionUnit(std::unique_ptr<llvm::LLVMContext> &context_up,
+                                 std::unique_ptr<llvm::Module> &module_up,
                                  ConstString &name,
                                  const lldb::TargetSP &target_sp,
                                  const SymbolContext &sym_ctx,
                                  std::vector<std::string> &cpu_features)
-    : IRMemoryMap(target_sp), m_context_ap(context_ap.release()),
-      m_module_ap(module_ap.release()), m_module(m_module_ap.get()),
+    : IRMemoryMap(target_sp), m_context_up(context_up.release()),
+      m_module_up(module_up.release()), m_module(m_module_up.get()),
       m_cpu_features(cpu_features), m_name(name), m_sym_ctx(sym_ctx),
       m_did_jit(false), m_function_load_addr(LLDB_INVALID_ADDRESS),
       m_function_end_load_addr(LLDB_INVALID_ADDRESS),
@@ -212,7 +212,7 @@ static void ReportInlineAsmError(const llvm::SMDiagnostic &diagnostic,
   }
 }
 
-void IRExecutionUnit::ReportSymbolLookupError(const ConstString &name) {
+void IRExecutionUnit::ReportSymbolLookupError(ConstString name) {
   m_failed_lookups.push_back(name);
 }
 
@@ -267,18 +267,17 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
     relocModel = llvm::Reloc::PIC_;
   }
 
-  m_module_ap->getContext().setInlineAsmDiagnosticHandler(ReportInlineAsmError,
+  m_module_up->getContext().setInlineAsmDiagnosticHandler(ReportInlineAsmError,
                                                           &error);
 
-  llvm::EngineBuilder builder(std::move(m_module_ap));
+  llvm::EngineBuilder builder(std::move(m_module_up));
 
   builder.setEngineKind(llvm::EngineKind::JIT)
       .setErrorStr(&error_string)
       .setRelocationModel(relocModel)
       .setMCJITMemoryManager(
           std::unique_ptr<MemoryManager>(new MemoryManager(*this)))
-      .setOptLevel(llvm::CodeGenOpt::Less)
-      .setUseOrcMCJITReplacement(true);
+      .setOptLevel(llvm::CodeGenOpt::Less);
 
   llvm::StringRef mArch;
   llvm::StringRef mCPU;
@@ -290,12 +289,12 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
   llvm::TargetMachine *target_machine =
       builder.selectTarget(triple, mArch, mCPU, mAttrs);
 
-  m_execution_engine_ap.reset(builder.create(target_machine));
+  m_execution_engine_up.reset(builder.create(target_machine));
 
   m_strip_underscore =
-      (m_execution_engine_ap->getDataLayout().getGlobalPrefix() == '_');
+      (m_execution_engine_up->getDataLayout().getGlobalPrefix() == '_');
 
-  if (!m_execution_engine_ap.get()) {
+  if (!m_execution_engine_up) {
     error.SetErrorToGenericError();
     error.SetErrorStringWithFormat("Couldn't JIT the function: %s",
                                    error_string.c_str());
@@ -324,15 +323,15 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
   };
 
   if (process_sp->GetTarget().GetEnableSaveObjects()) {
-    m_object_cache_ap = llvm::make_unique<ObjectDumper>();
-    m_execution_engine_ap->setObjectCache(m_object_cache_ap.get());
+    m_object_cache_up = llvm::make_unique<ObjectDumper>();
+    m_execution_engine_up->setObjectCache(m_object_cache_up.get());
   }
 
   // Make sure we see all sections, including ones that don't have
   // relocations...
-  m_execution_engine_ap->setProcessAllSections(true);
+  m_execution_engine_up->setProcessAllSections(true);
 
-  m_execution_engine_ap->DisableLazyCompilation();
+  m_execution_engine_up->DisableLazyCompilation();
 
   for (llvm::Function &function : *m_module) {
     if (function.isDeclaration() || function.hasPrivateLinkage())
@@ -341,7 +340,7 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
     const bool external =
         function.hasExternalLinkage() || function.hasLinkOnceODRLinkage();
 
-    void *fun_ptr = m_execution_engine_ap->getPointerToFunction(&function);
+    void *fun_ptr = m_execution_engine_up->getPointerToFunction(&function);
 
     if (!error.Success()) {
       // We got an error through our callback!
@@ -360,28 +359,25 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
   }
 
   CommitAllocations(process_sp);
-  ReportAllocations(*m_execution_engine_ap);
+  ReportAllocations(*m_execution_engine_up);
 
   // We have to do this after calling ReportAllocations because for the MCJIT,
-  // getGlobalValueAddress
-  // will cause the JIT to perform all relocations.  That can only be done once,
-  // and has to happen
-  // after we do the remapping from local -> remote.
-  // That means we don't know the local address of the Variables, but we don't
-  // need that for anything,
-  // so that's okay.
+  // getGlobalValueAddress will cause the JIT to perform all relocations.  That
+  // can only be done once, and has to happen after we do the remapping from
+  // local -> remote. That means we don't know the local address of the
+  // Variables, but we don't need that for anything, so that's okay.
 
   std::function<void(llvm::GlobalValue &)> RegisterOneValue = [this](
       llvm::GlobalValue &val) {
     if (val.hasExternalLinkage() && !val.isDeclaration()) {
       uint64_t var_ptr_addr =
-          m_execution_engine_ap->getGlobalValueAddress(val.getName().str());
+          m_execution_engine_up->getGlobalValueAddress(val.getName().str());
 
       lldb::addr_t remote_addr = GetRemoteAddressForLocal(var_ptr_addr);
 
       // This is a really unfortunae API that sometimes returns local addresses
-      // and sometimes returns remote addresses, based on whether
-      // the variable was relocated during ReportAllocations or not.
+      // and sometimes returns remote addresses, based on whether the variable
+      // was relocated during ReportAllocations or not.
 
       if (remote_addr == LLDB_INVALID_ADDRESS) {
         remote_addr = var_ptr_addr;
@@ -410,7 +406,7 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
 
     bool emitNewLine = false;
 
-    for (const ConstString &failed_lookup : m_failed_lookups) {
+    for (ConstString failed_lookup : m_failed_lookups) {
       if (emitNewLine)
         ss.PutCString("\n");
       emitNewLine = true;
@@ -492,13 +488,13 @@ void IRExecutionUnit::GetRunnableInfo(Status &error, lldb::addr_t &func_addr,
 }
 
 IRExecutionUnit::~IRExecutionUnit() {
-  m_module_ap.reset();
-  m_execution_engine_ap.reset();
-  m_context_ap.reset();
+  m_module_up.reset();
+  m_execution_engine_up.reset();
+  m_context_up.reset();
 }
 
 IRExecutionUnit::MemoryManager::MemoryManager(IRExecutionUnit &parent)
-    : m_default_mm_ap(new llvm::SectionMemoryManager()), m_parent(parent) {}
+    : m_default_mm_up(new llvm::SectionMemoryManager()), m_parent(parent) {}
 
 IRExecutionUnit::MemoryManager::~MemoryManager() {}
 
@@ -556,6 +552,8 @@ lldb::SectionType IRExecutionUnit::GetSectionTypeFromSectionName(
           sect_type = lldb::eSectionTypeDWARFDebugLine;
         else if (dwarf_name.equals("loc"))
           sect_type = lldb::eSectionTypeDWARFDebugLoc;
+        else if (dwarf_name.equals("loclists"))
+          sect_type = lldb::eSectionTypeDWARFDebugLocLists;
         break;
 
       case 'm':
@@ -585,33 +583,9 @@ lldb::SectionType IRExecutionUnit::GetSectionTypeFromSectionName(
       default:
         break;
       }
-    } else if (name.startswith("__apple_") || name.startswith(".apple_")) {
-#if 0
-            const uint32_t name_idx = name[0] == '_' ? 8 : 7;
-            llvm::StringRef apple_name(name.substr(name_idx));
-            switch (apple_name[0])
-            {
-                case 'n':
-                    if (apple_name.equals("names"))
-                        sect_type = lldb::eSectionTypeDWARFAppleNames;
-                    else if (apple_name.equals("namespac") || apple_name.equals("namespaces"))
-                        sect_type = lldb::eSectionTypeDWARFAppleNamespaces;
-                    break;
-                case 't':
-                    if (apple_name.equals("types"))
-                        sect_type = lldb::eSectionTypeDWARFAppleTypes;
-                    break;
-                case 'o':
-                    if (apple_name.equals("objc"))
-                        sect_type = lldb::eSectionTypeDWARFAppleObjC;
-                    break;
-                default:
-                    break;
-            }
-#else
+    } else if (name.startswith("__apple_") || name.startswith(".apple_"))
       sect_type = lldb::eSectionTypeInvalid;
-#endif
-    } else if (name.equals("__objc_imageinfo"))
+    else if (name.equals("__objc_imageinfo"))
       sect_type = lldb::eSectionTypeOther;
   }
   return sect_type;
@@ -622,7 +596,7 @@ uint8_t *IRExecutionUnit::MemoryManager::allocateCodeSection(
     llvm::StringRef SectionName) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
-  uint8_t *return_value = m_default_mm_ap->allocateCodeSection(
+  uint8_t *return_value = m_default_mm_up->allocateCodeSection(
       Size, Alignment, SectionID, SectionName);
 
   m_parent.m_records.push_back(AllocationRecord(
@@ -653,7 +627,7 @@ uint8_t *IRExecutionUnit::MemoryManager::allocateDataSection(
     llvm::StringRef SectionName, bool IsReadOnly) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
-  uint8_t *return_value = m_default_mm_ap->allocateDataSection(
+  uint8_t *return_value = m_default_mm_up->allocateDataSection(
       Size, Alignment, SectionID, SectionName, IsReadOnly);
 
   uint32_t permissions = lldb::ePermissionsReadable;
@@ -681,7 +655,7 @@ uint8_t *IRExecutionUnit::MemoryManager::allocateDataSection(
 }
 
 static ConstString
-FindBestAlternateMangledName(const ConstString &demangled,
+FindBestAlternateMangledName(ConstString demangled,
                              const lldb::LanguageType &lang_type,
                              const SymbolContext &sym_ctx) {
   CPlusPlusLanguage::MethodName cpp_name(demangled);
@@ -734,15 +708,16 @@ FindBestAlternateMangledName(const ConstString &demangled,
 
 struct IRExecutionUnit::SearchSpec {
   ConstString name;
-  uint32_t mask;
+  lldb::FunctionNameType mask;
 
-  SearchSpec(ConstString n, uint32_t m = lldb::eFunctionNameTypeFull)
+  SearchSpec(ConstString n,
+             lldb::FunctionNameType m = lldb::eFunctionNameTypeFull)
       : name(n), mask(m) {}
 };
 
 void IRExecutionUnit::CollectCandidateCNames(
     std::vector<IRExecutionUnit::SearchSpec> &C_specs,
-    const ConstString &name) {
+    ConstString name) {
   if (m_strip_underscore && name.AsCString()[0] == '_')
     C_specs.insert(C_specs.begin(), ConstString(&name.AsCString()[1]));
   C_specs.push_back(SearchSpec(name));
@@ -752,7 +727,7 @@ void IRExecutionUnit::CollectCandidateCPlusPlusNames(
     std::vector<IRExecutionUnit::SearchSpec> &CPP_specs,
     const std::vector<SearchSpec> &C_specs, const SymbolContext &sc) {
   for (const SearchSpec &C_spec : C_specs) {
-    const ConstString &name = C_spec.name;
+    ConstString name = C_spec.name;
 
     if (CPlusPlusLanguage::IsCPPMangledName(name.GetCString())) {
       Mangled mangled(name, true);
@@ -784,7 +759,7 @@ void IRExecutionUnit::CollectFallbackNames(
   // but the DWARF doesn't always encode "extern C" correctly.
 
   for (const SearchSpec &C_spec : C_specs) {
-    const ConstString &name = C_spec.name;
+    ConstString name = C_spec.name;
 
     if (CPlusPlusLanguage::IsCPPMangledName(name.GetCString())) {
       Mangled mangled_name(name);
@@ -907,8 +882,8 @@ lldb::addr_t IRExecutionUnit::FindInSymbols(
     if (get_external_load_address(load_address, sc_list, sc)) {
       return load_address;
     }
-    // if there are any searches we try after this, add an sc_list.Clear() in an
-    // "else" clause here
+    // if there are any searches we try after this, add an sc_list.Clear() in
+    // an "else" clause here
 
     if (best_internal_load_address != LLDB_INVALID_ADDRESS) {
       return best_internal_load_address;
@@ -963,7 +938,7 @@ lldb::addr_t IRExecutionUnit::FindInUserDefinedSymbols(
 }
 
 lldb::addr_t
-IRExecutionUnit::FindSymbol(const lldb_private::ConstString &name) {
+IRExecutionUnit::FindSymbol(lldb_private::ConstString name) {
   std::vector<SearchSpec> candidate_C_names;
   std::vector<SearchSpec> candidate_CPlusPlus_names;
 
@@ -1037,7 +1012,7 @@ IRExecutionUnit::MemoryManager::getSymbolAddress(const std::string &Name) {
           Name.c_str());
 
     m_parent.ReportSymbolLookupError(name_cs);
-    return 0xbad0bad0;
+    return 0;
   } else {
     if (log)
       log->Printf("IRExecutionUnit::getSymbolAddress(Name=\"%s\") = %" PRIx64,
@@ -1110,10 +1085,12 @@ bool IRExecutionUnit::CommitOneAllocation(lldb::ProcessSP &process_sp,
   case lldb::eSectionTypeDWARFDebugAbbrev:
   case lldb::eSectionTypeDWARFDebugAddr:
   case lldb::eSectionTypeDWARFDebugAranges:
+  case lldb::eSectionTypeDWARFDebugCuIndex:
   case lldb::eSectionTypeDWARFDebugFrame:
   case lldb::eSectionTypeDWARFDebugInfo:
   case lldb::eSectionTypeDWARFDebugLine:
   case lldb::eSectionTypeDWARFDebugLoc:
+  case lldb::eSectionTypeDWARFDebugLocLists:
   case lldb::eSectionTypeDWARFDebugMacInfo:
   case lldb::eSectionTypeDWARFDebugPubNames:
   case lldb::eSectionTypeDWARFDebugPubTypes:
@@ -1124,6 +1101,7 @@ bool IRExecutionUnit::CommitOneAllocation(lldb::ProcessSP &process_sp,
   case lldb::eSectionTypeDWARFAppleTypes:
   case lldb::eSectionTypeDWARFAppleNamespaces:
   case lldb::eSectionTypeDWARFAppleObjC:
+  case lldb::eSectionTypeDWARFGNUDebugAltLink:
     error.Clear();
     break;
   default:
@@ -1238,28 +1216,28 @@ void IRExecutionUnit::PopulateSectionList(
   }
 }
 
-bool IRExecutionUnit::GetArchitecture(lldb_private::ArchSpec &arch) {
+ArchSpec IRExecutionUnit::GetArchitecture() {
   ExecutionContext exe_ctx(GetBestExecutionContextScope());
-  Target *target = exe_ctx.GetTargetPtr();
-  if (target)
-    arch = target->GetArchitecture();
-  else
-    arch.Clear();
-  return arch.IsValid();
+  if(Target *target = exe_ctx.GetTargetPtr())
+    return target->GetArchitecture();
+  return ArchSpec();
 }
 
 lldb::ModuleSP IRExecutionUnit::GetJITModule() {
   ExecutionContext exe_ctx(GetBestExecutionContextScope());
   Target *target = exe_ctx.GetTargetPtr();
-  if (target) {
-    lldb::ModuleSP jit_module_sp = lldb_private::Module::CreateJITModule(
-        std::static_pointer_cast<lldb_private::ObjectFileJITDelegate>(
-            shared_from_this()));
-    if (jit_module_sp) {
-      bool changed = false;
-      jit_module_sp->SetLoadAddress(*target, 0, true, changed);
-    }
-    return jit_module_sp;
-  }
-  return lldb::ModuleSP();
+  if (!target)
+    return nullptr;
+
+  auto Delegate = std::static_pointer_cast<lldb_private::ObjectFileJITDelegate>(
+      shared_from_this());
+
+  lldb::ModuleSP jit_module_sp =
+      lldb_private::Module::CreateModuleFromObjectFile<ObjectFileJIT>(Delegate);
+  if (!jit_module_sp)
+    return nullptr;
+
+  bool changed = false;
+  jit_module_sp->SetLoadAddress(*target, 0, true, changed);
+  return jit_module_sp;
 }

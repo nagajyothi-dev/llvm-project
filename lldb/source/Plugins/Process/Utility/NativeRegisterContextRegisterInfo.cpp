@@ -1,9 +1,8 @@
 //===-- NativeRegisterContextRegisterInfo.cpp -------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,9 +13,9 @@
 using namespace lldb_private;
 
 NativeRegisterContextRegisterInfo::NativeRegisterContextRegisterInfo(
-    NativeThreadProtocol &thread, uint32_t concrete_frame_idx,
+    NativeThreadProtocol &thread,
     RegisterInfoInterface *register_info_interface)
-    : NativeRegisterContext(thread, concrete_frame_idx),
+    : NativeRegisterContext(thread),
       m_register_info_interface_up(register_info_interface) {
   assert(register_info_interface && "null register_info_interface");
 }

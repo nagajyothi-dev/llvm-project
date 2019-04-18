@@ -1,9 +1,8 @@
 //===-- HostProcessWindows.cpp ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,7 +56,7 @@ Status HostProcessWindows::GetMainModule(FileSpec &file_spec) const {
   if (::GetProcessImageFileNameW(m_process, wpath.data(), wpath.size())) {
     std::string path;
     if (llvm::convertWideToUTF8(wpath.data(), path))
-      file_spec.SetFile(path, false);
+      file_spec.SetFile(path, FileSpec::Style::native);
     else
       error.SetErrorString("Error converting path to UTF-8");
   } else
@@ -88,8 +87,8 @@ HostThread HostProcessWindows::StartMonitoring(
   info->callback = callback;
 
   // Since the life of this HostProcessWindows instance and the life of the
-  // process may be different, duplicate the handle so that
-  // the monitor thread can have ownership over its own copy of the handle.
+  // process may be different, duplicate the handle so that the monitor thread
+  // can have ownership over its own copy of the handle.
   HostThread result;
   if (::DuplicateHandle(GetCurrentProcess(), m_process, GetCurrentProcess(),
                         &info->process_handle, 0, FALSE, DUPLICATE_SAME_ACCESS))

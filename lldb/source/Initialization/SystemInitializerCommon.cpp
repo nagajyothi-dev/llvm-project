@@ -1,9 +1,8 @@
 //===-- SystemInitializerCommon.cpp -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,17 +13,14 @@
 #include "Plugins/Instruction/MIPS64/EmulateInstructionMIPS64.h"
 #include "Plugins/ObjectContainer/BSD-Archive/ObjectContainerBSDArchive.h"
 #include "Plugins/ObjectContainer/Universal-Mach-O/ObjectContainerUniversalMachO.h"
-#include "Plugins/ObjectFile/ELF/ObjectFileELF.h"
-#include "Plugins/ObjectFile/PECOFF/ObjectFilePECOFF.h"
 #include "Plugins/Process/gdb-remote/ProcessGDBRemoteLog.h"
+#include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostInfo.h"
+#include "lldb/Host/Socket.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/Reproducer.h"
 #include "lldb/Utility/Timer.h"
-
-#if defined(__APPLE__)
-#include "Plugins/ObjectFile/Mach-O/ObjectFileMachO.h"
-#endif
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__)
 #include "Plugins/Process/POSIX/ProcessPOSIXLog.h"
@@ -35,18 +31,18 @@
 #include "lldb/Host/windows/windows.h"
 #endif
 
-#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include <string>
 
 using namespace lldb_private;
+using namespace lldb_private::repro;
 
 SystemInitializerCommon::SystemInitializerCommon() {}
 
 SystemInitializerCommon::~SystemInitializerCommon() {}
 
-void SystemInitializerCommon::Initialize() {
+llvm::Error SystemInitializerCommon::Initialize() {
 #if defined(_MSC_VER)
   const char *disable_crash_dialog_var = getenv("LLDB_DISABLE_CRASH_DIALOG");
   if (disable_crash_dialog_var &&
@@ -69,9 +65,37 @@ void SystemInitializerCommon::Initialize() {
   }
 #endif
 
-  llvm::EnablePrettyStackTrace();
-  InitializeLog();
+  // If the reproducer wasn't initialized before, we can safely assume it's
+  // off.
+  if (!Reproducer::Initialized()) {
+    if (auto e = Reproducer::Initialize(ReproducerMode::Off, llvm::None))
+      return e;
+  }
+
+  // Initialize the file system.
+  auto &r = repro::Reproducer::Instance();
+  if (repro::Loader *loader = r.GetLoader()) {
+    FileSpec vfs_mapping = loader->GetFile<FileInfo>();
+    if (vfs_mapping) {
+      if (llvm::Error e = FileSystem::Initialize(vfs_mapping))
+        return e;
+    } else {
+      FileSystem::Initialize();
+    }
+  } else if (repro::Generator *g = r.GetGenerator()) {
+    repro::FileProvider &fp = g->GetOrCreate<repro::FileProvider>();
+    FileSystem::Initialize(fp.GetFileCollector());
+  } else {
+    FileSystem::Initialize();
+  }
+
+  Log::Initialize();
   HostInfo::Initialize();
+
+  llvm::Error error = Socket::Initialize();
+  if (error)
+    return error;
+
   static Timer::Category func_cat(LLVM_PRETTY_FUNCTION);
   Timer scoped_timer(func_cat, LLVM_PRETTY_FUNCTION);
 
@@ -79,49 +103,42 @@ void SystemInitializerCommon::Initialize() {
 
   // Initialize plug-ins
   ObjectContainerBSDArchive::Initialize();
-  ObjectFileELF::Initialize();
-  ObjectFilePECOFF::Initialize();
 
   EmulateInstructionARM::Initialize();
   EmulateInstructionMIPS::Initialize();
   EmulateInstructionMIPS64::Initialize();
 
-  //----------------------------------------------------------------------
   // Apple/Darwin hosted plugins
-  //----------------------------------------------------------------------
   ObjectContainerUniversalMachO::Initialize();
 
-#if defined(__APPLE__)
-  ObjectFileMachO::Initialize();
-#endif
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__)
   ProcessPOSIXLog::Initialize();
 #endif
 #if defined(_MSC_VER)
   ProcessWindowsLog::Initialize();
 #endif
+
+  return llvm::Error::success();
 }
 
 void SystemInitializerCommon::Terminate() {
   static Timer::Category func_cat(LLVM_PRETTY_FUNCTION);
   Timer scoped_timer(func_cat, LLVM_PRETTY_FUNCTION);
   ObjectContainerBSDArchive::Terminate();
-  ObjectFileELF::Terminate();
-  ObjectFilePECOFF::Terminate();
 
   EmulateInstructionARM::Terminate();
   EmulateInstructionMIPS::Terminate();
   EmulateInstructionMIPS64::Terminate();
 
   ObjectContainerUniversalMachO::Terminate();
-#if defined(__APPLE__)
-  ObjectFileMachO::Terminate();
-#endif
 
 #if defined(_MSC_VER)
   ProcessWindowsLog::Terminate();
 #endif
 
+  Socket::Terminate();
   HostInfo::Terminate();
   Log::DisableAllLogChannels();
+  FileSystem::Terminate();
+  Reproducer::Terminate();
 }

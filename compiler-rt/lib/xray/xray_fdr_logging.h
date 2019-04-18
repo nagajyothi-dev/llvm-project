@@ -1,9 +1,8 @@
 //===-- xray_fdr_logging.h ------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -30,6 +29,7 @@ XRayLogInitStatus fdrLoggingInit(size_t BufferSize, size_t BufferMax,
                                  void *Options, size_t OptionsSize);
 XRayLogInitStatus fdrLoggingFinalize();
 void fdrLoggingHandleArg0(int32_t FuncId, XRayEntryType Entry);
+void fdrLoggingHandleArg1(int32_t FuncId, XRayEntryType Entry, uint64_t Arg1);
 XRayLogFlushStatus fdrLoggingFlush();
 XRayLogInitStatus fdrLoggingReset();
 

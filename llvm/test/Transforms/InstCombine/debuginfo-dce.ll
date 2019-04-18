@@ -23,6 +23,9 @@ target triple = "x86_64-apple-macosx10.12.0"
 
 %struct.entry = type { %struct.entry* }
 
+; This salvage can't currently occur safely (PR40628), however if/when that's
+; ever fixed, then this is definitely a piece of test coverage that should
+; be maintained.
 define void @salvage_load(%struct.entry** %queue) local_unnamed_addr #0 !dbg !14 {
 entry:
   %im_not_dead = alloca %struct.entry*
@@ -31,8 +34,7 @@ entry:
   call void @llvm.dbg.value(metadata %struct.entry* %1, metadata !18, metadata !20), !dbg !19
 ; CHECK: define void @salvage_load
 ; CHECK-NEXT: entry:
-; CHECK-NEXT: call void @llvm.dbg.value(metadata %struct.entry** %queue,
-; CHECK-SAME:                           metadata ![[LOAD_EXPR:[0-9]+]])
+; CHECK-NOT: dbg.value
   store %struct.entry* %1, %struct.entry** %im_not_dead, align 8
   ret void, !dbg !21
 }
@@ -46,7 +48,7 @@ entry:
 ; CHECK: define void @salvage_bitcast
 ; CHECK-NEXT: entry:
 ; CHECK-NEXT: call void @llvm.dbg.value(metadata %struct.entry* %queue,
-; CHECK-SAME:                           metadata ![[BITCAST_EXPR:[0-9]+]])
+; CHECK-SAME:                           metadata !DIExpression(DW_OP_plus_uconst, 0))
   store i8* %1, i8** %im_not_dead, align 8
   ret void, !dbg !23
 }
@@ -60,7 +62,7 @@ entry:
 ; CHECK: define void @salvage_gep0
 ; CHECK-NEXT: entry:
 ; CHECK-NEXT: call void @llvm.dbg.value(metadata %struct.entry* %queue,
-; CHECK-SAME:                           metadata ![[GEP0_EXPR:[0-9]+]])
+; CHECK-SAME:                           metadata !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_plus_uconst, 0, DW_OP_stack_value))
   store %struct.entry** %1, %struct.entry*** %im_not_dead, align 8
   ret void, !dbg !26
 }
@@ -74,7 +76,7 @@ entry:
 ; CHECK: define void @salvage_gep1
 ; CHECK-NEXT: entry:
 ; CHECK-NEXT: call void @llvm.dbg.value(metadata %struct.entry* %queue,
-; CHECK-SAME:                           metadata ![[GEP1_EXPR:[0-9]+]])
+; CHECK-SAME:     metadata !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_stack_value, DW_OP_LLVM_fragment, 0, 32))
   store %struct.entry** %1, %struct.entry*** %im_not_dead, align 8
   ret void, !dbg !29
 }
@@ -88,17 +90,10 @@ entry:
 ; CHECK: define void @salvage_gep2
 ; CHECK-NEXT: entry:
 ; CHECK-NEXT: call void @llvm.dbg.value(metadata %struct.entry* %queue,
-; CHECK-SAME:                           metadata ![[GEP2_EXPR:[0-9]+]])
+; CHECK-SAME:     metadata !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_stack_value))
   store %struct.entry** %1, %struct.entry*** %im_not_dead, align 8
   ret void, !dbg !32
 }
-
-; CHECK: ![[LOAD_EXPR]] = !DIExpression(DW_OP_deref, DW_OP_plus_uconst, 0)
-; CHECK: ![[BITCAST_EXPR]] = !DIExpression(DW_OP_plus_uconst, 0)
-; CHECK: ![[GEP0_EXPR]] = !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_plus_uconst, 0, DW_OP_stack_value)
-; CHECK: ![[GEP1_EXPR]] = !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_stack_value,
-; CHECK-SAME:                           DW_OP_LLVM_fragment, 0, 32)
-; CHECK: ![[GEP2_EXPR]] = !DIExpression(DW_OP_constu, 8, DW_OP_minus, DW_OP_stack_value)
 
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.value(metadata, metadata, metadata) #1
@@ -124,7 +119,7 @@ attributes #1 = { nounwind readnone }
 !11 = !{i32 2, !"Debug Info Version", i32 3}
 !12 = !{i32 1, !"PIC Level", i32 2}
 !13 = !{!"clang version 5.0.0 (trunk 297628) (llvm/trunk 297643)"}
-!14 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!14 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !15 = !DISubroutineType(types: !16)
 !16 = !{null, !4, !4}
 !17 = !{!18}
@@ -132,15 +127,15 @@ attributes #1 = { nounwind readnone }
 !19 = !DILocation(line: 6, column: 17, scope: !14)
 !20 = !DIExpression(DW_OP_plus_uconst, 0)
 !21 = !DILocation(line: 11, column: 1, scope: !14)
-!22 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!22 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !23 = !DILocation(line: 6, column: 17, scope: !22)
 !24 = !DILocalVariable(name: "entry", scope: !22, file: !1, line: 6, type: !4)
-!25 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!25 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !26 = !DILocation(line: 6, column: 17, scope: !25)
 !27 = !DILocalVariable(name: "entry", scope: !25, file: !1, line: 6, type: !4)
-!28 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!28 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !29 = !DILocation(line: 6, column: 17, scope: !28)
 !30 = !DILocalVariable(name: "entry", scope: !28, file: !1, line: 6, type: !4)
-!31 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!31 = distinct !DISubprogram(name: "scan", scope: !1, file: !1, line: 4, type: !15, isLocal: false, isDefinition: true, scopeLine: 5, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !32 = !DILocation(line: 6, column: 17, scope: !31)
 !33 = !DILocalVariable(name: "entry", scope: !31, file: !1, line: 6, type: !4)

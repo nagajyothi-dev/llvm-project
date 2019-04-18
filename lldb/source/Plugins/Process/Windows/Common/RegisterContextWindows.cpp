@@ -1,9 +1,8 @@
 //===-- RegisterContextWindows.cpp ------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,9 +23,7 @@ using namespace lldb_private;
 
 const DWORD kWinContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
 
-//------------------------------------------------------------------
 // Constructors and Destructors
-//------------------------------------------------------------------
 RegisterContextWindows::RegisterContextWindows(Thread &thread,
                                                uint32_t concrete_frame_idx)
     : RegisterContext(thread, concrete_frame_idx), m_context(),
@@ -40,12 +37,13 @@ void RegisterContextWindows::InvalidateAllRegisters() {
 
 bool RegisterContextWindows::ReadAllRegisterValues(
     lldb::DataBufferSP &data_sp) {
+
   if (!CacheAllRegisterValues())
     return false;
-  if (data_sp->GetByteSize() < sizeof(m_context)) {
-    data_sp.reset(new DataBufferHeap(sizeof(CONTEXT), 0));
-  }
+
+  data_sp.reset(new DataBufferHeap(sizeof(CONTEXT), 0));
   memcpy(data_sp->GetBytes(), &m_context, sizeof(m_context));
+
   return true;
 }
 
@@ -78,9 +76,7 @@ uint32_t RegisterContextWindows::ConvertRegisterKindToRegisterNumber(
   return LLDB_INVALID_REGNUM;
 }
 
-//------------------------------------------------------------------
 // Subclasses can these functions if desired
-//------------------------------------------------------------------
 uint32_t RegisterContextWindows::NumSupportedHardwareBreakpoints() {
   // Support for hardware breakpoints not yet implemented.
   return 0;

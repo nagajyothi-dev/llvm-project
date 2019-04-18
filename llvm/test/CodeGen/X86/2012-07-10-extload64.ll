@@ -3,11 +3,10 @@
 
 define void @load_store(<4 x i16>* %in) {
 ; CHECK-LABEL: load_store:
-; CHECK:       # BB#0: # %entry
+; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %eax
-; CHECK-NEXT:    pmovzxwd {{.*#+}} xmm0 = mem[0],zero,mem[1],zero,mem[2],zero,mem[3],zero
+; CHECK-NEXT:    movq {{.*#+}} xmm0 = mem[0],zero
 ; CHECK-NEXT:    paddw %xmm0, %xmm0
-; CHECK-NEXT:    pshufb {{.*#+}} xmm0 = xmm0[0,1,4,5,8,9,12,13,8,9,12,13,12,13,14,15]
 ; CHECK-NEXT:    movq %xmm0, (%eax)
 ; CHECK-NEXT:    retl
 entry:
@@ -20,7 +19,7 @@ entry:
 ; Make sure that we store a 64bit value, even on 32bit systems.
 define void @store_64(<2 x i32>* %ptr) {
 ; CHECK-LABEL: store_64:
-; CHECK:       # BB#0: # %BB
+; CHECK:       # %bb.0: # %BB
 ; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %eax
 ; CHECK-NEXT:    xorps %xmm0, %xmm0
 ; CHECK-NEXT:    movlps %xmm0, (%eax)
@@ -32,7 +31,7 @@ BB:
 
 define <2 x i32> @load_64(<2 x i32>* %ptr) {
 ; CHECK-LABEL: load_64:
-; CHECK:       # BB#0: # %BB
+; CHECK:       # %bb.0: # %BB
 ; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %eax
 ; CHECK-NEXT:    pmovzxdq {{.*#+}} xmm0 = mem[0],zero,mem[1],zero
 ; CHECK-NEXT:    retl

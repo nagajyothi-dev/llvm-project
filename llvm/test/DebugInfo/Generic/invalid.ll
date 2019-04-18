@@ -1,11 +1,12 @@
-; RUN: not opt -verify %s 2>&1 | FileCheck %s
+; RUN: llvm-as -disable-output %s 2>&1 | FileCheck %s
 
 ; Make sure we emit this diagnostic only once (which means we don't visit the
 ; same DISubprogram twice.
 ; CHECK: subprogram definitions must have a compile unit
-; CHECK-NEXT: !3 = distinct !DISubprogram(name: "patatino", scope: null, isLocal: false, isDefinition: true, isOptimized: false)
+; CHECK-NEXT: !3 = distinct !DISubprogram(name: "patatino", scope: null, spFlags: DISPFlagDefinition)
 ; CHECK-NOT: subprogram definitions must have a compile unit
-; CHECK-NOT: !3 = distinct !DISubprogram(name: "patatino", scope: null, isLocal: false, isDefinition: true, isOptimized: false)
+; CHECK-NOT: !3 = distinct !DISubprogram(name: "patatino", scope: null, spFlags: DISPFlagDefinition)
+; CHECK: warning: ignoring invalid debug info
 
 define void @tinkywinky() !dbg !3 { ret void }
 

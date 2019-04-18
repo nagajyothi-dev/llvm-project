@@ -5,12 +5,13 @@ target triple = "x86_64-unknown-linux-gnu"
 
 define void @test1(i32 %x) #0 {
 ; CHECK-LABEL: test1:
-; CHECK:       # BB#0: # %entry
+; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    pushq %rax
-; CHECK-NEXT:    testl %edi, %edi
+; CHECK-NEXT:    cmpl $0, %edi
 ; CHECK-NEXT:    setne %al
-; CHECK-NEXT:    andb $1, %al
-; CHECK-NEXT:    movzbl %al, %edi
+; CHECK-NEXT:    movzbl %al, %ecx
+; CHECK-NEXT:    andl $1, %ecx
+; CHECK-NEXT:    movl %ecx, %edi
 ; CHECK-NEXT:    callq callee1
 ; CHECK-NEXT:    popq %rax
 ; CHECK-NEXT:    retq
@@ -22,13 +23,14 @@ entry:
 
 define void @test2(i32 %x) #0 {
 ; CHECK-LABEL: test2:
-; CHECK:       # BB#0: # %entry
+; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    pushq %rax
-; CHECK-NEXT:    testl %edi, %edi
+; CHECK-NEXT:    cmpl $0, %edi
 ; CHECK-NEXT:    setne %al
-; CHECK-NEXT:    movzbl %al, %edi
-; CHECK-NEXT:    andl $1, %edi
-; CHECK-NEXT:    negl %edi
+; CHECK-NEXT:    movzbl %al, %ecx
+; CHECK-NEXT:    andl $1, %ecx
+; CHECK-NEXT:    negl %ecx
+; CHECK-NEXT:    movl %ecx, %edi
 ; CHECK-NEXT:    callq callee2
 ; CHECK-NEXT:    popq %rax
 ; CHECK-NEXT:    retq

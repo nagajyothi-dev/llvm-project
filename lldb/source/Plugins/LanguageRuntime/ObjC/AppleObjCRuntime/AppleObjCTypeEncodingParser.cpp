@@ -1,9 +1,8 @@
 //===-- AppleObjCTypeEncodingParser.cpp -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,8 +23,8 @@ using namespace lldb_utility;
 AppleObjCTypeEncodingParser::AppleObjCTypeEncodingParser(
     ObjCLanguageRuntime &runtime)
     : ObjCLanguageRuntime::EncodingToType(), m_runtime(runtime) {
-  if (!m_scratch_ast_ctx_ap)
-    m_scratch_ast_ctx_ap.reset(new ClangASTContext(runtime.GetProcess()
+  if (!m_scratch_ast_ctx_up)
+    m_scratch_ast_ctx_up.reset(new ClangASTContext(runtime.GetProcess()
                                                        ->GetTarget()
                                                        .GetArchitecture()
                                                        .GetTriple()
@@ -105,10 +104,9 @@ clang::QualType AppleObjCTypeEncodingParser::BuildAggregate(
     return clang::QualType();
   std::string name(ReadStructName(type));
 
-  // We do not handle templated classes/structs at the moment.
-  // If the name has a < in it, we are going to abandon this.
-  // We're still obliged to parse it, so we just set a flag that
-  // means "Don't actually build anything."
+  // We do not handle templated classes/structs at the moment. If the name has
+  // a < in it, we are going to abandon this. We're still obliged to parse it,
+  // so we just set a flag that means "Don't actually build anything."
 
   const bool is_templated = name.find('<') != std::string::npos;
 
@@ -180,11 +178,9 @@ AppleObjCTypeEncodingParser::BuildArray(clang::ASTContext &ast_ctx,
 
 // the runtime can emit these in the form of @"SomeType", giving more specifics
 // this would be interesting for expression parser interop, but since we
-// actually try
-// to avoid exposing the ivar info to the expression evaluator, consume but
-// ignore the type info
-// and always return an 'id'; if anything, dynamic typing will resolve things
-// for us anyway
+// actually try to avoid exposing the ivar info to the expression evaluator,
+// consume but ignore the type info and always return an 'id'; if anything,
+// dynamic typing will resolve things for us anyway
 clang::QualType AppleObjCTypeEncodingParser::BuildObjCObjectPointerType(
     clang::ASTContext &ast_ctx, lldb_utility::StringLexer &type,
     bool for_expression) {
@@ -197,24 +193,21 @@ clang::QualType AppleObjCTypeEncodingParser::BuildObjCObjectPointerType(
     // We have to be careful here.  We're used to seeing
     //   @"NSString"
     // but in records it is possible that the string following an @ is the name
-    // of the next field and @ means "id".
-    // This is the case if anything unquoted except for "}", the end of the
-    // type, or another name follows the quoted string.
+    // of the next field and @ means "id". This is the case if anything
+    // unquoted except for "}", the end of the type, or another name follows
+    // the quoted string.
     //
     // E.g.
     // - @"NSString"@ means "id, followed by a field named NSString of type id"
-    // - @"NSString"} means "a pointer to NSString and the end of the struct"
-    // - @"NSString""nextField" means "a pointer to NSString and a field named
-    // nextField"
-    // - @"NSString" followed by the end of the string means "a pointer to
-    // NSString"
+    // - @"NSString"} means "a pointer to NSString and the end of the struct" -
+    // @"NSString""nextField" means "a pointer to NSString and a field named
+    // nextField" - @"NSString" followed by the end of the string means "a
+    // pointer to NSString"
     //
     // As a result, the rule is: If we see @ followed by a quoted string, we
-    // peek.
-    // - If we see }, ), ], the end of the string, or a quote ("), the quoted
-    // string is a class name.
-    // - If we see anything else, the quoted string is a field name and we push
-    // it back onto type.
+    // peek. - If we see }, ), ], the end of the string, or a quote ("), the
+    // quoted string is a class name. - If we see anything else, the quoted
+    // string is a field name and we push it back onto type.
 
     name = ReadQuotedString(type);
 
@@ -260,9 +253,8 @@ clang::QualType AppleObjCTypeEncodingParser::BuildObjCObjectPointerType(
         decl_vendor->FindDecls(ConstString(name), append, max_matches, decls);
 
 // The user can forward-declare something that has no definition.  The runtime
-// doesn't prohibit this at all.
-// This is a rare and very weird case.  We keep this assert in debug builds so
-// we catch other weird cases.
+// doesn't prohibit this at all. This is a rare and very weird case.  We keep
+// this assert in debug builds so we catch other weird cases.
 #ifdef LLDB_CONFIGURATION_DEBUG
     assert(num_types);
 #else
@@ -315,8 +307,8 @@ AppleObjCTypeEncodingParser::BuildType(clang::ASTContext &ast_ctx,
   //   if (!lldb_ctx)
   //      return clang::QualType();
   //   return lldb_ctx->GetIntTypeFromBitSize(32, true).GetQualType();
-  // which uses one of the constants if one is available, but we don't think all
-  // this work is necessary.
+  // which uses one of the constants if one is available, but we don't think
+  // all this work is necessary.
   case 'q':
     return ast_ctx.LongLongTy;
   case 'C':
@@ -364,11 +356,10 @@ AppleObjCTypeEncodingParser::BuildType(clang::ASTContext &ast_ctx,
   case '^': {
     if (!for_expression && type.NextIf('?')) {
       // if we are not supporting the concept of unknownAny, but what is being
-      // created here is an unknownAny*, then
-      // we can just get away with a void*
+      // created here is an unknownAny*, then we can just get away with a void*
       // this is theoretically wrong (in the same sense as 'theoretically
-      // nothing exists') but is way better than outright failure
-      // in many practical cases
+      // nothing exists') but is way better than outright failure in many
+      // practical cases
       return ast_ctx.VoidPtrTy;
     } else {
       clang::QualType target_type = BuildType(ast_ctx, type, for_expression);

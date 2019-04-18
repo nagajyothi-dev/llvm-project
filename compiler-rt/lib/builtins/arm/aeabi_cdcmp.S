@@ -1,9 +1,8 @@
 //===-- aeabi_cdcmp.S - EABI cdcmp* implementation ------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,13 +45,16 @@ DEFINE_COMPILERRT_FUNCTION(__aeabi_cdcmpeq)
         pop {r0-r3, lr}
 
         // NaN has been ruled out, so __aeabi_cdcmple can't trap
+        // Use "it ne" + unconditional branch to guarantee a supported relocation if
+        // __aeabi_cdcmple is in a different section for some builds.
+        IT(ne)
         bne __aeabi_cdcmple
 
-#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
+#if defined(USE_THUMB_2)
         mov ip, #APSR_C
         msr APSR_nzcvq, ip
 #else
-        msr CPSR_f, #APSR_C
+        msr APSR_nzcvq, #APSR_C
 #endif
         JMP(lr)
 #endif
@@ -112,11 +114,7 @@ DEFINE_COMPILERRT_FUNCTION(__aeabi_cdcmple)
         movne ip, #(APSR_C)
 
 1:
-#if defined(__ARM_ARCH_7M__) || defined(__ARM_ARCH_7EM__)
         msr APSR_nzcvq, ip
-#else
-        msr CPSR_f, ip
-#endif
         pop {r0-r3}
         POP_PC()
 #endif

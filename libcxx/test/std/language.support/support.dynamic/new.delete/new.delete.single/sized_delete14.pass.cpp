@@ -1,9 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,17 +48,19 @@ void operator delete(void* p, std::size_t) TEST_NOEXCEPT
     std::free(p);
 }
 
-int *volatile x;
-
-int main()
+int main(int, char**)
 {
-    x = new int(42);
+    int *x = new int(42);
+    DoNotOptimize(x);
     assert(0 == unsized_delete_called);
     assert(0 == unsized_delete_nothrow_called);
     assert(0 == sized_delete_called);
 
     delete x;
+    DoNotOptimize(x);
     assert(0 == unsized_delete_called);
     assert(1 == sized_delete_called);
     assert(0 == unsized_delete_nothrow_called);
+
+  return 0;
 }

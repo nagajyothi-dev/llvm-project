@@ -1,9 +1,8 @@
 //===-- ASTResultSynthesizer.cpp --------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -87,7 +86,8 @@ void ASTResultSynthesizer::TransformTopLevelDecl(Decl *D) {
         SynthesizeObjCMethodResult(method_decl);
       }
     } else if (FunctionDecl *function_decl = dyn_cast<FunctionDecl>(D)) {
-      if (m_ast_context &&
+      // When completing user input the body of the function may be a nullptr.
+      if (m_ast_context && function_decl->hasBody() &&
           !function_decl->getNameInfo().getAsString().compare("$__lldb_expr")) {
         RecordPersistentTypes(function_decl);
         SynthesizeFunctionResult(function_decl);
@@ -226,8 +226,7 @@ bool ASTResultSynthesizer::SynthesizeBodyResult(CompoundStmt *Body,
     return true;
 
   // In C++11, last_expr can be a LValueToRvalue implicit cast.  Strip that off
-  // if that's the
-  // case.
+  // if that's the case.
 
   do {
     ImplicitCastExpr *implicit_cast = dyn_cast<ImplicitCastExpr>(last_expr);
@@ -242,8 +241,8 @@ bool ASTResultSynthesizer::SynthesizeBodyResult(CompoundStmt *Body,
   } while (0);
 
   // is_lvalue is used to record whether the expression returns an assignable
-  // Lvalue or an
-  // Rvalue.  This is relevant because they are handled differently.
+  // Lvalue or an Rvalue.  This is relevant because they are handled
+  // differently.
   //
   // For Lvalues
   //
@@ -293,9 +292,8 @@ bool ASTResultSynthesizer::SynthesizeBodyResult(CompoundStmt *Body,
   //
   //   - During dematerialization, $0 is ignored.
 
-  bool is_lvalue = (last_expr->getValueKind() == VK_LValue ||
-                    last_expr->getValueKind() == VK_XValue) &&
-                   (last_expr->getObjectKind() == OK_Ordinary);
+  bool is_lvalue = last_expr->getValueKind() == VK_LValue &&
+                   last_expr->getObjectKind() == OK_Ordinary;
 
   QualType expr_qual_type = last_expr->getType();
   const clang::Type *expr_type = expr_qual_type.getTypePtr();

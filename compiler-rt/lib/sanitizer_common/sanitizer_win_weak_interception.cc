@@ -1,9 +1,8 @@
 //===-- sanitizer_win_weak_interception.cc --------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // This module should be included in the sanitizer when it is implemented as a
@@ -12,7 +11,7 @@
 // definition is provided.
 //===----------------------------------------------------------------------===//
 
-#include "sanitizer_common/sanitizer_platform.h"
+#include "sanitizer_platform.h"
 #if SANITIZER_WINDOWS && SANITIZER_DYNAMIC
 #include "sanitizer_win_weak_interception.h"
 #include "sanitizer_allocator_interface.h"

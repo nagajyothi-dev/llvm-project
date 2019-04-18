@@ -1,9 +1,8 @@
 //===- BitstreamReader.h - Low-level bitstream reader interface -*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -43,7 +42,7 @@ public:
     unsigned BlockID;
     std::vector<std::shared_ptr<BitCodeAbbrev>> Abbrevs;
     std::string Name;
-    std::vector<std::pair<unsigned, std::string> > RecordNames;
+    std::vector<std::pair<unsigned, std::string>> RecordNames;
   };
 
 private:
@@ -88,7 +87,7 @@ public:
   /// follow the word size of the host machine for efficiency. We use word_t in
   /// places that are aware of this to make it perfectly explicit what is going
   /// on.
-  typedef size_t word_t;
+  using word_t = size_t;
 
 private:
   word_t CurWord = 0;
@@ -104,8 +103,7 @@ public:
   explicit SimpleBitstreamCursor(ArrayRef<uint8_t> BitcodeBytes)
       : BitcodeBytes(BitcodeBytes) {}
   explicit SimpleBitstreamCursor(StringRef BitcodeBytes)
-      : BitcodeBytes(reinterpret_cast<const uint8_t *>(BitcodeBytes.data()),
-                     BitcodeBytes.size()) {}
+      : BitcodeBytes(arrayRefFromStringRef(BitcodeBytes)) {}
   explicit SimpleBitstreamCursor(MemoryBufferRef BitcodeBytes)
       : SimpleBitstreamCursor(BitcodeBytes.getBuffer()) {}
 
@@ -429,7 +427,7 @@ public:
     // don't care what code widths are used inside of it.
     ReadVBR(bitc::CodeLenWidth);
     SkipToFourByteBoundary();
-    unsigned NumFourBytes = Read(bitc::BlockSizeWidth);
+    size_t NumFourBytes = Read(bitc::BlockSizeWidth);
 
     // Check that the block wasn't partially defined, and that the offset isn't
     // bogus.

@@ -1,4 +1,4 @@
-; RUN: opt -S -lowertypetests -lowertypetests-summary-action=export -lowertypetests-read-summary=%S/Inputs/use-typeid1-typeid2.yaml -lowertypetests-write-summary=%t < %s | FileCheck %s
+; RUN: opt -S -lowertypetests -lowertypetests-summary-action=export -lowertypetests-read-summary=%S/Inputs/export-icall.yaml -lowertypetests-write-summary=%t < %s | FileCheck %s
 ; RUN: FileCheck --check-prefix=SUMMARY %s < %t
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
@@ -50,7 +50,7 @@ define void @f3(i32 %x) !type !8 {
 
 ; CHECK-DAG: @g                    = alias void (), void ()* [[JT2]]
 
-; CHECK-DAG: define internal void @h.cfi(i8 {{.*}}) !type !{{.*}}
+; CHECK-DAG: define hidden void @h.cfi(i8 {{.*}}) !type !{{.*}}
 ; CHECK-DAG: declare !type !{{.*}} void @external()
 ; CHECK-DAG: declare !type !{{.*}} void @external_weak()
 ; CHECK-DAG: declare !type !{{.*}} void @f.cfi(i32)
@@ -65,11 +65,19 @@ define void @f3(i32 %x) !type !8 {
 ; SUMMARY-NEXT:     TTRes:
 ; SUMMARY-NEXT:       Kind:            AllOnes
 ; SUMMARY-NEXT:       SizeM1BitWidth:  7
+; SUMMARY-NEXT:       AlignLog2:       0
+; SUMMARY-NEXT:       SizeM1:          0
+; SUMMARY-NEXT:       BitMask:         0
+; SUMMARY-NEXT:       InlineBits:      0
 ; SUMMARY-NEXT:     WPDRes:
 ; SUMMARY-NEXT:   typeid2:
 ; SUMMARY-NEXT:     TTRes:
 ; SUMMARY-NEXT:       Kind:            Single
 ; SUMMARY-NEXT:       SizeM1BitWidth:  0
+; SUMMARY-NEXT:       AlignLog2:       0
+; SUMMARY-NEXT:       SizeM1:          0
+; SUMMARY-NEXT:       BitMask:         0
+; SUMMARY-NEXT:       InlineBits:      0
 ; SUMMARY-NEXT:     WPDRes:
 
 ; SUMMARY:      CfiFunctionDefs:

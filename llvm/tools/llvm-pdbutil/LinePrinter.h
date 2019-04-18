@@ -1,9 +1,8 @@
 //===- LinePrinter.h ------------------------------------------ *- C++ --*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -93,14 +92,41 @@ private:
   std::list<Regex> IncludeSymbolFilters;
 };
 
+struct PrintScope {
+  explicit PrintScope(LinePrinter &P, uint32_t IndentLevel)
+      : P(P), IndentLevel(IndentLevel) {}
+  explicit PrintScope(const PrintScope &Other, uint32_t LabelWidth)
+      : P(Other.P), IndentLevel(Other.IndentLevel), LabelWidth(LabelWidth) {}
+
+  LinePrinter &P;
+  uint32_t IndentLevel;
+  uint32_t LabelWidth = 0;
+};
+
+inline Optional<PrintScope> withLabelWidth(const Optional<PrintScope> &Scope,
+                                           uint32_t W) {
+  if (!Scope)
+    return None;
+  return PrintScope{*Scope, W};
+}
+
 struct AutoIndent {
   explicit AutoIndent(LinePrinter &L, uint32_t Amount = 0)
-      : L(L), Amount(Amount) {
+      : L(&L), Amount(Amount) {
     L.Indent(Amount);
   }
-  ~AutoIndent() { L.Unindent(Amount); }
+  explicit AutoIndent(const Optional<PrintScope> &Scope) {
+    if (Scope.hasValue()) {
+      L = &Scope->P;
+      Amount = Scope->IndentLevel;
+    }
+  }
+  ~AutoIndent() {
+    if (L)
+      L->Unindent(Amount);
+  }
 
-  LinePrinter &L;
+  LinePrinter *L = nullptr;
   uint32_t Amount = 0;
 };
 

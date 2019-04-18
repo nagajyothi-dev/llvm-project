@@ -1,9 +1,8 @@
 //===--- Hexagon.h - Declare Hexagon target feature support -----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -29,8 +28,11 @@ class LLVM_LIBRARY_VISIBILITY HexagonTargetInfo : public TargetInfo {
   static const char *const GCCRegNames[];
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
   std::string CPU;
-  bool HasHVX, HasHVXDouble;
-  bool UseLongCalls;
+  std::string HVXVersion;
+  bool HasHVX = false;
+  bool HasHVX64B = false;
+  bool HasHVX128B = false;
+  bool UseLongCalls = false;
 
 public:
   HexagonTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
@@ -54,8 +56,6 @@ public:
     LargeArrayAlign = 64;
     UseBitFieldTypeAlignment = true;
     ZeroLengthBitfieldBoundary = 32;
-    HasHVX = HasHVXDouble = false;
-    UseLongCalls = false;
   }
 
   ArrayRef<Builtin::Info> getTargetBuiltins() const override;
@@ -95,15 +95,12 @@ public:
   bool handleTargetFeatures(std::vector<std::string> &Features,
                             DiagnosticsEngine &Diags) override;
 
-  void setFeatureEnabled(llvm::StringMap<bool> &Features, StringRef Name,
-                         bool Enabled) const override;
-
   BuiltinVaListKind getBuiltinVaListKind() const override {
     return TargetInfo::CharPtrBuiltinVaList;
   }
 
   ArrayRef<const char *> getGCCRegNames() const override;
-  
+
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override;
 
   const char *getClobbers() const override { return ""; }
@@ -113,6 +110,8 @@ public:
   bool isValidCPUName(StringRef Name) const override {
     return getHexagonCPUSuffix(Name);
   }
+
+  void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override;
 
   bool setCPU(const std::string &Name) override {
     if (!isValidCPUName(Name))

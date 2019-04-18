@@ -1,6 +1,6 @@
 ; RUN: llc -amdgpu-scalarize-global-loads=false -march=amdgcn -mcpu=tahiti -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefix=GCN -check-prefix=SI %s
 ; RUN: llc -amdgpu-scalarize-global-loads=false -march=amdgcn -mcpu=tonga -mattr=-flat-for-global -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefix=GCN -check-prefix=GFX89 -check-prefix=GFX8 %s
-; RUN: llc -amdgpu-scalarize-global-loads=false -march=amdgcn -mcpu=gfx901 -mattr=-flat-for-global -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefix=GCN -check-prefix=GFX89 -check-prefix=GFX9 %s
+; RUN: llc -amdgpu-scalarize-global-loads=false -march=amdgcn -mcpu=gfx900 -mattr=-flat-for-global -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefix=GCN -check-prefix=GFX89 -check-prefix=GFX9 %s
 
 declare half @llvm.copysign.f16(half, half)
 declare float @llvm.copysign.f32(float, float)
@@ -12,15 +12,15 @@ declare <4 x half> @llvm.copysign.v4f16(<4 x half>, <4 x half>)
 declare i32 @llvm.amdgcn.workitem.id.x()
 
 ; GCN-LABEL: {{^}}test_copysign_f16:
-; SI: {{buffer|flat}}_load_ushort v[[SIGN:[0-9]+]]
 ; SI: {{buffer|flat}}_load_ushort v[[MAG:[0-9]+]]
+; SI: {{buffer|flat}}_load_ushort v[[SIGN:[0-9]+]]
 ; SI: s_brev_b32 s[[CONST:[0-9]+]], -2
 ; SI-DAG: v_cvt_f32_f16_e32 v[[MAG_F32:[0-9]+]], v[[MAG]]
 ; SI-DAG: v_cvt_f32_f16_e32 v[[SIGN_F32:[0-9]+]], v[[SIGN]]
 ; SI: v_bfi_b32 v[[OUT_F32:[0-9]+]], s[[CONST]], v[[MAG_F32]], v[[SIGN_F32]]
 ; SI: v_cvt_f16_f32_e32 v[[OUT:[0-9]+]], v[[OUT_F32]]
-; GFX89: {{buffer|flat}}_load_ushort v[[SIGN:[0-9]+]]
 ; GFX89: {{buffer|flat}}_load_ushort v[[MAG:[0-9]+]]
+; GFX89: {{buffer|flat}}_load_ushort v[[SIGN:[0-9]+]]
 ; GFX89: s_movk_i32 s[[CONST:[0-9]+]], 0x7fff
 ; GFX89: v_bfi_b32 v[[OUT:[0-9]+]], s[[CONST]], v[[MAG]], v[[SIGN]]
 ; GCN: buffer_store_short v[[OUT]]
@@ -30,8 +30,8 @@ define amdgpu_kernel void @test_copysign_f16(
   half addrspace(1)* %arg_mag,
   half addrspace(1)* %arg_sign) {
 entry:
-  %mag = load half, half addrspace(1)* %arg_mag
-  %sign = load half, half addrspace(1)* %arg_sign
+  %mag = load volatile half, half addrspace(1)* %arg_mag
+  %sign = load volatile half, half addrspace(1)* %arg_sign
   %out = call half @llvm.copysign.f16(half %mag, half %sign)
   store half %out, half addrspace(1)* %arg_out
   ret void

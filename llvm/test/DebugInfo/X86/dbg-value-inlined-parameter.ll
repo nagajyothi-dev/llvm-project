@@ -1,9 +1,9 @@
 ; RUN: llc -mtriple=x86_64-apple-darwin < %s -filetype=obj \
-; RUN:     | llvm-dwarfdump -debug-dump=info - | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
+; RUN:     | llvm-dwarfdump -v -debug-info - | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
 ; RUN: llc -mtriple=x86_64-linux-gnu < %s -filetype=obj \
-; RUN:     | llvm-dwarfdump -debug-dump=info - | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
+; RUN:     | llvm-dwarfdump -v -debug-info - | FileCheck --check-prefix=CHECK --check-prefix=LINUX %s
 ; RUN: llc -mtriple=x86_64-apple-darwin < %s -filetype=obj -regalloc=basic \
-; RUN:     | llvm-dwarfdump -debug-dump=info - | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
+; RUN:     | llvm-dwarfdump -v -debug-info - | FileCheck --check-prefix=CHECK --check-prefix=DARWIN %s
 
 ; CHECK: DW_TAG_subprogram
 ; CHECK:   DW_AT_abstract_origin {{.*}} "foo"
@@ -32,10 +32,10 @@
 ;CHECK-NEXT: DW_AT_call_line
 
 ;CHECK: DW_TAG_formal_parameter
-;FIXME: Linux shouldn't drop this parameter either...
 ;CHECK-NOT: DW_TAG
-;DARWIN:   DW_AT_abstract_origin {{.*}} "sp"
-;DARWIN: DW_TAG_formal_parameter
+;CHECK:   DW_AT_abstract_origin {{.*}} "sp"
+;CHECK: DW_TAG_formal_parameter
+;CHECK-NOT: DW_TAG
 ;CHECK: DW_AT_abstract_origin {{.*}} "nums"
 ;CHECK-NOT: DW_TAG_formal_parameter
 
@@ -87,7 +87,7 @@ attributes #4 = { nounwind }
 !llvm.dbg.cu = !{!2}
 !llvm.module.flags = !{!14}
 
-!0 = !DIGlobalVariableExpression(var: !1)
+!0 = !DIGlobalVariableExpression(var: !1, expr: !DIExpression())
 !1 = !DIGlobalVariable(name: "p", scope: !2, file: !3, line: 14, type: !6, isLocal: false, isDefinition: true)
 !2 = distinct !DICompileUnit(language: DW_LANG_C99, file: !3, producer: "clang version 2.9 (trunk 125693)", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !4, retainedTypes: !4, globals: !5, imports: !4)
 !3 = !DIFile(filename: "nm2.c", directory: "/private/tmp")
@@ -102,7 +102,7 @@ attributes #4 = { nounwind }
 !12 = !DIDerivedType(tag: DW_TAG_member, name: "nums", scope: !3, file: !3, line: 3, baseType: !13, size: 32, align: 32, offset: 64)
 !13 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
 !14 = !{i32 1, !"Debug Info Version", i32 3}
-!15 = distinct !DISubprogram(name: "foo", scope: !3, file: !3, line: 8, type: !16, isLocal: false, isDefinition: true, scopeLine: 8, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !2, variables: !18)
+!15 = distinct !DISubprogram(name: "foo", scope: !3, file: !3, line: 8, type: !16, isLocal: false, isDefinition: true, scopeLine: 8, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !2, retainedNodes: !18)
 !16 = !DISubroutineType(types: !17)
 !17 = !{!13}
 !18 = !{!19, !21}

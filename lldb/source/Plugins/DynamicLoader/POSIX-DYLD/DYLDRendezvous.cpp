@@ -1,16 +1,11 @@
 //===-- DYLDRendezvous.cpp --------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-#include "lldb/Core/ArchSpec.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Symbol/Symbol.h"
@@ -18,6 +13,7 @@
 #include "lldb/Target/Platform.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
+#include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Status.h"
 
@@ -48,8 +44,8 @@ static addr_t ResolveRendezvousAddress(Process *process) {
   if (log)
     log->Printf("%s info_location = 0x%" PRIx64, __FUNCTION__, info_location);
 
-  // If the process fails to return an address, fall back to seeing if the local
-  // object file can help us find it.
+  // If the process fails to return an address, fall back to seeing if the
+  // local object file can help us find it.
   if (info_location == LLDB_INVALID_ADDRESS) {
     Target *target = &process->GetTarget();
     if (target) {
@@ -193,8 +189,8 @@ bool DYLDRendezvous::UpdateSOEntries(bool fromRemote) {
   if (!fromRemote && m_current.map_addr == 0)
     return false;
 
-  // When the previous and current states are consistent this is the first
-  // time we have been asked to update.  Just take a snapshot of the currently
+  // When the previous and current states are consistent this is the first time
+  // we have been asked to update.  Just take a snapshot of the currently
   // loaded modules.
   if (m_previous.state == eConsistent && m_current.state == eConsistent)
     return fromRemote ? SaveSOEntriesFromRemote(module_list)
@@ -203,9 +199,9 @@ bool DYLDRendezvous::UpdateSOEntries(bool fromRemote) {
   // If we are about to add or remove a shared object clear out the current
   // state and take a snapshot of the currently loaded images.
   if (m_current.state == eAdd || m_current.state == eDelete) {
-    // Some versions of the android dynamic linker might send two
-    // notifications with state == eAdd back to back. Ignore them
-    // until we get an eConsistent notification.
+    // Some versions of the android dynamic linker might send two notifications
+    // with state == eAdd back to back. Ignore them until we get an eConsistent
+    // notification.
     if (!(m_previous.state == eConsistent ||
           (m_previous.state == eAdd && m_current.state == eDelete)))
       return false;
@@ -246,7 +242,7 @@ bool DYLDRendezvous::FillSOEntryFromModuleInfo(
   entry.base_addr = base_addr;
   entry.dyn_addr = dyn_addr;
 
-  entry.file_spec.SetFile(name, false);
+  entry.file_spec.SetFile(name, FileSpec::Style::native);
 
   UpdateBaseAddrIfNecessary(entry, name);
 
@@ -452,30 +448,22 @@ std::string DYLDRendezvous::ReadStringFromMemory(addr_t addr) {
 }
 
 // Returns true if the load bias reported by the linker is incorrect for the
-// given entry. This
-// function is used to handle cases where we want to work around a bug in the
-// system linker.
+// given entry. This function is used to handle cases where we want to work
+// around a bug in the system linker.
 static bool isLoadBiasIncorrect(Target &target, const std::string &file_path) {
   // On Android L (API 21, 22) the load address of the "/system/bin/linker"
-  // isn't filled in
-  // correctly.
-  uint32_t os_major = 0, os_minor = 0, os_update = 0;
-  if (target.GetArchitecture().GetTriple().isAndroid() &&
-      target.GetPlatform()->GetOSVersion(os_major, os_minor, os_update) &&
-      (os_major == 21 || os_major == 22) &&
-      (file_path == "/system/bin/linker" ||
-       file_path == "/system/bin/linker64")) {
-    return true;
-  }
-
-  return false;
+  // isn't filled in correctly.
+  unsigned os_major = target.GetPlatform()->GetOSVersion().getMajor();
+  return target.GetArchitecture().GetTriple().isAndroid() &&
+         (os_major == 21 || os_major == 22) &&
+         (file_path == "/system/bin/linker" ||
+          file_path == "/system/bin/linker64");
 }
 
 void DYLDRendezvous::UpdateBaseAddrIfNecessary(SOEntry &entry,
                                                std::string const &file_path) {
   // If the load bias reported by the linker is incorrect then fetch the load
-  // address of the file
-  // from the proc file system.
+  // address of the file from the proc file system.
   if (isLoadBiasIncorrect(m_process->GetTarget(), file_path)) {
     lldb::addr_t load_addr = LLDB_INVALID_ADDRESS;
     bool is_loaded = false;
@@ -494,8 +482,8 @@ bool DYLDRendezvous::ReadSOEntryFromMemory(lldb::addr_t addr, SOEntry &entry) {
   if (!(addr = ReadPointer(addr, &entry.base_addr)))
     return false;
 
-  // mips adds an extra load offset field to the link map struct on
-  // FreeBSD and NetBSD (need to validate other OSes).
+  // mips adds an extra load offset field to the link map struct on FreeBSD and
+  // NetBSD (need to validate other OSes).
   // http://svnweb.freebsd.org/base/head/sys/sys/link_elf.h?revision=217153&view=markup#l57
   const ArchSpec &arch = m_process->GetTarget().GetArchitecture();
   if ((arch.GetTriple().getOS() == llvm::Triple::FreeBSD ||
@@ -524,7 +512,7 @@ bool DYLDRendezvous::ReadSOEntryFromMemory(lldb::addr_t addr, SOEntry &entry) {
     return false;
 
   std::string file_path = ReadStringFromMemory(entry.path_addr);
-  entry.file_spec.SetFile(file_path, false);
+  entry.file_spec.SetFile(file_path, FileSpec::Style::native);
 
   UpdateBaseAddrIfNecessary(entry, file_path);
 

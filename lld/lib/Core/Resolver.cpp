@@ -1,19 +1,18 @@
 //===- Core/Resolver.cpp - Resolves Atom References -----------------------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "lld/Core/Atom.h"
+#include "lld/Core/Resolver.h"
+#include "lld/Common/LLVM.h"
 #include "lld/Core/ArchiveLibraryFile.h"
+#include "lld/Core/Atom.h"
 #include "lld/Core/File.h"
 #include "lld/Core/Instrumentation.h"
-#include "lld/Core/LLVM.h"
 #include "lld/Core/LinkingContext.h"
-#include "lld/Core/Resolver.h"
 #include "lld/Core/SharedLibraryFile.h"
 #include "lld/Core/SymbolTable.h"
 #include "lld/Core/UndefinedAtom.h"

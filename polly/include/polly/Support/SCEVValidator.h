@@ -1,9 +1,8 @@
 //===--- SCEVValidator.h - Detect Scops -------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // Checks if a SCEV expression represents a valid affine expression.
@@ -13,17 +12,9 @@
 #define POLLY_SCEV_VALIDATOR_H
 
 #include "polly/Support/ScopHelper.h"
-#include "llvm/ADT/SetVector.h"
 
 namespace llvm {
-class Region;
-class SCEV;
 class SCEVConstant;
-class ScalarEvolution;
-class Value;
-class Loop;
-class LoadInst;
-class CallInst;
 } // namespace llvm
 
 namespace polly {
@@ -94,6 +85,26 @@ ParameterSetTy getParamsInAffineExpr(const llvm::Region *R, llvm::Loop *Scope,
 /// @returns The constant factor in @p M and the rest of @p M.
 std::pair<const llvm::SCEVConstant *, const llvm::SCEV *>
 extractConstantFactor(const llvm::SCEV *M, llvm::ScalarEvolution &SE);
+
+/// Try to look through PHI nodes, where some incoming edges come from error
+/// blocks.
+///
+/// In case a PHI node follows an error block we can assume that the incoming
+/// value can only come from the node that is not an error block. As a result,
+/// conditions that seemed non-affine before are now in fact affine.
+const llvm::SCEV *tryForwardThroughPHI(const llvm::SCEV *Expr, llvm::Region &R,
+                                       llvm::ScalarEvolution &SE,
+                                       llvm::LoopInfo &LI,
+                                       const llvm::DominatorTree &DT);
+
+/// Return a unique non-error block incoming value for @p PHI if available.
+///
+/// @param R The region to run our code on.
+/// @param LI The loopinfo tree
+/// @param DT The dominator tree
+llvm::Value *getUniqueNonErrorValue(llvm::PHINode *PHI, llvm::Region *R,
+                                    llvm::LoopInfo &LI,
+                                    const llvm::DominatorTree &DT);
 } // namespace polly
 
 #endif

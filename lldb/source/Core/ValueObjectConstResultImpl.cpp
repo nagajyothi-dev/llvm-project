@@ -1,27 +1,26 @@
 //===-- ValueObjectConstResultImpl.cpp ---------------------------*- C++-*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Core/ValueObjectConstResultImpl.h"
 
-#include "lldb/Core/Scalar.h"      // for Scalar
-#include "lldb/Core/Value.h"       // for Value, Value::Val...
-#include "lldb/Core/ValueObject.h" // for ValueObject
+#include "lldb/Core/Value.h"
+#include "lldb/Core/ValueObject.h"
 #include "lldb/Core/ValueObjectConstResult.h"
 #include "lldb/Core/ValueObjectConstResultCast.h"
 #include "lldb/Core/ValueObjectConstResultChild.h"
 #include "lldb/Symbol/CompilerType.h"
 #include "lldb/Target/ExecutionContext.h"
-#include "lldb/Utility/DataBufferHeap.h" // for DataBufferHeap
-#include "lldb/Utility/Endian.h"         // for InlHostByteOrder
-#include "lldb/Utility/SharingPtr.h"     // for SharingPtr
+#include "lldb/Utility/DataBufferHeap.h"
+#include "lldb/Utility/Endian.h"
+#include "lldb/Utility/Scalar.h"
+#include "lldb/Utility/SharingPtr.h"
 
-#include <string> // for string
+#include <string>
 
 namespace lldb_private {
 class DataExtractor;
@@ -66,7 +65,7 @@ ValueObject *ValueObjectConstResultImpl::CreateChildAtIndex(
   bool child_is_deref_of_parent = false;
   uint64_t language_flags;
 
-  const bool transparent_pointers = synthetic_array_member == false;
+  const bool transparent_pointers = !synthetic_array_member;
   CompilerType compiler_type = m_impl_backend->GetCompilerType();
   CompilerType child_compiler_type;
 
@@ -77,7 +76,13 @@ ValueObject *ValueObjectConstResultImpl::CreateChildAtIndex(
       ignore_array_bounds, child_name_str, child_byte_size, child_byte_offset,
       child_bitfield_bit_size, child_bitfield_bit_offset, child_is_base_class,
       child_is_deref_of_parent, m_impl_backend, language_flags);
-  if (child_compiler_type && child_byte_size) {
+
+  // One might think we should check that the size of the children
+  // is always strictly positive, hence we could avoid creating a
+  // ValueObject if that's not the case, but it turns out there
+  // are languages out there which allow zero-size types with
+  // children (e.g. Swift).
+  if (child_compiler_type) {
     if (synthetic_index)
       child_byte_offset += child_byte_size * synthetic_index;
 

@@ -1,9 +1,8 @@
 //===-- main.cpp ------------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -86,7 +85,7 @@ int main ()
     // last in the internal list maintained by the debugger.
     pseudo_barrier_init(g_barrier1, 5);
 
-    // The second break synchronyizes thread exection with the breakpoint.
+    // The second break synchronizes thread execution with the breakpoint.
     pseudo_barrier_init(g_barrier2, 5);
 
     // The third barrier keeps the waiting threads around until the breakpoint

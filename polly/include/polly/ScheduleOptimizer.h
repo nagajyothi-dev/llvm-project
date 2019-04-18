@@ -1,31 +1,28 @@
-//===------ polly/ScheduleOptimizer.h - The Schedule Optimizer *- C++ -*-===//
+//===- polly/ScheduleOptimizer.h - The Schedule Optimizer -------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
-//
-//===----------------------------------------------------------------------===//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef POLLY_SCHEDULE_OPTIMIZER_H
-#define POLLY_SCHEDULE_OPTIMIZER_H
+#ifndef POLLY_SCHEDULEOPTIMIZER_H
+#define POLLY_SCHEDULEOPTIMIZER_H
 
-#include "polly/DependenceInfo.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/Analysis/TargetTransformInfo.h"
-#include "isl/ctx.h"
+#include "isl/isl-noexceptions.h"
 
-struct isl_schedule;
+namespace llvm {
+
+class TargetTransformInfo;
+} // namespace llvm
+
 struct isl_schedule_node;
-struct isl_union_map;
 
 /// Parameters of the micro kernel.
 ///
 /// Parameters, which determine sizes of rank-1 (i.e., outer product) update
 /// used in the optimized matrix multiplication.
-///
 struct MicroKernelParamsTy {
   int Mr;
   int Nr;
@@ -35,7 +32,6 @@ struct MicroKernelParamsTy {
 ///
 /// Parameters, which determine sizes of blocks of partitioned matrices
 /// used in the optimized matrix multiplication.
-///
 struct MacroKernelParamsTy {
   int Mc;
   int Nc;
@@ -43,11 +39,15 @@ struct MacroKernelParamsTy {
 };
 
 namespace polly {
+
+struct Dependences;
+class MemoryAccess;
+class Scop;
+
 /// Additional parameters of the schedule optimizer.
 ///
 /// Target Transform Info and the SCoP dependencies used by the schedule
 /// optimizer.
-///
 struct OptimizerAdditionalInfoTy {
   const llvm::TargetTransformInfo *TTI;
   const Dependences *D;
@@ -57,7 +57,6 @@ struct OptimizerAdditionalInfoTy {
 ///
 /// Parameters, which describe access relations that represent operands of the
 /// matrix multiplication.
-///
 struct MatMulInfoTy {
   MemoryAccess *A = nullptr;
   MemoryAccess *B = nullptr;
@@ -69,7 +68,6 @@ struct MatMulInfoTy {
 };
 
 extern bool DisablePollyTiling;
-class Scop;
 } // namespace polly
 
 class ScheduleTreeOptimizer {
@@ -352,5 +350,4 @@ private:
 /// @param ScheduleRange A range of a map, which describes a prefix schedule
 ///                      relation.
 isl::set getPartialTilePrefixes(isl::set ScheduleRange, int VectorWidth);
-
-#endif
+#endif // POLLY_SCHEDULEOPTIMIZER_H

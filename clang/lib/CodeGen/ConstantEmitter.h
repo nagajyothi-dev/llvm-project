@@ -1,9 +1,8 @@
 //===--- ConstantEmitter.h - IR constant emission ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -38,9 +37,12 @@ private:
   /// Whether the constant-emission failed.
   bool Failed = false;
 
+  /// Whether we're in a constant context.
+  bool InConstantContext = false;
+
   /// The AST address space where this (non-abstract) initializer is going.
   /// Used for generating appropriate placeholders.
-  unsigned DestAddressSpace;
+  LangAS DestAddressSpace;
 
   llvm::SmallVector<std::pair<llvm::Constant *, llvm::GlobalVariable*>, 4>
     PlaceholderAddresses;
@@ -50,7 +52,7 @@ public:
     : CGM(CGM), CGF(CGF) {}
 
   /// Initialize this emission in the context of the given function.
-  /// Use this if the expression might contain contextaul references like
+  /// Use this if the expression might contain contextual references like
   /// block addresses or PredefinedExprs.
   ConstantEmitter(CodeGenFunction &CGF)
     : CGM(CGF.CGM), CGF(&CGF) {}
@@ -68,11 +70,9 @@ public:
   /// Try to emit the initiaizer of the given declaration as an abstract
   /// constant.  If this succeeds, the emission must be finalized.
   llvm::Constant *tryEmitForInitializer(const VarDecl &D);
-  llvm::Constant *tryEmitForInitializer(const Expr *E,
-                                        unsigned destAddrSpace,
+  llvm::Constant *tryEmitForInitializer(const Expr *E, LangAS destAddrSpace,
                                         QualType destType);
-  llvm::Constant *emitForInitializer(const APValue &value,
-                                     unsigned destAddrSpace,
+  llvm::Constant *emitForInitializer(const APValue &value, LangAS destAddrSpace,
                                      QualType destType);
 
   void finalize(llvm::GlobalVariable *global);
@@ -151,7 +151,7 @@ public:
                                   llvm::GlobalValue *placeholder);
 
 private:
-  void initializeNonAbstract(unsigned destAS) {
+  void initializeNonAbstract(LangAS destAS) {
     assert(!InitializedNonAbstract);
     InitializedNonAbstract = true;
     DestAddressSpace = destAS;

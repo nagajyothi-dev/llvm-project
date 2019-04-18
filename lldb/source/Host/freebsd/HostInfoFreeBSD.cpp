@@ -1,9 +1,8 @@
 //===-- HostInfoFreeBSD.cpp -------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,16 +17,17 @@
 
 using namespace lldb_private;
 
-bool HostInfoFreeBSD::GetOSVersion(uint32_t &major, uint32_t &minor,
-                                   uint32_t &update) {
+llvm::VersionTuple HostInfoFreeBSD::GetOSVersion() {
   struct utsname un;
 
   ::memset(&un, 0, sizeof(utsname));
   if (uname(&un) < 0)
-    return false;
+    return llvm::VersionTuple();
 
-  int status = sscanf(un.release, "%u.%u", &major, &minor);
-  return status == 2;
+  unsigned major, minor;
+  if (2 == sscanf(un.release, "%u.%u", &major, &minor))
+    return llvm::VersionTuple(major, minor);
+  return llvm::VersionTuple();
 }
 
 bool HostInfoFreeBSD::GetOSBuildString(std::string &s) {
@@ -68,7 +68,7 @@ FileSpec HostInfoFreeBSD::GetProgramFileSpec() {
     if (sysctl(exe_path_mib, 4, NULL, &exe_path_size, NULL, 0) == 0) {
       char *exe_path = new char[exe_path_size];
       if (sysctl(exe_path_mib, 4, exe_path, &exe_path_size, NULL, 0) == 0)
-        g_program_filespec.SetFile(exe_path, false);
+        g_program_filespec.SetFile(exe_path, FileSpec::Style::native);
       delete[] exe_path;
     }
   }

@@ -1,13 +1,35 @@
 //===-- SWIG Interface for SBModule -----------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 namespace lldb {
+
+%pythoncode%{
+# ==================================
+# Helper function for SBModule class
+# ==================================
+def in_range(symbol, section):
+    """Test whether a symbol is within the range of a section."""
+    symSA = symbol.GetStartAddress().GetFileAddress()
+    symEA = symbol.GetEndAddress().GetFileAddress()
+    secSA = section.GetFileAddress()
+    secEA = secSA + section.GetByteSize()
+
+    if symEA != LLDB_INVALID_ADDRESS:
+        if secSA <= symSA and symEA <= secEA:
+            return True
+        else:
+            return False
+    else:
+        if secSA <= symSA and symSA < secEA:
+            return True
+        else:
+            return False
+%}
 
 %feature("docstring",
 "Represents an executable image and its associated object and symbol files.
@@ -108,6 +130,8 @@ public:
     bool
     IsValid () const;
 
+    explicit operator bool() const;
+
     void
     Clear();
 
@@ -160,6 +184,10 @@ public:
     const char *
     GetUUIDString () const;
 
+    bool operator==(const lldb::SBModule &rhs) const;
+
+    bool operator!=(const lldb::SBModule &rhs) const;
+
     lldb::SBSection
     FindSection (const char *sect_name);
 
@@ -178,6 +206,23 @@ public:
 
     lldb::SBCompileUnit
     GetCompileUnitAtIndex (uint32_t);
+
+    %feature("docstring", "
+    //------------------------------------------------------------------
+    /// Find compile units related to *this module and passed source
+    /// file.
+    ///
+    /// @param[in] sb_file_spec
+    ///     A lldb::SBFileSpec object that contains source file
+    ///     specification.
+    ///
+    /// @return
+    ///     A lldb::SBSymbolContextList that gets filled in with all of
+    ///     the symbol contexts for all the matches.
+    //------------------------------------------------------------------
+    ") FindCompileUnits;
+    lldb::SBSymbolContextList
+    FindCompileUnits (const lldb::SBFileSpec &sb_file_spec);
 
     size_t
     GetNumSymbols ();
@@ -315,6 +360,9 @@ public:
     lldb::SBAddress
     GetObjectFileHeaderAddress() const;
 
+    lldb::SBAddress
+    GetObjectFileEntryPointAddress() const;
+
     bool
     operator == (const lldb::SBModule &rhs) const;
              
@@ -322,6 +370,29 @@ public:
     operator != (const lldb::SBModule &rhs) const;
              
     %pythoncode %{
+        def __len__(self):
+            '''Return the number of symbols in a lldb.SBModule object.'''
+            return self.GetNumSymbols()
+
+        def __iter__(self):
+            '''Iterate over all symbols in a lldb.SBModule object.'''
+            return lldb_iter(self, 'GetNumSymbols', 'GetSymbolAtIndex')
+
+        def section_iter(self):
+            '''Iterate over all sections in a lldb.SBModule object.'''
+            return lldb_iter(self, 'GetNumSections', 'GetSectionAtIndex')
+
+        def compile_unit_iter(self):
+            '''Iterate over all compile units in a lldb.SBModule object.'''
+            return lldb_iter(self, 'GetNumCompileUnits', 'GetCompileUnitAtIndex')
+
+        def symbol_in_section_iter(self, section):
+            '''Given a module and its contained section, returns an iterator on the
+            symbols within the section.'''
+            for sym in self:
+                if in_range(sym, section):
+                    yield sym
+
         class symbols_access(object):
             re_compile_type = type(re.compile('.'))
             '''A helper object that will lazily hand out lldb.SBSymbol objects for a module when supplied an index, name, or regular expression.'''

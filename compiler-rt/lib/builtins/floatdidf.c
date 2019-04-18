@@ -1,9 +1,8 @@
 /*===-- floatdidf.c - Implement __floatdidf -------------------------------===
  *
- *                     The LLVM Compiler Infrastructure
- *
- * This file is dual licensed under the MIT and the University of Illinois Open
- * Source Licenses. See LICENSE.TXT for details.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===----------------------------------------------------------------------===
  *
@@ -105,8 +104,11 @@ __floatdidf(di_int a)
 #endif
 
 #if defined(__ARM_EABI__)
+#if defined(COMPILER_RT_ARMHF_TARGET)
 AEABI_RTABI double __aeabi_l2d(di_int a) {
   return __floatdidf(a);
 }
+#else
+AEABI_RTABI double __aeabi_l2d(di_int a) COMPILER_RT_ALIAS(__floatdidf);
 #endif
-
+#endif

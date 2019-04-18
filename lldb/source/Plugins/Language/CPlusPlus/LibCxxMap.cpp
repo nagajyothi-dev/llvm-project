@@ -1,16 +1,11 @@
 //===-- LibCxxMap.cpp -------------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-// C Includes
-// C++ Includes
-// Other libraries and framework includes
-// Project includes
 #include "LibCxx.h"
 
 #include "lldb/Core/ValueObject.h"
@@ -189,7 +184,7 @@ public:
 
   bool MightHaveChildren() override;
 
-  size_t GetIndexOfChildWithName(const ConstString &name) override;
+  size_t GetIndexOfChildWithName(ConstString name) override;
 
 private:
   bool GetDataType();
@@ -268,13 +263,12 @@ bool lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetDataType() {
     m_element_type = deref->GetCompilerType();
     return true;
   }
-  lldb::TemplateArgumentKind kind;
   deref = m_backend.GetChildAtNamePath({g_tree_, g_pair3});
   if (!deref)
     return false;
-  m_element_type =
-      deref->GetCompilerType().GetTemplateArgument(1, kind).GetTemplateArgument(
-          1, kind);
+  m_element_type = deref->GetCompilerType()
+                       .GetTypeTemplateArgument(1)
+                       .GetTypeTemplateArgument(1);
   if (m_element_type) {
     std::string name;
     uint64_t bit_offset_ptr;
@@ -285,7 +279,7 @@ bool lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetDataType() {
     m_element_type = m_element_type.GetTypedefedType();
     return m_element_type.IsValid();
   } else {
-    m_element_type = m_backend.GetCompilerType().GetTemplateArgument(0, kind);
+    m_element_type = m_backend.GetCompilerType().GetTypeTemplateArgument(0);
     return m_element_type.IsValid();
   }
 }
@@ -383,8 +377,8 @@ lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::GetChildAtIndex(
         return lldb::ValueObjectSP();
       }
     } else {
-      // because of the way our debug info is made, we need to read item 0 first
-      // so that we can cache information used to generate other elements
+      // because of the way our debug info is made, we need to read item 0
+      // first so that we can cache information used to generate other elements
       if (m_skip_size == UINT32_MAX)
         GetChildAtIndex(0);
       if (m_skip_size == UINT32_MAX) {
@@ -458,7 +452,7 @@ bool lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
 }
 
 size_t lldb_private::formatters::LibcxxStdMapSyntheticFrontEnd::
-    GetIndexOfChildWithName(const ConstString &name) {
+    GetIndexOfChildWithName(ConstString name) {
   return ExtractIndexFromString(name.GetCString());
 }
 

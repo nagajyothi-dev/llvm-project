@@ -1,9 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,9 +16,12 @@
 //                    BinaryOperation binary_op); // C++17
 
 #include <numeric>
-#include <vector>
+#include <algorithm>
 #include <cassert>
+#include <functional>
 #include <iostream>
+#include <iterator>
+#include <vector>
 
 #include "test_iterators.h"
 
@@ -58,21 +60,21 @@ test()
         }
 }
 
-int triangle(int n) { return n*(n+1)/2; }
+size_t triangle(size_t n) { return n*(n+1)/2; }
 
 //  Basic sanity
 void basic_tests()
 {
     {
-    std::vector<int> v(10);
+    std::vector<size_t> v(10);
     std::fill(v.begin(), v.end(), 3);
     std::inclusive_scan(v.begin(), v.end(), v.begin(), std::plus<>());
     for (size_t i = 0; i < v.size(); ++i)
-        assert(v[i] == (int)(i+1) * 3);
+        assert(v[i] == (i+1) * 3);
     }
 
     {
-    std::vector<int> v(10);
+    std::vector<size_t> v(10);
     std::iota(v.begin(), v.end(), 0);
     std::inclusive_scan(v.begin(), v.end(), v.begin(), std::plus<>());
     for (size_t i = 0; i < v.size(); ++i)
@@ -80,7 +82,7 @@ void basic_tests()
     }
 
     {
-    std::vector<int> v(10);
+    std::vector<size_t> v(10);
     std::iota(v.begin(), v.end(), 1);
     std::inclusive_scan(v.begin(), v.end(), v.begin(), std::plus<>());
     for (size_t i = 0; i < v.size(); ++i)
@@ -88,14 +90,14 @@ void basic_tests()
     }
 
     {
-    std::vector<int> v, res;
+    std::vector<size_t> v, res;
     std::inclusive_scan(v.begin(), v.end(), std::back_inserter(res), std::plus<>());
     assert(res.empty());
     }
 }
 
 
-int main()
+int main(int, char**)
 {
 
     basic_tests();
@@ -108,4 +110,6 @@ int main()
 //     test<const int*>();
 //     test<      int*>();
 
+
+  return 0;
 }

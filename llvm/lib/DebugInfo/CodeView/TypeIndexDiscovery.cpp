@@ -1,9 +1,8 @@
 //===- TypeIndexDiscovery.cpp -----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 #include "llvm/DebugInfo/CodeView/TypeIndexDiscovery.h"
@@ -58,7 +57,7 @@ static inline uint32_t getEncodedIntegerLength(ArrayRef<uint8_t> Data) {
       8,  // LF_UQUADWORD
   };
 
-  return Sizes[N - LF_NUMERIC];
+  return 2 + Sizes[N - LF_NUMERIC];
 }
 
 static inline uint32_t getCStringLength(ArrayRef<uint8_t> Data) {
@@ -364,13 +363,15 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
   // values.  One idea is to define some structures representing these types
   // that would allow the use of offsetof().
   switch (Kind) {
-  case SymbolKind::S_GPROC32:
-  case SymbolKind::S_LPROC32:
   case SymbolKind::S_GPROC32_ID:
   case SymbolKind::S_LPROC32_ID:
   case SymbolKind::S_LPROC32_DPC:
   case SymbolKind::S_LPROC32_DPC_ID:
     Refs.push_back({TiRefKind::IndexRef, 24, 1}); // LF_FUNC_ID
+    break;
+  case SymbolKind::S_GPROC32:
+  case SymbolKind::S_LPROC32:
+    Refs.push_back({TiRefKind::TypeRef, 24, 1}); // Type
     break;
   case SymbolKind::S_UDT:
     Refs.push_back({TiRefKind::TypeRef, 0, 1}); // UDT
@@ -392,6 +393,9 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
   case SymbolKind::S_LOCAL:
     Refs.push_back({TiRefKind::TypeRef, 0, 1}); // Type
     break;
+  case SymbolKind::S_REGISTER:
+    Refs.push_back({TiRefKind::TypeRef, 0, 1}); // Type
+    break;
   case SymbolKind::S_CONSTANT:
     Refs.push_back({TiRefKind::TypeRef, 0, 1}); // Type
     break;
@@ -404,6 +408,7 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
     break;
   case SymbolKind::S_CALLERS:
   case SymbolKind::S_CALLEES:
+  case SymbolKind::S_INLINEES:
     // The record is a count followed by an array of type indices.
     Count = *reinterpret_cast<const ulittle32_t *>(Content.data());
     Refs.push_back({TiRefKind::IndexRef, 4, Count}); // Callees
@@ -412,8 +417,7 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
     Refs.push_back({TiRefKind::IndexRef, 8, 1}); // ID of inlinee
     break;
   case SymbolKind::S_HEAPALLOCSITE:
-    // FIXME: It's not clear if this is a type or item reference.
-    Refs.push_back({TiRefKind::IndexRef, 8, 1}); // signature
+    Refs.push_back({TiRefKind::TypeRef, 8, 1}); // UDT allocated
     break;
 
   // Defranges don't have types, just registers and code offsets.
@@ -425,7 +429,7 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
   case SymbolKind::S_DEFRANGE_SUBFIELD:
     break;
 
-  // No type refernces.
+  // No type references.
   case SymbolKind::S_LABEL32:
   case SymbolKind::S_OBJNAME:
   case SymbolKind::S_COMPILE:
@@ -434,6 +438,9 @@ static bool discoverTypeIndices(ArrayRef<uint8_t> Content, SymbolKind Kind,
   case SymbolKind::S_ENVBLOCK:
   case SymbolKind::S_BLOCK32:
   case SymbolKind::S_FRAMEPROC:
+  case SymbolKind::S_THUNK32:
+  case SymbolKind::S_FRAMECOOKIE:
+  case SymbolKind::S_UNAMESPACE:
     break;
   // Scope ending symbols.
   case SymbolKind::S_END:

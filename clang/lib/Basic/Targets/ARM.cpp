@@ -1,9 +1,8 @@
 //===--- ARM.cpp - Implement ARM target feature support -------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -28,28 +27,10 @@ void ARMTargetInfo::setABIAAPCS() {
   DoubleAlign = LongLongAlign = LongDoubleAlign = SuitableAlign = 64;
   const llvm::Triple &T = getTriple();
 
-  // size_t is unsigned long on MachO-derived environments, NetBSD, and
-  // OpenBSD.
-  if (T.isOSBinFormatMachO() || T.getOS() == llvm::Triple::NetBSD ||
-      T.getOS() == llvm::Triple::OpenBSD)
-    SizeType = UnsignedLong;
-  else
-    SizeType = UnsignedInt;
-
-  switch (T.getOS()) {
-  case llvm::Triple::NetBSD:
-  case llvm::Triple::OpenBSD:
-    WCharType = SignedInt;
-    break;
-  case llvm::Triple::Win32:
-    WCharType = UnsignedShort;
-    break;
-  case llvm::Triple::Linux:
-  default:
-    // AAPCS 7.1.1, ARM-Linux ABI 2.4: type of wchar_t is unsigned int.
+  bool IsNetBSD = T.isOSNetBSD();
+  bool IsOpenBSD = T.isOSOpenBSD();
+  if (!T.isOSWindows() && !IsNetBSD && !IsOpenBSD)
     WCharType = UnsignedInt;
-    break;
-  }
 
   UseBitFieldTypeAlignment = true;
 
@@ -59,13 +40,14 @@ void ARMTargetInfo::setABIAAPCS() {
   // so set preferred for small types to 32.
   if (T.isOSBinFormatMachO()) {
     resetDataLayout(BigEndian
-                        ? "E-m:o-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
-                        : "e-m:o-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64");
+                        ? "E-m:o-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64"
+                        : "e-m:o-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64");
   } else if (T.isOSWindows()) {
     assert(!BigEndian && "Windows on ARM does not support big endian");
     resetDataLayout("e"
                     "-m:w"
                     "-p:32:32"
+                    "-Fi8"
                     "-i64:64"
                     "-v128:64:128"
                     "-a:0:32"
@@ -73,11 +55,11 @@ void ARMTargetInfo::setABIAAPCS() {
                     "-S64");
   } else if (T.isOSNaCl()) {
     assert(!BigEndian && "NaCl on ARM does not support big endian");
-    resetDataLayout("e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S128");
+    resetDataLayout("e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S128");
   } else {
     resetDataLayout(BigEndian
-                        ? "E-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64"
-                        : "e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64");
+                        ? "E-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64"
+                        : "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64");
   }
 
   // FIXME: Enumerated types are variable width in straight AAPCS.
@@ -93,13 +75,6 @@ void ARMTargetInfo::setABIAPCS(bool IsAAPCS16) {
   else
     DoubleAlign = LongLongAlign = LongDoubleAlign = SuitableAlign = 32;
 
-  // size_t is unsigned int on FreeBSD.
-  if (T.getOS() == llvm::Triple::FreeBSD)
-    SizeType = UnsignedInt;
-  else
-    SizeType = UnsignedLong;
-
-  // Revert to using SignedInt on apcs-gnu to comply with existing behaviour.
   WCharType = SignedInt;
 
   // Do not respect the alignment of bit-field types when laying out
@@ -113,17 +88,17 @@ void ARMTargetInfo::setABIAPCS(bool IsAAPCS16) {
 
   if (T.isOSBinFormatMachO() && IsAAPCS16) {
     assert(!BigEndian && "AAPCS16 does not support big-endian");
-    resetDataLayout("e-m:o-p:32:32-i64:64-a:0:32-n32-S128");
+    resetDataLayout("e-m:o-p:32:32-Fi8-i64:64-a:0:32-n32-S128");
   } else if (T.isOSBinFormatMachO())
     resetDataLayout(
         BigEndian
-            ? "E-m:o-p:32:32-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32"
-            : "e-m:o-p:32:32-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32");
+            ? "E-m:o-p:32:32-Fi8-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32"
+            : "e-m:o-p:32:32-Fi8-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32");
   else
     resetDataLayout(
         BigEndian
-            ? "E-m:e-p:32:32-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32"
-            : "e-m:e-p:32:32-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32");
+            ? "E-m:e-p:32:32-Fi8-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32"
+            : "e-m:e-p:32:32-Fi8-f64:32:64-v64:32:64-v128:32:128-a:0:32-n32-S32");
 
   // FIXME: Override "preferred align" for double and long long.
 }
@@ -210,6 +185,12 @@ StringRef ARMTargetInfo::getCPUAttr() const {
     return "8_1A";
   case llvm::ARM::ArchKind::ARMV8_2A:
     return "8_2A";
+  case llvm::ARM::ArchKind::ARMV8_3A:
+    return "8_3A";
+  case llvm::ARM::ArchKind::ARMV8_4A:
+    return "8_4A";
+  case llvm::ARM::ArchKind::ARMV8_5A:
+    return "8_5A";
   case llvm::ARM::ArchKind::ARMV8MBaseline:
     return "8M_BASE";
   case llvm::ARM::ArchKind::ARMV8MMainline:
@@ -236,16 +217,27 @@ ARMTargetInfo::ARMTargetInfo(const llvm::Triple &Triple,
                              const TargetOptions &Opts)
     : TargetInfo(Triple), FPMath(FP_Default), IsAAPCS(true), LDREX(0),
       HW_FP(0) {
+  bool IsOpenBSD = Triple.isOSOpenBSD();
+  bool IsNetBSD = Triple.isOSNetBSD();
 
-  switch (getTriple().getOS()) {
-  case llvm::Triple::NetBSD:
-  case llvm::Triple::OpenBSD:
-    PtrDiffType = SignedLong;
-    break;
-  default:
+  // FIXME: the isOSBinFormatMachO is a workaround for identifying a Darwin-like
+  // environment where size_t is `unsigned long` rather than `unsigned int`
+
+  PtrDiffType = IntPtrType =
+      (Triple.isOSDarwin() || Triple.isOSBinFormatMachO() || IsOpenBSD ||
+       IsNetBSD)
+          ? SignedLong
+          : SignedInt;
+
+  SizeType = (Triple.isOSDarwin() || Triple.isOSBinFormatMachO() || IsOpenBSD ||
+              IsNetBSD)
+                 ? UnsignedLong
+                 : UnsignedInt;
+
+  // ptrdiff_t is inconsistent on Darwin
+  if ((Triple.isOSDarwin() || Triple.isOSBinFormatMachO()) &&
+      !Triple.isWatchABI())
     PtrDiffType = SignedInt;
-    break;
-  }
 
   // Cache arch related info.
   setArchInfo();
@@ -290,9 +282,9 @@ ARMTargetInfo::ARMTargetInfo(const llvm::Triple &Triple,
       setABI("apcs-gnu");
       break;
     default:
-      if (Triple.getOS() == llvm::Triple::NetBSD)
+      if (IsNetBSD)
         setABI("apcs-gnu");
-      else if (Triple.getOS() == llvm::Triple::OpenBSD)
+      else if (IsOpenBSD)
         setABI("aapcs-linux");
       else
         setABI("aapcs");
@@ -348,8 +340,19 @@ bool ARMTargetInfo::initFeatureMap(
     llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags, StringRef CPU,
     const std::vector<std::string> &FeaturesVec) const {
 
+  std::string ArchFeature;
   std::vector<StringRef> TargetFeatures;
   llvm::ARM::ArchKind Arch = llvm::ARM::parseArch(getTriple().getArchName());
+
+  // Map the base architecture to an appropriate target feature, so we don't
+  // rely on the target triple.
+  llvm::ARM::ArchKind CPUArch = llvm::ARM::parseCPUArch(CPU);
+  if (CPUArch == llvm::ARM::ArchKind::INVALID)
+    CPUArch = Arch;
+  if (CPUArch != llvm::ARM::ArchKind::INVALID) {
+    ArchFeature = ("+" + llvm::ARM::getArchName(CPUArch)).str();
+    TargetFeatures.push_back(ArchFeature);
+  }
 
   // get default FPU features
   unsigned FPUKind = llvm::ARM::getDefaultFPU(CPU, Arch);
@@ -393,6 +396,8 @@ bool ARMTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
   Unaligned = 1;
   SoftFloat = SoftFloatABI = false;
   HWDiv = 0;
+  DotProd = 0;
+  HasFloat16 = true;
 
   // This does not diagnose illegal cases like having both
   // "+vfpv2" and "+vfpv3" or having "+neon" and "+fp-only-sp".
@@ -433,6 +438,10 @@ bool ARMTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       Unaligned = 0;
     } else if (Feature == "+fp16") {
       HW_FP |= HW_FP_HP;
+    } else if (Feature == "+fullfp16") {
+      HasLegalHalfType = true;
+    } else if (Feature == "+dotprod") {
+      DotProd = true;
     }
   }
   HW_FP &= ~HW_FP_remove;
@@ -467,7 +476,7 @@ bool ARMTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
     Features.push_back("-neonfp");
 
   // Remove front-end specific options which the backend handles differently.
-  auto Feature = std::find(Features.begin(), Features.end(), "+soft-float-abi");
+  auto Feature = llvm::find(Features, "+soft-float-abi");
   if (Feature != Features.end())
     Features.erase(Feature);
 
@@ -490,6 +499,10 @@ bool ARMTargetInfo::hasFeature(StringRef Feature) const {
 bool ARMTargetInfo::isValidCPUName(StringRef Name) const {
   return Name == "generic" ||
          llvm::ARM::parseCPUArch(Name) != llvm::ARM::ArchKind::INVALID;
+}
+
+void ARMTargetInfo::fillValidCPUList(SmallVectorImpl<StringRef> &Values) const {
+  llvm::ARM::fillValidCPUArchList(Values);
 }
 
 bool ARMTargetInfo::setCPU(const std::string &Name) {
@@ -596,7 +609,7 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
 
   // ACLE 6.4.4 LDREX/STREX
   if (LDREX)
-    Builder.defineMacro("__ARM_FEATURE_LDREX", "0x" + llvm::utohexstr(LDREX));
+    Builder.defineMacro("__ARM_FEATURE_LDREX", "0x" + Twine::utohexstr(LDREX));
 
   // ACLE 6.4.5 CLZ
   if (ArchVersion == 5 || (ArchVersion == 6 && CPUProfile != "M") ||
@@ -605,7 +618,7 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
 
   // ACLE 6.5.1 Hardware Floating Point
   if (HW_FP)
-    Builder.defineMacro("__ARM_FP", "0x" + llvm::utohexstr(HW_FP));
+    Builder.defineMacro("__ARM_FP", "0x" + Twine::utohexstr(HW_FP));
 
   // ACLE predefines.
   Builder.defineMacro("__ARM_ACLE", "200");
@@ -640,6 +653,12 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
   if (SoftFloat)
     Builder.defineMacro("__SOFTFP__");
 
+  // ACLE position independent code macros.
+  if (Opts.ROPI)
+    Builder.defineMacro("__ARM_ROPI", "1");
+  if (Opts.RWPI)
+    Builder.defineMacro("__ARM_RWPI", "1");
+
   if (ArchKind == llvm::ARM::ArchKind::XSCALE)
     Builder.defineMacro("__XSCALE__");
 
@@ -651,7 +670,7 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
   }
 
   // ACLE 6.4.9 32-bit SIMD instructions
-  if (ArchVersion >= 6 && (CPUProfile != "M" || CPUAttr == "7EM"))
+  if ((CPUProfile != "M" && ArchVersion >= 6) || (CPUProfile == "M" && DSP))
     Builder.defineMacro("__ARM_FEATURE_SIMD32", "1");
 
   // ACLE 6.4.10 Hardware Integer Divide
@@ -686,10 +705,11 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
     // current AArch32 NEON implementations do not support double-precision
     // floating-point even when it is present in VFP.
     Builder.defineMacro("__ARM_NEON_FP",
-                        "0x" + llvm::utohexstr(HW_FP & ~HW_FP_DP));
+                        "0x" + Twine::utohexstr(HW_FP & ~HW_FP_DP));
   }
 
-  Builder.defineMacro("__ARM_SIZEOF_WCHAR_T", Opts.ShortWChar ? "2" : "4");
+  Builder.defineMacro("__ARM_SIZEOF_WCHAR_T",
+                      Twine(Opts.WCharSize ? Opts.WCharSize : 4));
 
   Builder.defineMacro("__ARM_SIZEOF_MINIMAL_ENUM", Opts.ShortEnums ? "1" : "4");
 
@@ -718,6 +738,18 @@ void ARMTargetInfo::getTargetDefines(const LangOptions &Opts,
 
   if (Opts.UnsafeFPMath)
     Builder.defineMacro("__ARM_FP_FAST", "1");
+
+  // Armv8.2-A FP16 vector intrinsic
+  if ((FPU & NeonFPU) && HasLegalHalfType)
+    Builder.defineMacro("__ARM_FEATURE_FP16_VECTOR_ARITHMETIC", "1");
+
+  // Armv8.2-A FP16 scalar intrinsics
+  if (HasLegalHalfType)
+    Builder.defineMacro("__ARM_FEATURE_FP16_SCALAR_ARITHMETIC", "1");
+
+  // Armv8.2-A dot product intrinsics
+  if (DotProd)
+    Builder.defineMacro("__ARM_FEATURE_DOTPROD", "1");
 
   switch (ArchKind) {
   default:
@@ -932,8 +964,6 @@ void ARMbeTargetInfo::getTargetDefines(const LangOptions &Opts,
 WindowsARMTargetInfo::WindowsARMTargetInfo(const llvm::Triple &Triple,
                                            const TargetOptions &Opts)
     : WindowsTargetInfo<ARMleTargetInfo>(Triple, Opts), Triple(Triple) {
-  WCharType = UnsignedShort;
-  SizeType = UnsignedInt;
 }
 
 void WindowsARMTargetInfo::getVisualStudioDefines(const LangOptions &Opts,
@@ -971,6 +1001,9 @@ WindowsARMTargetInfo::checkCallingConvention(CallingConv CC) const {
     return CCCR_Ignore;
   case CC_C:
   case CC_OpenCLKernel:
+  case CC_PreserveMost:
+  case CC_PreserveAll:
+  case CC_Swift:
     return CCCR_OK;
   default:
     return CCCR_Warning;
@@ -1014,19 +1047,16 @@ MinGWARMTargetInfo::MinGWARMTargetInfo(const llvm::Triple &Triple,
 void MinGWARMTargetInfo::getTargetDefines(const LangOptions &Opts,
                                           MacroBuilder &Builder) const {
   WindowsARMTargetInfo::getTargetDefines(Opts, Builder);
-  DefineStd(Builder, "WIN32", Opts);
-  DefineStd(Builder, "WINNT", Opts);
   Builder.defineMacro("_ARM_");
-  addMinGWDefines(Opts, Builder);
 }
 
 CygwinARMTargetInfo::CygwinARMTargetInfo(const llvm::Triple &Triple,
                                          const TargetOptions &Opts)
     : ARMleTargetInfo(Triple, Opts) {
+  this->WCharType = TargetInfo::UnsignedShort;
   TLSSupported = false;
-  WCharType = UnsignedShort;
   DoubleAlign = LongLongAlign = 64;
-  resetDataLayout("e-m:e-p:32:32-i64:64-v128:64:128-a:0:32-n32-S64");
+  resetDataLayout("e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64");
 }
 
 void CygwinARMTargetInfo::getTargetDefines(const LangOptions &Opts,
@@ -1052,10 +1082,6 @@ DarwinARMTargetInfo::DarwinARMTargetInfo(const llvm::Triple &Triple,
   if (Triple.isWatchABI()) {
     // Darwin on iOS uses a variant of the ARM C++ ABI.
     TheCXXABI.set(TargetCXXABI::WatchOS);
-
-    // The 32-bit ABI is silent on what ptrdiff_t should be, but given that
-    // size_t is long, it's a bit weird for it to be int.
-    PtrDiffType = SignedLong;
 
     // BOOL should be a real boolean on the new ABI
     UseSignedCharForObjCBool = false;

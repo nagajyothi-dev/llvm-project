@@ -1,14 +1,13 @@
 //===--- WhitespaceManager.cpp - Format C++ code --------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// \brief This file implements WhitespaceManager class.
+/// This file implements WhitespaceManager class.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -67,6 +66,11 @@ void WhitespaceManager::addUntouchableToken(const FormatToken &Tok,
                            /*IsInsideToken=*/false));
 }
 
+llvm::Error
+WhitespaceManager::addReplacement(const tooling::Replacement &Replacement) {
+  return Replaces.add(Replacement);
+}
+
 void WhitespaceManager::replaceWhitespaceInToken(
     const FormatToken &Tok, unsigned Offset, unsigned ReplaceChars,
     StringRef PreviousPostfix, StringRef CurrentPrefix, bool InPPDirective,
@@ -85,7 +89,7 @@ const tooling::Replacements &WhitespaceManager::generateReplacements() {
   if (Changes.empty())
     return Replaces;
 
-  std::sort(Changes.begin(), Changes.end(), Change::IsBeforeInFile(SourceMgr));
+  llvm::sort(Changes, Change::IsBeforeInFile(SourceMgr));
   calculateLineBreakInformation();
   alignConsecutiveDeclarations();
   alignConsecutiveAssignments();
@@ -166,15 +170,15 @@ void WhitespaceManager::calculateLineBreakInformation() {
         // BreakableLineCommentSection does comment reflow changes and here is
         // the aligning of trailing comments. Consider the case where we reflow
         // the second line up in this example:
-        // 
+        //
         // // line 1
         // // line 2
-        // 
+        //
         // That amounts to 2 changes by BreakableLineCommentSection:
         //  - the first, delimited by (), for the whitespace between the tokens,
         //  - and second, delimited by [], for the whitespace at the beginning
         //  of the second token:
-        // 
+        //
         // // line 1(
         // )[// ]line 2
         //
@@ -246,12 +250,18 @@ AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
 
   for (unsigned i = Start; i != End; ++i) {
     if (ScopeStack.size() != 0 &&
-        Changes[i].nestingAndIndentLevel() <
-            Changes[ScopeStack.back()].nestingAndIndentLevel())
+        Changes[i].indentAndNestingLevel() <
+            Changes[ScopeStack.back()].indentAndNestingLevel())
       ScopeStack.pop_back();
 
-    if (i != Start && Changes[i].nestingAndIndentLevel() >
-                          Changes[i - 1].nestingAndIndentLevel())
+    // Compare current token to previous non-comment token to ensure whether
+    // it is in a deeper scope or not.
+    unsigned PreviousNonComment = i - 1;
+    while (PreviousNonComment > Start &&
+           Changes[PreviousNonComment].Tok->is(tok::comment))
+      PreviousNonComment--;
+    if (i != Start && Changes[i].indentAndNestingLevel() >
+                          Changes[PreviousNonComment].indentAndNestingLevel())
       ScopeStack.push_back(i);
 
     bool InsideNestedScope = ScopeStack.size() != 0;
@@ -327,8 +337,8 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
   // Measure the scope level (i.e. depth of (), [], {}) of the first token, and
   // abort when we hit any token in a higher scope than the starting one.
-  auto NestingAndIndentLevel = StartAt < Changes.size()
-                                   ? Changes[StartAt].nestingAndIndentLevel()
+  auto IndentAndNestingLevel = StartAt < Changes.size()
+                                   ? Changes[StartAt].indentAndNestingLevel()
                                    : std::pair<unsigned, unsigned>(0, 0);
 
   // Keep track of the number of commas before the matching tokens, we will only
@@ -359,7 +369,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
   unsigned i = StartAt;
   for (unsigned e = Changes.size(); i != e; ++i) {
-    if (Changes[i].nestingAndIndentLevel() < NestingAndIndentLevel)
+    if (Changes[i].indentAndNestingLevel() < IndentAndNestingLevel)
       break;
 
     if (Changes[i].NewlinesBefore != 0) {
@@ -375,7 +385,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
     if (Changes[i].Tok->is(tok::comma)) {
       ++CommasBeforeMatch;
-    } else if (Changes[i].nestingAndIndentLevel() > NestingAndIndentLevel) {
+    } else if (Changes[i].indentAndNestingLevel() > IndentAndNestingLevel) {
       // Call AlignTokens recursively, skipping over this scope block.
       unsigned StoppedAt = AlignTokens(Style, Matches, Changes, i);
       i = StoppedAt - 1;
@@ -422,19 +432,20 @@ void WhitespaceManager::alignConsecutiveAssignments() {
   if (!Style.AlignConsecutiveAssignments)
     return;
 
-  AlignTokens(Style,
-              [&](const Change &C) {
-                // Do not align on equal signs that are first on a line.
-                if (C.NewlinesBefore > 0)
-                  return false;
+  AlignTokens(
+      Style,
+      [&](const Change &C) {
+        // Do not align on equal signs that are first on a line.
+        if (C.NewlinesBefore > 0)
+          return false;
 
-                // Do not align on equal signs that are last on a line.
-                if (&C != &Changes.back() && (&C + 1)->NewlinesBefore > 0)
-                  return false;
+        // Do not align on equal signs that are last on a line.
+        if (&C != &Changes.back() && (&C + 1)->NewlinesBefore > 0)
+          return false;
 
-                return C.Tok->is(tok::equal);
-              },
-              Changes, /*StartAt=*/0);
+        return C.Tok->is(tok::equal);
+      },
+      Changes, /*StartAt=*/0);
 }
 
 void WhitespaceManager::alignConsecutiveDeclarations() {
@@ -447,15 +458,16 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
   //   const char* const* v1;
   //   float const* v2;
   //   SomeVeryLongType const& v3;
-  AlignTokens(Style,
-              [](Change const &C) {
-                // tok::kw_operator is necessary for aligning operator overload
-                // definitions.
-                return C.Tok->is(TT_StartOfName) ||
-                       C.Tok->is(TT_FunctionDeclarationName) ||
-                       C.Tok->is(tok::kw_operator);
-              },
-              Changes, /*StartAt=*/0);
+  AlignTokens(
+      Style,
+      [](Change const &C) {
+        // tok::kw_operator is necessary for aligning operator overload
+        // definitions.
+        return C.Tok->is(TT_StartOfName) ||
+               C.Tok->is(TT_FunctionDeclarationName) ||
+               C.Tok->is(tok::kw_operator);
+      },
+      Changes, /*StartAt=*/0);
 }
 
 void WhitespaceManager::alignTrailingComments() {
@@ -472,9 +484,14 @@ void WhitespaceManager::alignTrailingComments() {
       continue;
 
     unsigned ChangeMinColumn = Changes[i].StartOfTokenColumn;
-    unsigned ChangeMaxColumn = Style.ColumnLimit >= Changes[i].TokenLength
-                                   ? Style.ColumnLimit - Changes[i].TokenLength
-                                   : ChangeMinColumn;
+    unsigned ChangeMaxColumn;
+
+    if (Style.ColumnLimit == 0)
+      ChangeMaxColumn = UINT_MAX;
+    else if (Style.ColumnLimit >= Changes[i].TokenLength)
+      ChangeMaxColumn = Style.ColumnLimit - Changes[i].TokenLength;
+    else
+      ChangeMaxColumn = ChangeMinColumn;
 
     // If we don't create a replacement for this change, we have to consider
     // it to be immovable.
@@ -526,11 +543,10 @@ void WhitespaceManager::alignTrailingComments() {
       MinColumn = std::max(MinColumn, ChangeMinColumn);
       MaxColumn = std::min(MaxColumn, ChangeMaxColumn);
     }
-    BreakBeforeNext =
-        (i == 0) || (Changes[i].NewlinesBefore > 1) ||
-        // Never start a sequence with a comment at the beginning of
-        // the line.
-        (Changes[i].NewlinesBefore == 1 && StartOfSequence == i);
+    BreakBeforeNext = (i == 0) || (Changes[i].NewlinesBefore > 1) ||
+                      // Never start a sequence with a comment at the beginning
+                      // of the line.
+                      (Changes[i].NewlinesBefore == 1 && StartOfSequence == i);
     Newlines = 0;
   }
   alignTrailingComments(StartOfSequence, Changes.size(), MinColumn);
@@ -617,8 +633,7 @@ void WhitespaceManager::generateChanges() {
   }
 }
 
-void WhitespaceManager::storeReplacement(SourceRange Range,
-                                         StringRef Text) {
+void WhitespaceManager::storeReplacement(SourceRange Range, StringRef Text) {
   unsigned WhitespaceLength = SourceMgr.getFileOffset(Range.getEnd()) -
                               SourceMgr.getFileOffset(Range.getBegin());
   // Don't create a replacement, if it does not change anything.
@@ -641,10 +656,9 @@ void WhitespaceManager::appendNewlineText(std::string &Text,
     Text.append(UseCRLF ? "\r\n" : "\n");
 }
 
-void WhitespaceManager::appendEscapedNewlineText(std::string &Text,
-                                                 unsigned Newlines,
-                                                 unsigned PreviousEndOfTokenColumn,
-                                                 unsigned EscapedNewlineColumn) {
+void WhitespaceManager::appendEscapedNewlineText(
+    std::string &Text, unsigned Newlines, unsigned PreviousEndOfTokenColumn,
+    unsigned EscapedNewlineColumn) {
   if (Newlines > 0) {
     unsigned Spaces =
         std::max<int>(1, EscapedNewlineColumn - PreviousEndOfTokenColumn - 1);
@@ -666,11 +680,15 @@ void WhitespaceManager::appendIndentText(std::string &Text,
   case FormatStyle::UT_Always: {
     unsigned FirstTabWidth =
         Style.TabWidth - WhitespaceStartColumn % Style.TabWidth;
-    // Indent with tabs only when there's at least one full tab.
-    if (FirstTabWidth + Style.TabWidth <= Spaces) {
-      Spaces -= FirstTabWidth;
-      Text.append("\t");
+    // Insert only spaces when we want to end up before the next tab.
+    if (Spaces < FirstTabWidth || Spaces == 1) {
+      Text.append(Spaces, ' ');
+      break;
     }
+    // Align to the next tab.
+    Spaces -= FirstTabWidth;
+    Text.append("\t");
+
     Text.append(Spaces / Style.TabWidth, '\t');
     Text.append(Spaces % Style.TabWidth, ' ');
     break;

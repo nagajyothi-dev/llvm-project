@@ -1,22 +1,8 @@
 /*===- __clang_math_forward_declares.h - Prototypes of __device__ math fns --===
  *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+ * See https://llvm.org/LICENSE.txt for license information.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
  *
  *===-----------------------------------------------------------------------===
  */
@@ -98,12 +84,14 @@ __DEVICE__ double hypot(double, double);
 __DEVICE__ float hypot(float, float);
 __DEVICE__ int ilogb(double);
 __DEVICE__ int ilogb(float);
+__DEVICE__ bool isfinite(long double);
 __DEVICE__ bool isfinite(double);
 __DEVICE__ bool isfinite(float);
 __DEVICE__ bool isgreater(double, double);
 __DEVICE__ bool isgreaterequal(double, double);
 __DEVICE__ bool isgreaterequal(float, float);
 __DEVICE__ bool isgreater(float, float);
+__DEVICE__ bool isinf(long double);
 __DEVICE__ bool isinf(double);
 __DEVICE__ bool isinf(float);
 __DEVICE__ bool isless(double, double);
@@ -112,6 +100,7 @@ __DEVICE__ bool islessequal(float, float);
 __DEVICE__ bool isless(float, float);
 __DEVICE__ bool islessgreater(double, double);
 __DEVICE__ bool islessgreater(float, float);
+__DEVICE__ bool isnan(long double);
 __DEVICE__ bool isnan(double);
 __DEVICE__ bool isnan(float);
 __DEVICE__ bool isnormal(double);
@@ -149,9 +138,6 @@ __DEVICE__ double nearbyint(double);
 __DEVICE__ float nearbyint(float);
 __DEVICE__ double nextafter(double, double);
 __DEVICE__ float nextafter(float, float);
-__DEVICE__ double nexttoward(double, double);
-__DEVICE__ float nexttoward(float, double);
-__DEVICE__ float nexttowardf(float, double);
 __DEVICE__ double pow(double, double);
 __DEVICE__ double pow(double, int);
 __DEVICE__ float pow(float, float);
@@ -184,6 +170,10 @@ __DEVICE__ double tgamma(double);
 __DEVICE__ float tgamma(float);
 __DEVICE__ double trunc(double);
 __DEVICE__ float trunc(float);
+
+// Notably missing above is nexttoward, which we don't define on
+// the device side because libdevice doesn't give us an implementation, and we
+// don't want to be in the business of writing one ourselves.
 
 // We need to define these overloads in exactly the namespace our standard
 // library uses (including the right inline namespace), otherwise they won't be
@@ -255,7 +245,6 @@ using ::nan;
 using ::nanf;
 using ::nearbyint;
 using ::nextafter;
-using ::nexttoward;
 using ::pow;
 using ::remainder;
 using ::remquo;

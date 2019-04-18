@@ -1,9 +1,8 @@
 //===--- ScopeInfo.cpp - Information about a semantic context -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -43,6 +42,7 @@ void FunctionScopeInfo::Clear() {
   // Coroutine state
   FirstCoroutineStmtLoc = SourceLocation();
   CoroutinePromise = nullptr;
+  CoroutineParameterMoves.clear();
   NeedsCoroutineSuspends = true;
   CoroutineSuspends.first = nullptr;
   CoroutineSuspends.second = nullptr;
@@ -53,6 +53,8 @@ void FunctionScopeInfo::Clear() {
   PossiblyUnreachableDiags.clear();
   WeakObjectUses.clear();
   ModifiedNonNullParams.clear();
+  Blocks.clear();
+  ByrefBlockVars.clear();
 }
 
 static const NamedDecl *getBestPropertyDecl(const ObjCPropertyRefExpr *PropE) {

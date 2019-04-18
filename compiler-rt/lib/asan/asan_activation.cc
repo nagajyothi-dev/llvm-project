@@ -1,9 +1,8 @@
 //===-- asan_activation.cc --------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -16,8 +15,10 @@
 #include "asan_allocator.h"
 #include "asan_flags.h"
 #include "asan_internal.h"
+#include "asan_mapping.h"
 #include "asan_poisoning.h"
 #include "asan_stack.h"
+#include "sanitizer_common/sanitizer_common.h"
 #include "sanitizer_common/sanitizer_flags.h"
 
 namespace __asan {
@@ -110,8 +111,9 @@ void AsanDeactivate() {
   AllocatorOptions disabled = asan_deactivated_flags.allocator_options;
   disabled.quarantine_size_mb = 0;
   disabled.thread_local_quarantine_size_kb = 0;
-  disabled.min_redzone = 16;  // Redzone must be at least 16 bytes long.
-  disabled.max_redzone = 16;
+  // Redzone must be at least Max(16, granularity) bytes long.
+  disabled.min_redzone = Max(16, (int)SHADOW_GRANULARITY);
+  disabled.max_redzone = disabled.min_redzone;
   disabled.alloc_dealloc_mismatch = false;
   disabled.may_return_null = true;
   ReInitializeAllocator(disabled);

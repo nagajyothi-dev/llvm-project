@@ -1,9 +1,8 @@
 //===-- VOPCInstructions.td - Vector Instruction Defintions ---------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,8 +29,8 @@ class VOPC_SDWAe <bits<8> op, VOPProfile P> : VOP_SDWAe <P> {
   let Inst{31-25} = 0x3e; // encoding
 
   // VOPC disallows dst_sel and dst_unused as they have no effect on destination
-  let Inst{42-40} = SDWA.DWORD;
-  let Inst{44-43} = SDWA.UNUSED_PRESERVE;
+  let Inst{42-40} = 0;
+  let Inst{44-43} = 0;
 }
 
 class VOPC_SDWA9e <bits<8> op, VOPProfile P> : VOP_SDWA9Be <P> {
@@ -83,8 +82,6 @@ class VOPC_Pseudo <string opName, VOPC_Profile P, list<dag> pattern=[]> :
   let Uses = [EXEC];
   let Defs = [VCC];
 
-  let SubtargetPredicate = isGCN;
-
   VOPProfile Pfl = P;
 }
 
@@ -106,6 +103,7 @@ class VOPC_Real <VOPC_Pseudo ps, int EncodingFamily> :
   let TSFlags            = ps.TSFlags;
   let UseNamedOperandTable = ps.UseNamedOperandTable;
   let Uses                 = ps.Uses;
+  let Defs                 = ps.Defs;
 }
 
 class VOPC_SDWA_Pseudo <string OpName, VOPProfile P, list<dag> pattern=[]> :
@@ -308,7 +306,7 @@ defm V_CMPX_NEQ_F64 : VOPCX_F64 <"v_cmpx_neq_f64">;
 defm V_CMPX_NLT_F64 : VOPCX_F64 <"v_cmpx_nlt_f64">;
 defm V_CMPX_TRU_F64 : VOPCX_F64 <"v_cmpx_tru_f64">;
 
-let SubtargetPredicate = isSICI in {
+let SubtargetPredicate = isGFX6GFX7 in {
 
 defm V_CMPS_F_F32 : VOPC_F32 <"v_cmps_f_f32">;
 defm V_CMPS_LT_F32 : VOPC_F32 <"v_cmps_lt_f32", COND_NULL, "v_cmps_gt_f32">;
@@ -378,7 +376,7 @@ defm V_CMPSX_NEQ_F64 : VOPCX_F64 <"v_cmpsx_neq_f64">;
 defm V_CMPSX_NLT_F64 : VOPCX_F64 <"v_cmpsx_nlt_f64">;
 defm V_CMPSX_TRU_F64 : VOPCX_F64 <"v_cmpsx_tru_f64">;
 
-} // End SubtargetPredicate = isSICI
+} // End SubtargetPredicate = isGFX6GFX7
 
 let SubtargetPredicate = Has16BitInsts in {
 
@@ -607,9 +605,7 @@ defm V_CMPX_CLASS_F16 : VOPCX_CLASS_F16 <"v_cmpx_class_f16">;
 // V_ICMPIntrinsic Pattern.
 //===----------------------------------------------------------------------===//
 
-let Predicates = [isGCN] in {
-
-class ICMP_Pattern <PatLeaf cond, Instruction inst, ValueType vt> : Pat <
+class ICMP_Pattern <PatLeaf cond, Instruction inst, ValueType vt> : GCNPat <
   (AMDGPUsetcc vt:$src0, vt:$src1, cond),
   (inst $src0, $src1)
 >;
@@ -636,7 +632,18 @@ def : ICMP_Pattern <COND_SGE, V_CMP_GE_I64_e64, i64>;
 def : ICMP_Pattern <COND_SLT, V_CMP_LT_I64_e64, i64>;
 def : ICMP_Pattern <COND_SLE, V_CMP_LE_I64_e64, i64>;
 
-class FCMP_Pattern <PatLeaf cond, Instruction inst, ValueType vt> : Pat <
+def : ICMP_Pattern <COND_EQ, V_CMP_EQ_U16_e64, i16>;
+def : ICMP_Pattern <COND_NE, V_CMP_NE_U16_e64, i16>;
+def : ICMP_Pattern <COND_UGT, V_CMP_GT_U16_e64, i16>;
+def : ICMP_Pattern <COND_UGE, V_CMP_GE_U16_e64, i16>;
+def : ICMP_Pattern <COND_ULT, V_CMP_LT_U16_e64, i16>;
+def : ICMP_Pattern <COND_ULE, V_CMP_LE_U16_e64, i16>;
+def : ICMP_Pattern <COND_SGT, V_CMP_GT_I16_e64, i16>;
+def : ICMP_Pattern <COND_SGE, V_CMP_GE_I16_e64, i16>;
+def : ICMP_Pattern <COND_SLT, V_CMP_LT_I16_e64, i16>;
+def : ICMP_Pattern <COND_SLE, V_CMP_LE_I16_e64, i16>;
+
+class FCMP_Pattern <PatLeaf cond, Instruction inst, ValueType vt> : GCNPat <
   (i64 (AMDGPUsetcc (vt (VOP3Mods vt:$src0, i32:$src0_modifiers)),
                    (vt (VOP3Mods vt:$src1, i32:$src1_modifiers)), cond)),
   (inst $src0_modifiers, $src0, $src1_modifiers, $src1,
@@ -657,6 +664,14 @@ def : FCMP_Pattern <COND_OGE, V_CMP_GE_F64_e64, f64>;
 def : FCMP_Pattern <COND_OLT, V_CMP_LT_F64_e64, f64>;
 def : FCMP_Pattern <COND_OLE, V_CMP_LE_F64_e64, f64>;
 
+def : FCMP_Pattern <COND_OEQ, V_CMP_EQ_F16_e64, f16>;
+def : FCMP_Pattern <COND_ONE, V_CMP_NEQ_F16_e64, f16>;
+def : FCMP_Pattern <COND_OGT, V_CMP_GT_F16_e64, f16>;
+def : FCMP_Pattern <COND_OGE, V_CMP_GE_F16_e64, f16>;
+def : FCMP_Pattern <COND_OLT, V_CMP_LT_F16_e64, f16>;
+def : FCMP_Pattern <COND_OLE, V_CMP_LE_F16_e64, f16>;
+
+
 def : FCMP_Pattern <COND_UEQ, V_CMP_NLG_F32_e64, f32>;
 def : FCMP_Pattern <COND_UNE, V_CMP_NEQ_F32_e64, f32>;
 def : FCMP_Pattern <COND_UGT, V_CMP_NLE_F32_e64, f32>;
@@ -671,10 +686,15 @@ def : FCMP_Pattern <COND_UGE, V_CMP_NLT_F64_e64, f64>;
 def : FCMP_Pattern <COND_ULT, V_CMP_NGE_F64_e64, f64>;
 def : FCMP_Pattern <COND_ULE, V_CMP_NGT_F64_e64, f64>;
 
-} // End Predicates = [isGCN]
+def : FCMP_Pattern <COND_UEQ, V_CMP_NLG_F16_e64, f16>;
+def : FCMP_Pattern <COND_UNE, V_CMP_NEQ_F16_e64, f16>;
+def : FCMP_Pattern <COND_UGT, V_CMP_NLE_F16_e64, f16>;
+def : FCMP_Pattern <COND_UGE, V_CMP_NLT_F16_e64, f16>;
+def : FCMP_Pattern <COND_ULT, V_CMP_NGE_F16_e64, f16>;
+def : FCMP_Pattern <COND_ULE, V_CMP_NGT_F16_e64, f16>;
 
 //===----------------------------------------------------------------------===//
-// Target
+// Target-specific instruction encodings.
 //===----------------------------------------------------------------------===//
 
 //===----------------------------------------------------------------------===//
@@ -682,7 +702,7 @@ def : FCMP_Pattern <COND_ULE, V_CMP_NGT_F64_e64, f64>;
 //===----------------------------------------------------------------------===//
 
 multiclass VOPC_Real_si <bits<9> op> {
-  let AssemblerPredicates = [isSICI], DecoderNamespace = "SICI" in {
+  let AssemblerPredicates = [isGFX6GFX7], DecoderNamespace = "GFX6GFX7" in {
     def _e32_si :
       VOPC_Real<!cast<VOPC_Pseudo>(NAME#"_e32"), SIEncodingFamily.SI>,
       VOPCe<op{7-0}>;
@@ -698,7 +718,7 @@ multiclass VOPC_Real_si <bits<9> op> {
   }
   def : VOPCInstAlias <!cast<VOP3_Pseudo>(NAME#"_e64"),
                        !cast<Instruction>(NAME#"_e32_si")> {
-    let AssemblerPredicate = isSICI;
+    let AssemblerPredicate = isGFX6GFX7;
   }
 }
 
@@ -920,7 +940,7 @@ defm V_CMPX_CLASS_F64 : VOPC_Real_si <0xb8>;
 //===----------------------------------------------------------------------===//
 
 multiclass VOPC_Real_vi <bits<10> op> {
-  let AssemblerPredicates = [isVI], DecoderNamespace = "VI" in {
+  let AssemblerPredicates = [isGFX8GFX9], DecoderNamespace = "GFX8" in {
     def _e32_vi :
       VOPC_Real<!cast<VOPC_Pseudo>(NAME#"_e32"), SIEncodingFamily.VI>,
       VOPCe<op{7-0}>;
@@ -945,7 +965,7 @@ multiclass VOPC_Real_vi <bits<10> op> {
 
   def : VOPCInstAlias <!cast<VOP3_Pseudo>(NAME#"_e64"),
                        !cast<Instruction>(NAME#"_e32_vi")> {
-    let AssemblerPredicate = isVI;
+    let AssemblerPredicate = isGFX8GFX9;
   }
 }
 

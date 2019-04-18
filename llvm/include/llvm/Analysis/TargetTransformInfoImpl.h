@@ -1,9 +1,8 @@
 //===- TargetTransformInfoImpl.h --------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 /// \file
@@ -27,7 +26,7 @@
 
 namespace llvm {
 
-/// \brief Base class for use as a mix-in that aids implementing
+/// Base class for use as a mix-in that aids implementing
 /// a TargetTransformInfo-compatible class.
 class TargetTransformInfoImplBase {
 protected:
@@ -124,7 +123,7 @@ public:
     return TTI::TCC_Basic;
   }
 
-  unsigned getCallCost(FunctionType *FTy, int NumArgs) {
+  unsigned getCallCost(FunctionType *FTy, int NumArgs, const User *U) {
     assert(FTy && "FunctionType must be provided to this routine.");
 
     // The target-independent implementation just measures the size of the
@@ -141,40 +140,8 @@ public:
 
   unsigned getInliningThresholdMultiplier() { return 1; }
 
-  unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
-                            ArrayRef<Type *> ParamTys) {
-    switch (IID) {
-    default:
-      // Intrinsics rarely (if ever) have normal argument setup constraints.
-      // Model them as having a basic instruction cost.
-      // FIXME: This is wrong for libc intrinsics.
-      return TTI::TCC_Basic;
-
-    case Intrinsic::annotation:
-    case Intrinsic::assume:
-    case Intrinsic::dbg_declare:
-    case Intrinsic::dbg_value:
-    case Intrinsic::invariant_start:
-    case Intrinsic::invariant_end:
-    case Intrinsic::lifetime_start:
-    case Intrinsic::lifetime_end:
-    case Intrinsic::objectsize:
-    case Intrinsic::ptr_annotation:
-    case Intrinsic::var_annotation:
-    case Intrinsic::experimental_gc_result:
-    case Intrinsic::experimental_gc_relocate:
-    case Intrinsic::coro_alloc:
-    case Intrinsic::coro_begin:
-    case Intrinsic::coro_free:
-    case Intrinsic::coro_end:
-    case Intrinsic::coro_frame:
-    case Intrinsic::coro_size:
-    case Intrinsic::coro_suspend:
-    case Intrinsic::coro_param:
-    case Intrinsic::coro_subfn_addr:
-      // These intrinsics don't actually represent code after lowering.
-      return TTI::TCC_Free;
-    }
+  unsigned getMemcpyCost(const Instruction *I) {
+    return TTI::TCC_Expensive;
   }
 
   bool hasBranchDivergence() { return false; }
@@ -188,6 +155,8 @@ public:
   }
 
   bool isLoweredToCall(const Function *F) {
+    assert(F && "A concrete function must be provided to this routine.");
+
     // FIXME: These should almost certainly not be handled here, and instead
     // handled with the help of TLI or the target itself. This was largely
     // ported from existing analysis heuristics here so that such refactorings
@@ -243,6 +212,12 @@ public:
                     C2.ScaleCost, C2.ImmCost, C2.SetupCost);
   }
 
+  bool canMacroFuseCmp() { return false; }
+
+  bool shouldFavorPostInc() const { return false; }
+
+  bool shouldFavorBackedgeIndex(const Loop *L) const { return false; }
+
   bool isLegalMaskedStore(Type *DataType) { return false; }
 
   bool isLegalMaskedLoad(Type *DataType) { return false; }
@@ -250,6 +225,14 @@ public:
   bool isLegalMaskedScatter(Type *DataType) { return false; }
 
   bool isLegalMaskedGather(Type *DataType) { return false; }
+
+  bool isLegalMaskedCompressStore(Type *DataType) { return false; }
+
+  bool isLegalMaskedExpandLoad(Type *DataType) { return false; }
+
+  bool hasDivRemOp(Type *DataType, bool IsSigned) { return false; }
+
+  bool hasVolatileVariant(Instruction *I, unsigned AddrSpace) { return false; }
 
   bool prefersVectorizedAddressing() { return true; }
 
@@ -268,6 +251,8 @@ public:
 
   bool isProfitableToHoist(Instruction *I) { return true; }
 
+  bool useAA() { return false; }
+
   bool isTypeLegal(Type *Ty) { return false; }
 
   unsigned getJumpBufAlignment() { return 0; }
@@ -276,6 +261,8 @@ public:
 
   bool shouldBuildLookupTables() { return true; }
   bool shouldBuildLookupTablesForConstant(Constant *C) { return true; }
+
+  bool useColdCCForColdCall(Function &F) { return false; }
 
   unsigned getScalarizationOverhead(Type *Ty, bool Insert, bool Extract) {
     return 0;
@@ -288,9 +275,14 @@ public:
 
   bool enableAggressiveInterleaving(bool LoopHasReductions) { return false; }
 
-  bool expandMemCmp(Instruction *I, unsigned &MaxLoadSize) { return false; }
+  const TTI::MemCmpExpansionOptions *enableMemCmpExpansion(
+      bool IsZeroCmp) const {
+    return nullptr;
+  }
 
   bool enableInterleavedAccessVectorization() { return false; }
+
+  bool enableMaskedInterleavedAccessVectorization() { return false; }
 
   bool isFPVectorizationPotentiallyUnsafe() { return false; }
 
@@ -305,6 +297,8 @@ public:
   }
 
   bool haveFastSqrt(Type *Ty) { return false; }
+
+  bool isFCmpOrdCheaperThanFCmpZero(Type *Ty) { return true; }
 
   unsigned getFPOpCost(Type *Ty) { return TargetTransformInfo::TCC_Basic; }
 
@@ -331,6 +325,10 @@ public:
 
   unsigned getMinVectorRegisterBitWidth() { return 128; }
 
+  bool shouldMaximizeVectorBandwidth(bool OptSize) const { return false; }
+
+  unsigned getMinimumVF(unsigned ElemWidth) const { return 0; }
+
   bool
   shouldConsiderAddressTypePromotion(const Instruction &I,
                                      bool &AllowPromotionWithoutCommonHeader) {
@@ -339,6 +337,29 @@ public:
   }
 
   unsigned getCacheLineSize() { return 0; }
+
+  llvm::Optional<unsigned> getCacheSize(TargetTransformInfo::CacheLevel Level) {
+    switch (Level) {
+    case TargetTransformInfo::CacheLevel::L1D:
+      LLVM_FALLTHROUGH;
+    case TargetTransformInfo::CacheLevel::L2D:
+      return llvm::Optional<unsigned>();
+    }
+
+    llvm_unreachable("Unknown TargetTransformInfo::CacheLevel");
+  }
+
+  llvm::Optional<unsigned> getCacheAssociativity(
+    TargetTransformInfo::CacheLevel Level) {
+    switch (Level) {
+    case TargetTransformInfo::CacheLevel::L1D:
+      LLVM_FALLTHROUGH;
+    case TargetTransformInfo::CacheLevel::L2D:
+      return llvm::Optional<unsigned>();
+    }
+
+    llvm_unreachable("Unknown TargetTransformInfo::CacheLevel");
+  }
 
   unsigned getPrefetchDistance() { return 0; }
 
@@ -400,8 +421,9 @@ public:
   unsigned getInterleavedMemoryOpCost(unsigned Opcode, Type *VecTy,
                                       unsigned Factor,
                                       ArrayRef<unsigned> Indices,
-                                      unsigned Alignment,
-                                      unsigned AddressSpace) {
+                                      unsigned Alignment, unsigned AddressSpace,
+                                      bool UseMaskForCond = false,
+                                      bool UseMaskForGaps = false) {
     return 1;
   }
 
@@ -427,6 +449,8 @@ public:
   }
 
   unsigned getArithmeticReductionCost(unsigned, Type *, bool) { return 1; }
+
+  unsigned getMinMaxReductionCost(Type *, Type *, bool, bool) { return 1; }
 
   unsigned getCostOfKeepingLiveOverCall(ArrayRef<Type *> Tys) { return 0; }
 
@@ -468,6 +492,24 @@ public:
             Callee->getFnAttribute("target-cpu")) &&
            (Caller->getFnAttribute("target-features") ==
             Callee->getFnAttribute("target-features"));
+  }
+
+  bool areFunctionArgsABICompatible(const Function *Caller, const Function *Callee,
+                                    SmallPtrSetImpl<Argument *> &Args) const {
+    return (Caller->getFnAttribute("target-cpu") ==
+            Callee->getFnAttribute("target-cpu")) &&
+           (Caller->getFnAttribute("target-features") ==
+            Callee->getFnAttribute("target-features"));
+  }
+
+  bool isIndexedLoadLegal(TTI::MemIndexedMode Mode, Type *Ty,
+                          const DataLayout &DL) const {
+    return false;
+  }
+
+  bool isIndexedStoreLegal(TTI::MemIndexedMode Mode, Type *Ty,
+                           const DataLayout &DL) const {
+    return false;
   }
 
   unsigned getLoadStoreVecRegBitWidth(unsigned AddrSpace) const { return 128; }
@@ -592,7 +634,7 @@ protected:
   }
 };
 
-/// \brief CRTP base class for use as a mix-in that aids implementing
+/// CRTP base class for use as a mix-in that aids implementing
 /// a TargetTransformInfo-compatible class.
 template <typename T>
 class TargetTransformInfoImplCRTPBase : public TargetTransformInfoImplBase {
@@ -605,7 +647,7 @@ protected:
 public:
   using BaseT::getCallCost;
 
-  unsigned getCallCost(const Function *F, int NumArgs) {
+  unsigned getCallCost(const Function *F, int NumArgs, const User *U) {
     assert(F && "A concrete function must be provided to this routine.");
 
     if (NumArgs < 0)
@@ -617,21 +659,22 @@ public:
       FunctionType *FTy = F->getFunctionType();
       SmallVector<Type *, 8> ParamTys(FTy->param_begin(), FTy->param_end());
       return static_cast<T *>(this)
-          ->getIntrinsicCost(IID, FTy->getReturnType(), ParamTys);
+          ->getIntrinsicCost(IID, FTy->getReturnType(), ParamTys, U);
     }
 
     if (!static_cast<T *>(this)->isLoweredToCall(F))
       return TTI::TCC_Basic; // Give a basic cost if it will be lowered
                              // directly.
 
-    return static_cast<T *>(this)->getCallCost(F->getFunctionType(), NumArgs);
+    return static_cast<T *>(this)->getCallCost(F->getFunctionType(), NumArgs, U);
   }
 
-  unsigned getCallCost(const Function *F, ArrayRef<const Value *> Arguments) {
+  unsigned getCallCost(const Function *F, ArrayRef<const Value *> Arguments,
+                       const User *U) {
     // Simply delegate to generic handling of the call.
     // FIXME: We should use instsimplify or something else to catch calls which
     // will constant fold with these arguments.
-    return static_cast<T *>(this)->getCallCost(F, Arguments.size());
+    return static_cast<T *>(this)->getCallCost(F, Arguments.size(), U);
   }
 
   using BaseT::getGEPCost;
@@ -647,11 +690,19 @@ public:
       BaseGV = dyn_cast<GlobalValue>(Ptr->stripPointerCasts());
     }
     bool HasBaseReg = (BaseGV == nullptr);
-    int64_t BaseOffset = 0;
+
+    auto PtrSizeBits = DL.getPointerTypeSizeInBits(Ptr->getType());
+    APInt BaseOffset(PtrSizeBits, 0);
     int64_t Scale = 0;
 
     auto GTI = gep_type_begin(PointeeType, Operands);
-    Type *TargetType;
+    Type *TargetType = nullptr;
+
+    // Handle the case where the GEP instruction has a single operand,
+    // the basis, therefore TargetType is a nullptr.
+    if (Operands.empty())
+      return !BaseGV ? TTI::TCC_Free : TTI::TCC_Basic;
+
     for (auto I = Operands.begin(); I != Operands.end(); ++I, ++GTI) {
       TargetType = GTI.getIndexedType();
       // We assume that the cost of Scalar GEP with constant index and the
@@ -667,9 +718,10 @@ public:
         BaseOffset += DL.getStructLayout(STy)->getElementOffset(Field);
       } else {
         int64_t ElementSize = DL.getTypeAllocSize(GTI.getIndexedType());
-        if (ConstIdx)
-          BaseOffset += ConstIdx->getSExtValue() * ElementSize;
-        else {
+        if (ConstIdx) {
+          BaseOffset +=
+              ConstIdx->getValue().sextOrTrunc(PtrSizeBits) * ElementSize;
+        } else {
           // Needs scale register.
           if (Scale != 0)
             // No addressing mode takes two scale registers.
@@ -682,17 +734,60 @@ public:
     // Assumes the address space is 0 when Ptr is nullptr.
     unsigned AS =
         (Ptr == nullptr ? 0 : Ptr->getType()->getPointerAddressSpace());
+
     if (static_cast<T *>(this)->isLegalAddressingMode(
-            TargetType, const_cast<GlobalValue *>(BaseGV), BaseOffset,
-            HasBaseReg, Scale, AS))
+            TargetType, const_cast<GlobalValue *>(BaseGV),
+            BaseOffset.sextOrTrunc(64).getSExtValue(), HasBaseReg, Scale, AS))
       return TTI::TCC_Free;
     return TTI::TCC_Basic;
   }
 
-  using BaseT::getIntrinsicCost;
+  unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
+                            ArrayRef<Type *> ParamTys, const User *U) {
+    switch (IID) {
+    default:
+      // Intrinsics rarely (if ever) have normal argument setup constraints.
+      // Model them as having a basic instruction cost.
+      return TTI::TCC_Basic;
+
+    // TODO: other libc intrinsics.
+    case Intrinsic::memcpy:
+      return static_cast<T *>(this)->getMemcpyCost(dyn_cast<Instruction>(U));
+
+    case Intrinsic::annotation:
+    case Intrinsic::assume:
+    case Intrinsic::sideeffect:
+    case Intrinsic::dbg_declare:
+    case Intrinsic::dbg_value:
+    case Intrinsic::dbg_label:
+    case Intrinsic::invariant_start:
+    case Intrinsic::invariant_end:
+    case Intrinsic::launder_invariant_group:
+    case Intrinsic::strip_invariant_group:
+    case Intrinsic::is_constant:
+    case Intrinsic::lifetime_start:
+    case Intrinsic::lifetime_end:
+    case Intrinsic::objectsize:
+    case Intrinsic::ptr_annotation:
+    case Intrinsic::var_annotation:
+    case Intrinsic::experimental_gc_result:
+    case Intrinsic::experimental_gc_relocate:
+    case Intrinsic::coro_alloc:
+    case Intrinsic::coro_begin:
+    case Intrinsic::coro_free:
+    case Intrinsic::coro_end:
+    case Intrinsic::coro_frame:
+    case Intrinsic::coro_size:
+    case Intrinsic::coro_suspend:
+    case Intrinsic::coro_param:
+    case Intrinsic::coro_subfn_addr:
+      // These intrinsics don't actually represent code after lowering.
+      return TTI::TCC_Free;
+    }
+  }
 
   unsigned getIntrinsicCost(Intrinsic::ID IID, Type *RetTy,
-                            ArrayRef<const Value *> Arguments) {
+                            ArrayRef<const Value *> Arguments, const User *U) {
     // Delegate to the generic intrinsic handling code. This mostly provides an
     // opportunity for targets to (for example) special case the cost of
     // certain intrinsics based on constants used as arguments.
@@ -700,12 +795,17 @@ public:
     ParamTys.reserve(Arguments.size());
     for (unsigned Idx = 0, Size = Arguments.size(); Idx != Size; ++Idx)
       ParamTys.push_back(Arguments[Idx]->getType());
-    return static_cast<T *>(this)->getIntrinsicCost(IID, RetTy, ParamTys);
+    return static_cast<T *>(this)->getIntrinsicCost(IID, RetTy, ParamTys, U);
   }
 
   unsigned getUserCost(const User *U, ArrayRef<const Value *> Operands) {
     if (isa<PHINode>(U))
       return TTI::TCC_Free; // Model all PHI nodes as free.
+
+    // Static alloca doesn't generate target instructions.
+    if (auto *A = dyn_cast<AllocaInst>(U))
+      if (A->isStaticAlloca())
+        return TTI::TCC_Free;
 
     if (const GEPOperator *GEP = dyn_cast<GEPOperator>(U)) {
       return static_cast<T *>(this)->getGEPCost(GEP->getSourceElementType(),
@@ -719,11 +819,11 @@ public:
         // Just use the called value type.
         Type *FTy = CS.getCalledValue()->getType()->getPointerElementType();
         return static_cast<T *>(this)
-            ->getCallCost(cast<FunctionType>(FTy), CS.arg_size());
+            ->getCallCost(cast<FunctionType>(FTy), CS.arg_size(), U);
       }
 
       SmallVector<const Value *, 8> Arguments(CS.arg_begin(), CS.arg_end());
-      return static_cast<T *>(this)->getCallCost(F, Arguments);
+      return static_cast<T *>(this)->getCallCost(F, Arguments, U);
     }
 
     if (const CastInst *CI = dyn_cast<CastInst>(U)) {
@@ -739,6 +839,38 @@ public:
     return static_cast<T *>(this)->getOperationCost(
         Operator::getOpcode(U), U->getType(),
         U->getNumOperands() == 1 ? U->getOperand(0)->getType() : nullptr);
+  }
+
+  int getInstructionLatency(const Instruction *I) {
+    SmallVector<const Value *, 4> Operands(I->value_op_begin(),
+                                           I->value_op_end());
+    if (getUserCost(I, Operands) == TTI::TCC_Free)
+      return 0;
+
+    if (isa<LoadInst>(I))
+      return 4;
+
+    Type *DstTy = I->getType();
+
+    // Usually an intrinsic is a simple instruction.
+    // A real function call is much slower.
+    if (auto *CI = dyn_cast<CallInst>(I)) {
+      const Function *F = CI->getCalledFunction();
+      if (!F || static_cast<T *>(this)->isLoweredToCall(F))
+        return 40;
+      // Some intrinsics return a value and a flag, we use the value type
+      // to decide its latency.
+      if (StructType* StructTy = dyn_cast<StructType>(DstTy))
+        DstTy = StructTy->getElementType(0);
+      // Fall through to simple instructions.
+    }
+
+    if (VectorType *VectorTy = dyn_cast<VectorType>(DstTy))
+      DstTy = VectorTy->getElementType();
+    if (DstTy->isFloatingPointTy())
+      return 3;
+
+    return 1;
   }
 };
 }

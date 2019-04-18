@@ -19,7 +19,6 @@ class PyObjectSynthProviderTestCase(TestBase):
     mydir = TestBase.compute_mydir(__file__)
     NO_DEBUG_INFO_TESTCASE = True
 
-    @expectedFailureAll(oslist=["windows"])
     def test_print_array(self):
         """Test that expr -Z works"""
         self.build()
@@ -33,7 +32,7 @@ class PyObjectSynthProviderTestCase(TestBase):
 
     def provider_data_formatter_commands(self):
         """Test that the PythonObjectSyntheticChildProvider helper class works"""
-        self.runCmd("file a.out", CURRENT_EXECUTABLE_SET)
+        self.runCmd("file " + self.getBuildArtifact("a.out"), CURRENT_EXECUTABLE_SET)
 
         lldbutil.run_break_set_by_file_and_line(
             self, "main.cpp", self.line, num_expected_locations=1, loc_exact=True)

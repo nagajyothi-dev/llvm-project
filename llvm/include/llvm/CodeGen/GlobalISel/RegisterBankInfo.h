@@ -1,9 +1,8 @@
 //===- llvm/CodeGen/GlobalISel/RegisterBankInfo.h ---------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -103,8 +102,8 @@ public:
   /// Currently the TableGen-like file would look like:
   /// \code
   /// PartialMapping[] = {
-  /// /*32-bit add*/ {0, 32, GPR},
-  /// /*2x32-bit add*/ {0, 32, GPR}, {0, 32, GPR}, // <-- Same entry 3x
+  /// /*32-bit add*/    {0, 32, GPR}, // Scalar entry repeated for first vec elt.
+  /// /*2x32-bit add*/  {0, 32, GPR}, {32, 32, GPR},
   /// /*<2x32-bit> vadd {0, 64, VPR}
   /// }; // PartialMapping duplicated.
   ///
@@ -118,14 +117,15 @@ public:
   /// With the array of pointer, we would have:
   /// \code
   /// PartialMapping[] = {
-  /// /*32-bit add*/ {0, 32, GPR},
+  /// /*32-bit add lower */ {0, 32, GPR},
+  /// /*32-bit add upper */ {32, 32, GPR},
   /// /*<2x32-bit> vadd {0, 64, VPR}
   /// }; // No more duplication.
   ///
   /// BreakDowns[] = {
   /// /*AddBreakDown*/ &PartialMapping[0],
-  /// /*2xAddBreakDown*/ &PartialMapping[0], &PartialMapping[0],
-  /// /*VAddBreakDown*/ &PartialMapping[1]
+  /// /*2xAddBreakDown*/ &PartialMapping[0], &PartialMapping[1],
+  /// /*VAddBreakDown*/ &PartialMapping[2]
   /// }; // Addresses of PartialMapping duplicated (smaller).
   ///
   /// ValueMapping[] {
@@ -159,6 +159,10 @@ public:
     /// Iterators through the PartialMappings.
     const PartialMapping *begin() const { return BreakDown; }
     const PartialMapping *end() const { return BreakDown + NumBreakDowns; }
+
+    /// \return true if all partial mappings are the same size and register
+    /// bank.
+    bool partsAllUniform() const;
 
     /// Check if this ValueMapping is valid.
     bool isValid() const { return BreakDown && NumBreakDowns; }
@@ -407,6 +411,10 @@ protected:
   mutable DenseMap<unsigned, std::unique_ptr<const InstructionMapping>>
       MapOfInstructionMappings;
 
+  /// Getting the minimal register class of a physreg is expensive.
+  /// Cache this information as we get it.
+  mutable DenseMap<unsigned, const TargetRegisterClass *> PhysRegMinimalRCs;
+
   /// Create a RegisterBankInfo that can accommodate up to \p NumRegBanks
   /// RegisterBank instances.
   RegisterBankInfo(RegisterBank **RegBanks, unsigned NumRegBanks);
@@ -426,6 +434,11 @@ protected:
     assert(ID < getNumRegBanks() && "Accessing an unknown register bank");
     return *RegBanks[ID];
   }
+
+  /// Get the MinimalPhysRegClass for Reg.
+  /// \pre Reg is a physical register.
+  const TargetRegisterClass &
+  getMinimalPhysRegClass(unsigned Reg, const TargetRegisterInfo &TRI) const;
 
   /// Try to get the mapping of \p MI.
   /// See getInstrMapping for more details on what a mapping represents.
@@ -608,11 +621,22 @@ public:
     return &A != &B;
   }
 
+  /// Get the cost of using \p ValMapping to decompose a register. This is
+  /// similar to ::copyCost, except for cases where multiple copy-like
+  /// operations need to be inserted. If the register is used as a source
+  /// operand and already has a bank assigned, \p CurBank is non-null.
+  virtual unsigned getBreakDownCost(const ValueMapping &ValMapping,
+                                    const RegisterBank *CurBank = nullptr) const {
+    return std::numeric_limits<unsigned>::max();
+  }
+
   /// Constrain the (possibly generic) virtual register \p Reg to \p RC.
   ///
   /// \pre \p Reg is a virtual register that either has a bank or a class.
   /// \returns The constrained register class, or nullptr if there is none.
   /// \note This is a generic variant of MachineRegisterInfo::constrainRegClass
+  /// \note Use MachineRegisterInfo::constrainRegAttrs instead for any non-isel
+  /// purpose, including non-select passes of GlobalISel
   static const TargetRegisterClass *
   constrainGenericRegister(unsigned Reg, const TargetRegisterClass &RC,
                            MachineRegisterInfo &MRI);
@@ -699,8 +723,8 @@ public:
   /// virtual register.
   ///
   /// \pre \p Reg != 0 (NoRegister).
-  static unsigned getSizeInBits(unsigned Reg, const MachineRegisterInfo &MRI,
-                                const TargetRegisterInfo &TRI);
+  unsigned getSizeInBits(unsigned Reg, const MachineRegisterInfo &MRI,
+                         const TargetRegisterInfo &TRI) const;
 
   /// Check that information hold by this instance make sense for the
   /// given \p TRI.

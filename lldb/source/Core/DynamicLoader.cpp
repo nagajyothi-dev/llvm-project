@@ -1,31 +1,30 @@
 //===-- DynamicLoader.cpp ---------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Target/DynamicLoader.h"
 
 #include "lldb/Core/Module.h"
-#include "lldb/Core/ModuleList.h" // for ModuleList
+#include "lldb/Core/ModuleList.h"
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Section.h"
-#include "lldb/Symbol/ObjectFile.h" // for ObjectFile
+#include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/MemoryRegionInfo.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
-#include "lldb/Utility/ConstString.h"     // for ConstString
-#include "lldb/lldb-private-interfaces.h" // for DynamicLoaderCreateInstance
+#include "lldb/Utility/ConstString.h"
+#include "lldb/lldb-private-interfaces.h"
 
-#include "llvm/ADT/StringRef.h" // for StringRef
+#include "llvm/ADT/StringRef.h"
 
-#include <memory> // for shared_ptr, unique_ptr
+#include <memory>
 
-#include <assert.h> // for assert
+#include <assert.h>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -39,10 +38,10 @@ DynamicLoader *DynamicLoader::FindPlugin(Process *process,
         PluginManager::GetDynamicLoaderCreateCallbackForPluginName(
             const_plugin_name);
     if (create_callback) {
-      std::unique_ptr<DynamicLoader> instance_ap(
+      std::unique_ptr<DynamicLoader> instance_up(
           create_callback(process, true));
-      if (instance_ap)
-        return instance_ap.release();
+      if (instance_up)
+        return instance_up.release();
     }
   } else {
     for (uint32_t idx = 0;
@@ -50,10 +49,10 @@ DynamicLoader *DynamicLoader::FindPlugin(Process *process,
               PluginManager::GetDynamicLoaderCreateCallbackAtIndex(idx)) !=
          nullptr;
          ++idx) {
-      std::unique_ptr<DynamicLoader> instance_ap(
+      std::unique_ptr<DynamicLoader> instance_up(
           create_callback(process, false));
-      if (instance_ap)
-        return instance_ap.release();
+      if (instance_up)
+        return instance_up.release();
     }
   }
   return nullptr;
@@ -63,10 +62,8 @@ DynamicLoader::DynamicLoader(Process *process) : m_process(process) {}
 
 DynamicLoader::~DynamicLoader() = default;
 
-//----------------------------------------------------------------------
-// Accessosors to the global setting as to whether to stop at image
-// (shared library) loading/unloading.
-//----------------------------------------------------------------------
+// Accessosors to the global setting as to whether to stop at image (shared
+// library) loading/unloading.
 
 bool DynamicLoader::GetStopWhenImagesChange() const {
   return m_process->GetStopOnSharedLibraryEvents();
@@ -81,13 +78,13 @@ ModuleSP DynamicLoader::GetTargetExecutable() {
   ModuleSP executable = target.GetExecutableModule();
 
   if (executable) {
-    if (executable->GetFileSpec().Exists()) {
+    if (FileSystem::Instance().Exists(executable->GetFileSpec())) {
       ModuleSpec module_spec(executable->GetFileSpec(),
                              executable->GetArchitecture());
       auto module_sp = std::make_shared<Module>(module_spec);
 
-      // Check if the executable has changed and set it to the target executable
-      // if they differ.
+      // Check if the executable has changed and set it to the target
+      // executable if they differ.
       if (module_sp && module_sp->GetUUID().IsValid() &&
           executable->GetUUID().IsValid()) {
         if (module_sp->GetUUID() != executable->GetUUID())
@@ -97,12 +94,11 @@ ModuleSP DynamicLoader::GetTargetExecutable() {
       }
 
       if (!executable) {
-        executable = target.GetSharedModule(module_spec);
+        executable = target.GetOrCreateModule(module_spec, true /* notify */);
         if (executable.get() != target.GetExecutableModulePointer()) {
-          // Don't load dependent images since we are in dyld where we will know
-          // and find out about all images that are loaded
-          const bool get_dependent_images = false;
-          target.SetExecutableModule(executable, get_dependent_images);
+          // Don't load dependent images since we are in dyld where we will
+          // know and find out about all images that are loaded
+          target.SetExecutableModule(executable, eLoadDependentsNo);
         }
       }
     }
@@ -168,7 +164,8 @@ ModuleSP DynamicLoader::LoadModuleAtAddress(const FileSpec &file,
     return module_sp;
   }
 
-  if ((module_sp = target.GetSharedModule(module_spec))) {
+  if ((module_sp = target.GetOrCreateModule(module_spec, 
+                                            true /* notify */))) {
     UpdateLoadedSections(module_sp, link_map_addr, base_addr,
                          base_addr_is_offset);
     return module_sp;
@@ -177,8 +174,8 @@ ModuleSP DynamicLoader::LoadModuleAtAddress(const FileSpec &file,
   bool check_alternative_file_name = true;
   if (base_addr_is_offset) {
     // Try to fetch the load address of the file from the process as we need
-    // absolute load
-    // address to read the file out of the memory instead of a load bias.
+    // absolute load address to read the file out of the memory instead of a
+    // load bias.
     bool is_loaded = false;
     lldb::addr_t load_addr;
     Status error = m_process->GetFileLoadAddress(file, is_loaded, load_addr);
@@ -188,25 +185,24 @@ ModuleSP DynamicLoader::LoadModuleAtAddress(const FileSpec &file,
     }
   }
 
-  // We failed to find the module based on its name. Lets try to check if we can
-  // find a
-  // different name based on the memory region info.
+  // We failed to find the module based on its name. Lets try to check if we
+  // can find a different name based on the memory region info.
   if (check_alternative_file_name) {
     MemoryRegionInfo memory_info;
     Status error = m_process->GetMemoryRegionInfo(base_addr, memory_info);
     if (error.Success() && memory_info.GetMapped() &&
         memory_info.GetRange().GetRangeBase() == base_addr && 
         !(memory_info.GetName().IsEmpty())) {
-      ModuleSpec new_module_spec(
-          FileSpec(memory_info.GetName().AsCString(), false),
-          target.GetArchitecture());
+      ModuleSpec new_module_spec(FileSpec(memory_info.GetName().AsCString()),
+                                 target.GetArchitecture());
 
       if ((module_sp = modules.FindFirstModule(new_module_spec))) {
         UpdateLoadedSections(module_sp, link_map_addr, base_addr, false);
         return module_sp;
       }
 
-      if ((module_sp = target.GetSharedModule(new_module_spec))) {
+      if ((module_sp = target.GetOrCreateModule(new_module_spec, 
+                                                true /* notify */))) {
         UpdateLoadedSections(module_sp, link_map_addr, base_addr, false);
         return module_sp;
       }

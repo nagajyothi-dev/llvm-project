@@ -1,9 +1,8 @@
 //===- MipsAsmPrinter.cpp - Mips LLVM Assembly Printer --------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -36,6 +35,8 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
@@ -55,8 +56,6 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Target/TargetRegisterInfo.h"
-#include "llvm/Target/TargetSubtargetInfo.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -67,6 +66,8 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "mips-asm-printer"
+
+extern cl::opt<bool> EmitJalrReloc;
 
 MipsTargetStreamer &MipsAsmPrinter::getTargetStreamer() const {
   return static_cast<MipsTargetStreamer &>(*OutStreamer->getTargetStreamer());
@@ -108,7 +109,7 @@ bool MipsAsmPrinter::lowerOperand(const MachineOperand &MO, MCOperand &MCOp) {
 #include "MipsGenMCPseudoLowering.inc"
 
 // Lower PseudoReturn/PseudoIndirectBranch/PseudoIndirectBranch64 to JR, JR_MM,
-// JALR, or JALR64 as appropriate for the target
+// JALR, or JALR64 as appropriate for the target.
 void MipsAsmPrinter::emitPseudoIndirectBranch(MCStreamer &OutStreamer,
                                               const MachineInstr *MI) {
   bool HasLinkReg = false;
@@ -148,6 +149,40 @@ void MipsAsmPrinter::emitPseudoIndirectBranch(MCStreamer &OutStreamer,
   EmitToStreamer(OutStreamer, TmpInst0);
 }
 
+// If there is an MO_JALR operand, insert:
+//
+// .reloc tmplabel, R_{MICRO}MIPS_JALR, symbol
+// tmplabel:
+//
+// This is an optimization hint for the linker which may then replace
+// an indirect call with a direct branch.
+static void emitDirectiveRelocJalr(const MachineInstr &MI,
+                                   MCContext &OutContext,
+                                   TargetMachine &TM,
+                                   MCStreamer &OutStreamer,
+                                   const MipsSubtarget &Subtarget) {
+  for (unsigned int I = MI.getDesc().getNumOperands(), E = MI.getNumOperands();
+       I < E; ++I) {
+    MachineOperand MO = MI.getOperand(I);
+    if (MO.isMCSymbol() && (MO.getTargetFlags() & MipsII::MO_JALR)) {
+      MCSymbol *Callee = MO.getMCSymbol();
+      if (Callee && !Callee->getName().empty()) {
+        MCSymbol *OffsetLabel = OutContext.createTempSymbol();
+        const MCExpr *OffsetExpr =
+            MCSymbolRefExpr::create(OffsetLabel, OutContext);
+        const MCExpr *CaleeExpr =
+            MCSymbolRefExpr::create(Callee, OutContext);
+        OutStreamer.EmitRelocDirective
+            (*OffsetExpr,
+             Subtarget.inMicroMipsMode() ? "R_MICROMIPS_JALR" : "R_MIPS_JALR",
+             CaleeExpr, SMLoc(), *TM.getMCSubtargetInfo());
+        OutStreamer.EmitLabel(OffsetLabel);
+        return;
+      }
+    }
+  }
+}
+
 void MipsAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   MipsTargetStreamer &TS = getTargetStreamer();
   unsigned Opc = MI->getOpcode();
@@ -160,6 +195,8 @@ void MipsAsmPrinter::EmitInstruction(const MachineInstr *MI) {
     PrintDebugValueComment(MI, OS);
     return;
   }
+  if (MI->isDebugLabel())
+    return;
 
   // If we just ended a constant pool, mark it as such.
   if (InConstantPool && Opc != Mips::CONSTPOOL_ENTRY) {
@@ -203,6 +240,11 @@ void MipsAsmPrinter::EmitInstruction(const MachineInstr *MI) {
   case Mips::PATCHABLE_TAIL_CALL:
     LowerPATCHABLE_TAIL_CALL(*MI);
     return;
+  }
+
+  if (EmitJalrReloc &&
+      (MI->isReturn() || MI->isCall() || MI->isIndirectBranch())) {
+    emitDirectiveRelocJalr(*MI, OutContext, TM, *OutStreamer, *Subtarget);
   }
 
   MachineBasicBlock::const_instr_iterator I = MI->getIterator();
@@ -361,6 +403,7 @@ void MipsAsmPrinter::EmitFunctionEntryLabel() {
   if (Subtarget->inMicroMipsMode()) {
     TS.emitDirectiveSetMicroMips();
     TS.setUsesMicroMips();
+    TS.updateABIInfo(*Subtarget);
   } else
     TS.emitDirectiveSetNoMicroMips();
 
@@ -380,7 +423,7 @@ void MipsAsmPrinter::EmitFunctionBodyStart() {
 
   MCInstLowering.Initialize(&MF->getContext());
 
-  bool IsNakedFunction = MF->getFunction()->hasFnAttribute(Attribute::Naked);
+  bool IsNakedFunction = MF->getFunction().hasFnAttribute(Attribute::Naked);
   if (!IsNakedFunction)
     emitFrameDirective();
 
@@ -417,6 +460,7 @@ void MipsAsmPrinter::EmitFunctionBodyEnd() {
 }
 
 void MipsAsmPrinter::EmitBasicBlockEnd(const MachineBasicBlock &MBB) {
+  AsmPrinter::EmitBasicBlockEnd(MBB);
   MipsTargetStreamer &TS = getTargetStreamer();
   if (MBB.empty())
     TS.emitDirectiveInsn();
@@ -466,8 +510,7 @@ bool MipsAsmPrinter::isBlockOnlyReachableByFallthrough(const MachineBasicBlock*
 
 // Print out an operand for an inline asm expression.
 bool MipsAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
-                                     unsigned AsmVariant, const char *ExtraCode,
-                                     raw_ostream &O) {
+                                     const char *ExtraCode, raw_ostream &O) {
   // Does this asm operand have a single letter operand modifier?
   if (ExtraCode && ExtraCode[0]) {
     if (ExtraCode[1] != 0) return true; // Unknown modifier.
@@ -476,7 +519,7 @@ bool MipsAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
     switch (ExtraCode[0]) {
     default:
       // See if this is a generic print operand
-      return AsmPrinter::PrintAsmOperand(MI,OpNum,AsmVariant,ExtraCode,O);
+      return AsmPrinter::PrintAsmOperand(MI, OpNum, ExtraCode, O);
     case 'X': // hex const int
       if ((MO.getType()) != MachineOperand::MO_Immediate)
         return true;
@@ -496,6 +539,13 @@ bool MipsAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
       if ((MO.getType()) != MachineOperand::MO_Immediate)
         return true;
       O << MO.getImm() - 1;
+      return false;
+    case 'y': // exact log2
+      if ((MO.getType()) != MachineOperand::MO_Immediate)
+        return true;
+      if (!isPowerOf2_64(MO.getImm()))
+        return true;
+      O << Log2_64(MO.getImm());
       return false;
     case 'z':
       // $0 if zero, regular printing otherwise
@@ -550,6 +600,7 @@ bool MipsAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
         O << '$' << MipsInstPrinter::getRegisterName(Reg);
         return false;
       }
+      break;
     }
     case 'w':
       // Print MSA registers for the 'f' constraint
@@ -564,7 +615,7 @@ bool MipsAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
 }
 
 bool MipsAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
-                                           unsigned OpNum, unsigned AsmVariant,
+                                           unsigned OpNum,
                                            const char *ExtraCode,
                                            raw_ostream &O) {
   assert(OpNum + 1 < MI->getNumOperands() && "Insufficient operands");
@@ -574,17 +625,27 @@ bool MipsAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
   assert(OffsetMO.isImm() && "Unexpected offset for inline asm memory operand.");
   int Offset = OffsetMO.getImm();
 
-  // Currently we are expecting either no ExtraCode or 'D'
+  // Currently we are expecting either no ExtraCode or 'D','M','L'.
   if (ExtraCode) {
-    if (ExtraCode[0] == 'D')
+    switch (ExtraCode[0]) {
+    case 'D':
       Offset += 4;
-    else
+      break;
+    case 'M':
+      if (Subtarget->isLittle())
+        Offset += 4;
+      break;
+    case 'L':
+      if (!Subtarget->isLittle())
+        Offset += 4;
+      break;
+    default:
       return true; // Unknown modifier.
-    // FIXME: M = high order bits
-    // FIXME: L = low order bits
+    }
   }
 
-  O << Offset << "($" << MipsInstPrinter::getRegisterName(BaseMO.getReg()) << ")";
+  O << Offset << "($" << MipsInstPrinter::getRegisterName(BaseMO.getReg())
+    << ")";
 
   return false;
 }
@@ -750,7 +811,8 @@ void MipsAsmPrinter::EmitStartOfAsmFile(Module &M) {
   // We should always emit a '.module fp=...' but binutils 2.24 does not accept
   // it. We therefore emit it when it contradicts the ABI defaults (-mfpxx or
   // -mfp64) and omit it otherwise.
-  if (ABI.IsO32() && (STI.isABI_FPXX() || STI.isFP64bit()))
+  if ((ABI.IsO32() && (STI.isABI_FPXX() || STI.isFP64bit())) ||
+      STI.useSoftFloat())
     TS.emitDirectiveModuleFP();
 
   // We should always emit a '.module [no]oddspreg' but binutils 2.24 does not
@@ -1073,23 +1135,23 @@ void MipsAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
   //   ALIGN
   //   B .tmpN
   //   11 NOP instructions (44 bytes)
-  //   ADDIU T9, T9, 52 
+  //   ADDIU T9, T9, 52
   // .tmpN
   //
   // We need the 44 bytes (11 instructions) because at runtime, we'd
   // be patching over the full 48 bytes (12 instructions) with the following
   // pattern:
   //
-  //   ADDIU	SP, SP, -8
+  //   ADDIU    SP, SP, -8
   //   NOP
-  //   SW	RA, 4(SP)
+  //   SW       RA, 4(SP)
   //   SW       T9, 0(SP)
   //   LUI      T9, %hi(__xray_FunctionEntry/Exit)
   //   ORI      T9, T9, %lo(__xray_FunctionEntry/Exit)
   //   LUI      T0, %hi(function_id)
-  //   JALR	T9
-  //   ORI	T0, T0, %lo(function_id)
-  //   LW	T9, 0(SP)
+  //   JALR     T9
+  //   ORI      T0, T0, %lo(function_id)
+  //   LW       T9, 0(SP)
   //   LW       RA, 4(SP)
   //   ADDIU    SP, SP, 8
   //
@@ -1182,18 +1244,23 @@ void MipsAsmPrinter::PrintDebugValueComment(const MachineInstr *MI,
 
 // Emit .dtprelword or .dtpreldword directive
 // and value for debug thread local expression.
-void MipsAsmPrinter::EmitDebugThreadLocal(const MCExpr *Value,
-                                          unsigned Size) const {
-  switch (Size) {
-  case 4:
-    OutStreamer->EmitDTPRel32Value(Value);
-    break;
-  case 8:
-    OutStreamer->EmitDTPRel64Value(Value);
-    break;
-  default:
-    llvm_unreachable("Unexpected size of expression value.");
+void MipsAsmPrinter::EmitDebugValue(const MCExpr *Value, unsigned Size) const {
+  if (auto *MipsExpr = dyn_cast<MipsMCExpr>(Value)) {
+    if (MipsExpr && MipsExpr->getKind() == MipsMCExpr::MEK_DTPREL) {
+      switch (Size) {
+      case 4:
+        OutStreamer->EmitDTPRel32Value(MipsExpr->getSubExpr());
+        break;
+      case 8:
+        OutStreamer->EmitDTPRel64Value(MipsExpr->getSubExpr());
+        break;
+      default:
+        llvm_unreachable("Unexpected size of expression value.");
+      }
+      return;
+    }
   }
+  AsmPrinter::EmitDebugValue(Value, Size);
 }
 
 // Align all targets of indirect branches on bundle size.  Used only if target
@@ -1219,8 +1286,12 @@ void MipsAsmPrinter::NaClAlignIndirectJumpTargets(MachineFunction &MF) {
 
 bool MipsAsmPrinter::isLongBranchPseudo(int Opcode) const {
   return (Opcode == Mips::LONG_BRANCH_LUi
+          || Opcode == Mips::LONG_BRANCH_LUi2Op
+          || Opcode == Mips::LONG_BRANCH_LUi2Op_64
           || Opcode == Mips::LONG_BRANCH_ADDiu
-          || Opcode == Mips::LONG_BRANCH_DADDiu);
+          || Opcode == Mips::LONG_BRANCH_ADDiu2Op
+          || Opcode == Mips::LONG_BRANCH_DADDiu
+          || Opcode == Mips::LONG_BRANCH_DADDiu2Op);
 }
 
 // Force static initialization.

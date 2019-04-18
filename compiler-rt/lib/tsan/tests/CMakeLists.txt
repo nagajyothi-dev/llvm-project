@@ -2,7 +2,7 @@ include_directories(../rtl)
 
 add_custom_target(TsanUnitTests)
 set_target_properties(TsanUnitTests PROPERTIES
-  FOLDER "TSan unittests")
+  FOLDER "Compiler-RT Tests")
 
 set(TSAN_UNITTEST_CFLAGS
   ${TSAN_CFLAGS}
@@ -14,6 +14,12 @@ set(TSAN_UNITTEST_CFLAGS
   -DGTEST_HAS_RTTI=0)
 
 set(TSAN_TEST_ARCH ${TSAN_SUPPORTED_ARCH})
+
+set(LINK_FLAGS)
+foreach(lib ${SANITIZER_TEST_CXX_LIBRARIES})
+  list(APPEND LINK_FLAGS -l${lib})
+endforeach()
+
 if(APPLE)
 
   # Create a static library for test dependencies.
@@ -22,6 +28,8 @@ if(APPLE)
     $<TARGET_OBJECTS:RTInterception.osx>
     $<TARGET_OBJECTS:RTSanitizerCommon.osx>
     $<TARGET_OBJECTS:RTSanitizerCommonLibc.osx>
+    $<TARGET_OBJECTS:RTSanitizerCommonCoverage.osx>
+    $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.osx>
     $<TARGET_OBJECTS:RTUbsan.osx>)
   set(TSAN_TEST_RUNTIME RTTsanTest)
   add_library(${TSAN_TEST_RUNTIME} STATIC ${TSAN_TEST_RUNTIME_OBJECTS})
@@ -31,11 +39,13 @@ if(APPLE)
   darwin_filter_host_archs(TSAN_SUPPORTED_ARCH TSAN_TEST_ARCH)
   list(APPEND TSAN_UNITTEST_CFLAGS ${DARWIN_osx_CFLAGS})
 
-  set(LINK_FLAGS "-lc++")
+  list(APPEND LINK_FLAGS ${DARWIN_osx_LINK_FLAGS})
   add_weak_symbols("ubsan" LINK_FLAGS)
   add_weak_symbols("sanitizer_common" LINK_FLAGS)
 else()
-  set(LINK_FLAGS "-fsanitize=thread;-lstdc++;-lm")
+  list(APPEND LINK_FLAGS -fsanitize=thread)
+  list(APPEND LINK_FLAGS -lm)
+  list(APPEND LINK_FLAGS ${COMPILER_RT_TEST_LIBDISPATCH_CFLAGS})
 endif()
 
 set(TSAN_RTL_HEADERS)
@@ -49,9 +59,11 @@ endforeach()
 macro(add_tsan_unittest testname)
   cmake_parse_arguments(TEST "" "" "SOURCES;HEADERS" ${ARGN})
   if(UNIX)
-    foreach(arch ${ASAN_TEST_ARCH})
-      generate_compiler_rt_tests(TsanUnitTests ${testname} ${arch}
-        SOURCES ${TEST_SOURCES}
+    foreach(arch ${TSAN_TEST_ARCH})
+      set(TsanUnitTestsObjects)
+      generate_compiler_rt_tests(TsanUnitTestsObjects TsanUnitTests
+        "${testname}-${arch}-Test" ${arch}
+        SOURCES ${TEST_SOURCES} ${COMPILER_RT_GTEST_SOURCE}
         RUNTIME ${TSAN_TEST_RUNTIME}
         COMPILE_DEPS ${TEST_HEADERS} ${TSAN_RTL_HEADERS}
         DEPS gtest tsan
@@ -61,7 +73,7 @@ macro(add_tsan_unittest testname)
   endif()
 endmacro()
 
-if(COMPILER_RT_CAN_EXECUTE_TESTS)
+if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
   add_subdirectory(rtl)
   add_subdirectory(unit)
 endif()

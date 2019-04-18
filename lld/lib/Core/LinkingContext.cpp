@@ -1,9 +1,8 @@
 //===- lib/Core/LinkingContext.cpp - Linker Context Object Interface ------===//
 //
-//                             The LLVM Linker
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,8 +19,8 @@ LinkingContext::LinkingContext() = default;
 
 LinkingContext::~LinkingContext() = default;
 
-bool LinkingContext::validate(raw_ostream &diagnostics) {
-  return validateImpl(diagnostics);
+bool LinkingContext::validate() {
+  return validateImpl();
 }
 
 llvm::Error LinkingContext::writeFile(const File &linkedFile) const {

@@ -21,15 +21,7 @@
  */
 
 #include <clc/clc.h>
-#include "../clcmacro.h"
 #include "math/clc_sqrt.h"
 
-_CLC_DEFINE_UNARY_BUILTIN(float, sqrt, __clc_sqrt, float)
-
-#ifdef cl_khr_fp64
-
-#pragma OPENCL EXTENSION cl_khr_fp64 : enable
-
-_CLC_DEFINE_UNARY_BUILTIN(double, sqrt, __clc_sqrt, double)
-
-#endif
+#define __CLC_FUNCTION sqrt
+#include "unary_builtin.inc"

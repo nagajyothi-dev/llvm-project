@@ -1,9 +1,8 @@
 //===-- ARMSubtarget.cpp - ARM Subtarget Information ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -28,10 +27,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/ADT/Twine.h"
-#include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
-#include "llvm/CodeGen/GlobalISel/Legalizer.h"
-#include "llvm/CodeGen/GlobalISel/RegBankSelect.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
@@ -41,8 +37,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetParser.h"
 #include "llvm/Target/TargetOptions.h"
-#include <cassert>
-#include <string>
 
 using namespace llvm;
 
@@ -98,10 +92,12 @@ ARMFrameLowering *ARMSubtarget::initializeFrameLowering(StringRef CPU,
 
 ARMSubtarget::ARMSubtarget(const Triple &TT, const std::string &CPU,
                            const std::string &FS,
-                           const ARMBaseTargetMachine &TM, bool IsLittle)
+                           const ARMBaseTargetMachine &TM, bool IsLittle,
+                           bool MinSize)
     : ARMGenSubtargetInfo(TT, CPU, FS), UseMulOps(UseFusedMulOps),
-      CPUString(CPU), IsLittle(IsLittle), TargetTriple(TT), Options(TM.Options),
-      TM(TM), FrameLowering(initializeFrameLowering(CPU, FS)),
+      CPUString(CPU), OptMinSize(MinSize), IsLittle(IsLittle),
+      TargetTriple(TT), Options(TM.Options), TM(TM),
+      FrameLowering(initializeFrameLowering(CPU, FS)),
       // At this point initializeSubtargetDependencies has been called so
       // we can query directly.
       InstrInfo(isThumb1Only()
@@ -150,7 +146,9 @@ void ARMSubtarget::initializeEnvironment() {
   // MCAsmInfo isn't always present (e.g. in opt) so we can't initialize this
   // directly from it, but we can try to make sure they're consistent when both
   // available.
-  UseSjLjEH = isTargetDarwin() && !isTargetWatchABI();
+  UseSjLjEH = (isTargetDarwin() && !isTargetWatchABI() &&
+               Options.ExceptionModel == ExceptionHandling::None) ||
+              Options.ExceptionModel == ExceptionHandling::SjLj;
   assert((!TM.getMCAsmInfo() ||
           (TM.getMCAsmInfo()->getExceptionHandlingType() ==
            ExceptionHandling::SjLj) == UseSjLjEH) &&
@@ -191,8 +189,10 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   assert(hasV6T2Ops() || !hasThumb2());
 
   // Execute only support requires movt support
-  if (genExecuteOnly())
-    assert(hasV8MBaselineOps() && !NoMovt && "Cannot generate execute-only code for this target");
+  if (genExecuteOnly()) {
+    NoMovt = false;
+    assert(hasV8MBaselineOps() && "Cannot generate execute-only code for this target");
+  }
 
   // Keep a pointer to static instruction cost data for the specified CPU.
   SchedModel = getSchedModelForCPU(CPUString);
@@ -219,8 +219,8 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   // baseline, since the LDM/POP instruction on Thumb doesn't take LR.  This
   // means if we need to reload LR, it takes extra instructions, which outweighs
   // the value of the tail call; but here we don't know yet whether LR is going
-  // to be used. We generate the tail call here and turn it back into CALL/RET
-  // in emitEpilogue if LR is used.
+  // to be used. We take the optimistic approach of generating the tail call and
+  // perhaps taking a hit if we need to restore the LR.
 
   // Thumb1 PIC calls to external symbols use BX, so they can be tail calls,
   // but we need to make sure there are enough registers; the only valid
@@ -279,16 +279,25 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
   case CortexA32:
   case CortexA35:
   case CortexA53:
+  case CortexA55:
   case CortexA57:
   case CortexA72:
   case CortexA73:
+  case CortexA75:
+  case CortexA76:
   case CortexR4:
   case CortexR4F:
   case CortexR5:
   case CortexR7:
   case CortexM3:
   case CortexR52:
-  case ExynosM1:
+    break;
+  case Exynos:
+    LdStMultipleTiming = SingleIssuePlusExtras;
+    MaxInterleaveFactor = 4;
+    if (!isThumb())
+      PrefLoopAlignment = 3;
+    break;
   case Kryo:
     break;
   case Krait:
@@ -302,6 +311,8 @@ void ARMSubtarget::initSubtargetFeatures(StringRef CPU, StringRef FS) {
     break;
   }
 }
+
+bool ARMSubtarget::isTargetHardFloat() const { return TM.isTargetHardFloat(); }
 
 bool ARMSubtarget::isAPCS_ABI() const {
   assert(TM.TargetABI != ARMBaseTargetMachine::ARM_ABI_UNKNOWN);
@@ -340,13 +351,13 @@ bool ARMSubtarget::isGVIndirectSymbol(const GlobalValue *GV) const {
   return false;
 }
 
-unsigned ARMSubtarget::getMispredictionPenalty() const {
-  return SchedModel.MispredictPenalty;
+bool ARMSubtarget::isGVInGOT(const GlobalValue *GV) const {
+  return isTargetELF() && TM.isPositionIndependent() &&
+         !TM.shouldAssumeDSOLocal(*GV->getParent(), GV);
 }
 
-bool ARMSubtarget::hasSinCos() const {
-  return isTargetWatchOS() ||
-    (isTargetIOS() && !getTargetTriple().isOSVersionLT(7, 0));
+unsigned ARMSubtarget::getMispredictionPenalty() const {
+  return SchedModel.MispredictPenalty;
 }
 
 bool ARMSubtarget::enableMachineScheduler() const {
@@ -357,32 +368,28 @@ bool ARMSubtarget::enableMachineScheduler() const {
 
 // This overrides the PostRAScheduler bit in the SchedModel for any CPU.
 bool ARMSubtarget::enablePostRAScheduler() const {
-  if (usePostRAScheduler())
-    return true;
-  if (SchedModel.PostRAScheduler)
-    return true;
-  // No need for PostRA scheduling on subtargets where we use the
-  // MachineScheduler.
-  if (useMachineScheduler())
+  if (disablePostRAScheduler())
     return false;
-  return (!isThumb() || hasThumb2());
+  // Don't reschedule potential IT blocks.
+  return !isThumb1Only();
 }
 
 bool ARMSubtarget::enableAtomicExpand() const { return hasAnyDataBarrier(); }
 
-bool ARMSubtarget::useStride4VFPs(const MachineFunction &MF) const {
+bool ARMSubtarget::useStride4VFPs() const {
   // For general targets, the prologue can grow when VFPs are allocated with
   // stride 4 (more vpush instructions). But WatchOS uses a compact unwind
   // format which it's more important to get right.
-  return isTargetWatchABI() || (isSwift() && !MF.getFunction()->optForMinSize());
+  return isTargetWatchABI() ||
+         (useWideStrideVFP() && !OptMinSize);
 }
 
-bool ARMSubtarget::useMovt(const MachineFunction &MF) const {
+bool ARMSubtarget::useMovt() const {
   // NOTE Windows on ARM needs to use mov.w/mov.t pairs to materialise 32-bit
   // immediates as it is inherently position independent, and may be out of
   // range otherwise.
   return !NoMovt && hasV8MBaselineOps() &&
-         (isTargetWindows() || !MF.getFunction()->optForMinSize() || genExecuteOnly());
+         (isTargetWindows() || !OptMinSize || genExecuteOnly());
 }
 
 bool ARMSubtarget::useFastISel() const {

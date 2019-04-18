@@ -1,9 +1,17 @@
 // REQUIRES: x86
 // RUN: llvm-mc -filetype=obj -triple=x86_64-pc-linux %s -o %t.o
+
 // RUN: ld.lld %t.o -o %t
-// RUN: llvm-readobj -file-headers -s -section-data -program-headers -symbols %t | FileCheck %s --check-prefix=NOHDR
+// RUN: llvm-readobj -file-headers -s -section-data -program-headers -symbols %t \
+// RUN:   | FileCheck %s --check-prefix=NOHDR
+
+// RUN: ld.lld -eh-frame-hdr -no-eh-frame-hdr %t.o -o %t
+// RUN: llvm-readobj -file-headers -s -section-data -program-headers -symbols %t \
+// RUN:   | FileCheck %s --check-prefix=NOHDR
+
 // RUN: ld.lld --eh-frame-hdr %t.o -o %t
-// RUN: llvm-readobj -file-headers -s -section-data -program-headers -symbols %t | FileCheck %s --check-prefix=HDR
+// RUN: llvm-readobj -file-headers -s -section-data -program-headers -symbols %t \
+// RUN:   | FileCheck %s --check-prefix=HDR
 // RUN: llvm-objdump -d %t | FileCheck %s --check-prefix=HDRDISASM
 
 .section foo,"ax",@progbits
@@ -52,7 +60,7 @@ _start:
 // HDR-NEXT:    Size: 36
 // HDR-NEXT:    Link: 0
 // HDR-NEXT:    Info: 0
-// HDR-NEXT:    AddressAlignment: 1
+// HDR-NEXT:    AddressAlignment: 4
 // HDR-NEXT:    EntrySize: 0
 // HDR-NEXT:    SectionData (
 // HDR-NEXT:      0000: 011B033B 24000000 03000000 A80E0000
@@ -84,7 +92,7 @@ _start:
 // HDR-NEXT:    ]
 // HDR-NEXT:    Address: 0x200180
 // HDR-NEXT:    Offset: 0x180
-// HDR-NEXT:    Size: 96
+// HDR-NEXT:    Size: 100
 // HDR-NEXT:    Link: 0
 // HDR-NEXT:    Info: 0
 // HDR-NEXT:    AddressAlignment: 8
@@ -96,6 +104,7 @@ _start:
 // HDR-NEXT:      0030: 14000000 34000000 490E0000 01000000
 // HDR-NEXT:      0040: 00000000 00000000 14000000 4C000000
 // HDR-NEXT:      0050: 320E0000 01000000 00000000 00000000
+// HDR-NEXT:      0060: 00000000
 // HDR-NEXT:    )
 //            CIE: 14000000 00000000 017A5200 01781001 1B0C0708 90010000
 //            FDE(1): 14000000 1C000000 600E0000 01000000 00000000 00000000
@@ -122,5 +131,5 @@ _start:
 // HDR-NEXT:   Flags [
 // HDR-NEXT:     PF_R
 // HDR-NEXT:   ]
-// HDR-NEXT:   Alignment: 1
+// HDR-NEXT:   Alignment: 4
 // HDR-NEXT: }

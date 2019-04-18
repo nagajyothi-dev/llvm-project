@@ -1,23 +1,18 @@
 //===-- AppleObjCRuntimeV2.h ------------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef liblldb_AppleObjCRuntimeV2_h_
 #define liblldb_AppleObjCRuntimeV2_h_
 
-// C Includes
-// C++ Includes
 #include <map>
 #include <memory>
 #include <mutex>
 
-// Other libraries and framework includes
-// Project includes
 #include "AppleObjCRuntime.h"
 #include "lldb/Target/ObjCLanguageRuntime.h"
 #include "lldb/lldb-private.h"
@@ -30,9 +25,7 @@ class AppleObjCRuntimeV2 : public AppleObjCRuntime {
 public:
   ~AppleObjCRuntimeV2() override = default;
 
-  //------------------------------------------------------------------
   // Static Functions
-  //------------------------------------------------------------------
   static void Initialize();
 
   static void Terminate();
@@ -60,9 +53,7 @@ public:
 
   UtilityFunction *CreateObjectChecker(const char *) override;
 
-  //------------------------------------------------------------------
   // PluginInterface protocol
-  //------------------------------------------------------------------
   ConstString GetPluginName() override;
 
   uint32_t GetPluginVersion() override;
@@ -84,13 +75,17 @@ public:
 
   DeclVendor *GetDeclVendor() override;
 
-  lldb::addr_t LookupRuntimeSymbol(const ConstString &name) override;
+  lldb::addr_t LookupRuntimeSymbol(ConstString name) override;
 
   EncodingToTypeSP GetEncodingToType() override;
 
+  bool IsTaggedPointer(lldb::addr_t ptr) override;
+
   TaggedPointerVendor *GetTaggedPointerVendor() override {
-    return m_tagged_pointer_vendor_ap.get();
+    return m_tagged_pointer_vendor_up.get();
   }
+
+  lldb::addr_t GetTaggedPointerObfuscator();
 
   void GetValuesForGlobalCFBooleans(lldb::addr_t &cf_true,
                                     lldb::addr_t &cf_false) override;
@@ -138,17 +133,32 @@ private:
 
   private:
     NonPointerISACache(AppleObjCRuntimeV2 &runtime,
+                       const lldb::ModuleSP &objc_module_sp,
                        uint64_t objc_debug_isa_class_mask,
                        uint64_t objc_debug_isa_magic_mask,
-                       uint64_t objc_debug_isa_magic_value);
+                       uint64_t objc_debug_isa_magic_value,
+                       uint64_t objc_debug_indexed_isa_magic_mask,
+                       uint64_t objc_debug_indexed_isa_magic_value,
+                       uint64_t objc_debug_indexed_isa_index_mask,
+                       uint64_t objc_debug_indexed_isa_index_shift,
+                       lldb::addr_t objc_indexed_classes);
 
     bool EvaluateNonPointerISA(ObjCISA isa, ObjCISA &ret_isa);
 
     AppleObjCRuntimeV2 &m_runtime;
     std::map<ObjCISA, ObjCLanguageRuntime::ClassDescriptorSP> m_cache;
+    lldb::ModuleWP m_objc_module_wp;
     uint64_t m_objc_debug_isa_class_mask;
     uint64_t m_objc_debug_isa_magic_mask;
     uint64_t m_objc_debug_isa_magic_value;
+
+    uint64_t m_objc_debug_indexed_isa_magic_mask;
+    uint64_t m_objc_debug_indexed_isa_magic_value;
+    uint64_t m_objc_debug_indexed_isa_index_mask;
+    uint64_t m_objc_debug_indexed_isa_index_shift;
+    lldb::addr_t m_objc_indexed_classes;
+
+    std::vector<lldb::addr_t> m_indexed_isa_cache;
 
     friend class AppleObjCRuntimeV2;
 
@@ -279,8 +289,6 @@ private:
 
   ObjCISA GetPointerISA(ObjCISA isa);
 
-  bool IsTaggedPointer(lldb::addr_t ptr);
-
   lldb::addr_t GetISAHashTablePointer();
 
   bool UpdateISAToDescriptorMapFromMemory(RemoteNXMapTable &hash_table);
@@ -314,13 +322,14 @@ private:
   lldb::addr_t m_get_shared_cache_class_info_args;
   std::mutex m_get_shared_cache_class_info_args_mutex;
 
-  std::unique_ptr<DeclVendor> m_decl_vendor_ap;
+  std::unique_ptr<DeclVendor> m_decl_vendor_up;
+  lldb::addr_t m_tagged_pointer_obfuscator;
   lldb::addr_t m_isa_hash_table_ptr;
   HashTableSignature m_hash_signature;
   bool m_has_object_getClass;
   bool m_loaded_objc_opt;
-  std::unique_ptr<NonPointerISACache> m_non_pointer_isa_cache_ap;
-  std::unique_ptr<TaggedPointerVendor> m_tagged_pointer_vendor_ap;
+  std::unique_ptr<NonPointerISACache> m_non_pointer_isa_cache_up;
+  std::unique_ptr<TaggedPointerVendor> m_tagged_pointer_vendor_up;
   EncodingToTypeSP m_encoding_to_type_sp;
   bool m_noclasses_warning_emitted;
   llvm::Optional<std::pair<lldb::addr_t, lldb::addr_t>> m_CFBoolean_values;
