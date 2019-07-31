@@ -19,7 +19,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/MC/MCDirectives.h"
-#include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCLinkerOptimizationHint.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCWinEH.h"
@@ -43,6 +42,7 @@ class MCAsmBackend;
 class MCCodeEmitter;
 struct MCCodePaddingContext;
 class MCContext;
+struct MCDwarfFrameInfo;
 class MCExpr;
 class MCInst;
 class MCInstPrinter;
@@ -266,10 +266,8 @@ public:
   /// closed. Otherwise, issue an error and return null.
   WinEH::FrameInfo *EnsureValidWinFrameInfo(SMLoc Loc);
 
-  unsigned getNumFrameInfos() { return DwarfFrameInfos.size(); }
-  ArrayRef<MCDwarfFrameInfo> getDwarfFrameInfos() const {
-    return DwarfFrameInfos;
-  }
+  unsigned getNumFrameInfos();
+  ArrayRef<MCDwarfFrameInfo> getDwarfFrameInfos() const;
 
   bool hasUnfinishedDwarfFrameInfo();
 
@@ -627,6 +625,13 @@ public:
   /// Special case of EmitValue that avoids the client having
   /// to pass in a MCExpr for constant integers.
   virtual void EmitIntValue(uint64_t Value, unsigned Size);
+
+  /// Special case of EmitValue that avoids the client having to pass
+  /// in a MCExpr for constant integers & prints in Hex format for certain
+  /// modes.
+  virtual void EmitIntValueInHex(uint64_t Value, unsigned Size) {
+    EmitIntValue(Value, Size);
+  }
 
   virtual void EmitULEB128Value(const MCExpr *Value);
 

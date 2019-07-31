@@ -107,6 +107,11 @@ raw_ostream &MCStreamer::GetCommentOS() {
   return nulls();
 }
 
+unsigned MCStreamer::getNumFrameInfos() { return DwarfFrameInfos.size(); }
+ArrayRef<MCDwarfFrameInfo> MCStreamer::getDwarfFrameInfos() const {
+  return DwarfFrameInfos;
+}
+
 void MCStreamer::emitRawComment(const Twine &T, bool TabPrefix) {}
 
 void MCStreamer::addExplicitComment(const Twine &T) {}
@@ -1072,6 +1077,15 @@ void MCStreamer::EmitVersionForTarget(const Triple &Target,
   unsigned Major;
   unsigned Minor;
   unsigned Update;
+  if (Target.isMacCatalystEnvironment()) {
+    // Mac Catalyst always uses the build version load command.
+    Target.getiOSVersion(Major, Minor, Update);
+    assert(Major && "A non-zero major version is expected");
+    EmitBuildVersion(MachO::PLATFORM_MACCATALYST, Major, Minor, Update,
+                     SDKVersion);
+    return;
+  }
+
   MCVersionMinType VersionType;
   if (Target.isWatchOS()) {
     VersionType = MCVM_WatchOSVersionMin;

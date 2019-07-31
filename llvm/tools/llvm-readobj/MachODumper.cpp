@@ -483,15 +483,8 @@ void MachODumper::printSectionHeaders(const MachOObjectFile *Obj) {
       }
     }
 
-    if (opts::SectionData) {
-      bool IsBSS = Section.isBSS();
-      if (!IsBSS) {
-        StringRef Data;
-        error(Section.getContents(Data));
-
-        W.printBinaryBlock("SectionData", Data);
-      }
-    }
+    if (opts::SectionData && !Section.isBSS())
+      W.printBinaryBlock("SectionData", unwrapOrError(Section.getContents()));
   }
 }
 
@@ -660,17 +653,16 @@ void MachODumper::printStackMap() const {
   if (StackMapSection == object::SectionRef())
     return;
 
-  StringRef StackMapContents;
-  StackMapSection.getContents(StackMapContents);
+  StringRef StackMapContents = unwrapOrError(StackMapSection.getContents());
   ArrayRef<uint8_t> StackMapContentsArray =
       arrayRefFromStringRef(StackMapContents);
 
   if (Obj->isLittleEndian())
     prettyPrintStackMap(
-        W, StackMapV2Parser<support::little>(StackMapContentsArray));
+        W, StackMapParser<support::little>(StackMapContentsArray));
   else
-    prettyPrintStackMap(W,
-                        StackMapV2Parser<support::big>(StackMapContentsArray));
+    prettyPrintStackMap(
+        W, StackMapParser<support::big>(StackMapContentsArray));
 }
 
 void MachODumper::printNeededLibraries() {
@@ -694,10 +686,10 @@ void MachODumper::printNeededLibraries() {
     }
   }
 
-  std::stable_sort(Libs.begin(), Libs.end());
+  llvm::stable_sort(Libs);
 
   for (const auto &L : Libs) {
-    outs() << "  " << L << "\n";
+    W.startLine() << L << "\n";
   }
 }
 

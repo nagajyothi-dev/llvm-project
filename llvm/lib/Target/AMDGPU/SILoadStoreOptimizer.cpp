@@ -131,6 +131,8 @@ class SILoadStoreOptimizer : public MachineFunctionPass {
     bool GLC1;
     bool SLC0;
     bool SLC1;
+    bool DLC0;
+    bool DLC1;
     bool UseST64;
     SmallVector<MachineInstr *, 8> InstsToMove;
   };
@@ -279,6 +281,7 @@ static bool addToListsIfDependent(MachineInstr &MI, DenseSet<unsigned> &RegDefs,
     // registers are in SSA form.
     if (Use.isReg() &&
         ((Use.readsReg() && RegDefs.count(Use.getReg())) ||
+         (Use.isDef() && RegDefs.count(Use.getReg())) ||
          (Use.isDef() && TargetRegisterInfo::isPhysicalRegister(Use.getReg()) &&
           PhysRegUses.count(Use.getReg())))) {
       Insts.push_back(&MI);
@@ -304,6 +307,16 @@ static bool canMoveInstsAcrossMemOp(MachineInstr &MemOp,
   return true;
 }
 
+// This function assumes that \p A and \p B have are identical except for
+// size and offset, and they referecne adjacent memory.
+static MachineMemOperand *combineKnownAdjacentMMOs(MachineFunction &MF,
+                                                   const MachineMemOperand *A,
+                                                   const MachineMemOperand *B) {
+  unsigned MinOffset = std::min(A->getOffset(), B->getOffset());
+  unsigned Size = A->getSize() + B->getSize();
+  return MF.getMachineMemOperand(A, MinOffset, Size);
+}
+
 bool SILoadStoreOptimizer::offsetsCanBeCombined(CombineInfo &CI) {
   // XXX - Would the same offset be OK? Is there any reason this would happen or
   // be useful?
@@ -323,7 +336,7 @@ bool SILoadStoreOptimizer::offsetsCanBeCombined(CombineInfo &CI) {
   if ((CI.InstClass != DS_READ) && (CI.InstClass != DS_WRITE)) {
     return (EltOffset0 + CI.Width0 == EltOffset1 ||
             EltOffset1 + CI.Width1 == EltOffset0) &&
-           CI.GLC0 == CI.GLC1 &&
+           CI.GLC0 == CI.GLC1 && CI.DLC0 == CI.DLC1 &&
            (CI.InstClass == S_BUFFER_LOAD_IMM || CI.SLC0 == CI.SLC1);
   }
 
@@ -637,6 +650,8 @@ bool SILoadStoreOptimizer::findMatchingInst(CombineInfo &CI) {
           CI.SLC0 = TII->getNamedOperand(*CI.I, AMDGPU::OpName::slc)->getImm();
           CI.SLC1 = TII->getNamedOperand(*MBBI, AMDGPU::OpName::slc)->getImm();
         }
+        CI.DLC0 = TII->getNamedOperand(*CI.I, AMDGPU::OpName::dlc)->getImm();
+        CI.DLC1 = TII->getNamedOperand(*MBBI, AMDGPU::OpName::dlc)->getImm();
       }
 
       // Check both offsets fit in the reduced range.
@@ -853,11 +868,20 @@ SILoadStoreOptimizer::mergeSBufferLoadImmPair(CombineInfo &CI) {
   unsigned DestReg = MRI->createVirtualRegister(SuperRC);
   unsigned MergedOffset = std::min(CI.Offset0, CI.Offset1);
 
+  // It shouldn't be possible to get this far if the two instructions
+  // don't have a single memoperand, because MachineInstr::mayAlias()
+  // will return true if this is the case.
+  assert(CI.I->hasOneMemOperand() && CI.Paired->hasOneMemOperand());
+
+  const MachineMemOperand *MMOa = *CI.I->memoperands_begin();
+  const MachineMemOperand *MMOb = *CI.Paired->memoperands_begin();
+
   BuildMI(*MBB, CI.Paired, DL, TII->get(Opcode), DestReg)
       .add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::sbase))
       .addImm(MergedOffset) // offset
       .addImm(CI.GLC0)      // glc
-      .cloneMergedMemRefs({&*CI.I, &*CI.Paired});
+      .addImm(CI.DLC0)      // dlc
+      .addMemOperand(combineKnownAdjacentMMOs(*MBB->getParent(), MMOa, MMOb));
 
   std::pair<unsigned, unsigned> SubRegIdx = getSubRegIdxs(CI);
   const unsigned SubRegIdx0 = std::get<0>(SubRegIdx);
@@ -903,13 +927,22 @@ SILoadStoreOptimizer::mergeBufferLoadPair(CombineInfo &CI) {
   if (Regs & VADDR)
     MIB.add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::vaddr));
 
+  // It shouldn't be possible to get this far if the two instructions
+  // don't have a single memoperand, because MachineInstr::mayAlias()
+  // will return true if this is the case.
+  assert(CI.I->hasOneMemOperand() && CI.Paired->hasOneMemOperand());
+
+  const MachineMemOperand *MMOa = *CI.I->memoperands_begin();
+  const MachineMemOperand *MMOb = *CI.Paired->memoperands_begin();
+
   MIB.add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::srsrc))
       .add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::soffset))
       .addImm(MergedOffset) // offset
       .addImm(CI.GLC0)      // glc
       .addImm(CI.SLC0)      // slc
       .addImm(0)            // tfe
-      .cloneMergedMemRefs({&*CI.I, &*CI.Paired});
+      .addImm(CI.DLC0)      // dlc
+      .addMemOperand(combineKnownAdjacentMMOs(*MBB->getParent(), MMOa, MMOb));
 
   std::pair<unsigned, unsigned> SubRegIdx = getSubRegIdxs(CI);
   const unsigned SubRegIdx0 = std::get<0>(SubRegIdx);
@@ -1085,13 +1118,23 @@ SILoadStoreOptimizer::mergeBufferStorePair(CombineInfo &CI) {
   if (Regs & VADDR)
     MIB.add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::vaddr));
 
+
+  // It shouldn't be possible to get this far if the two instructions
+  // don't have a single memoperand, because MachineInstr::mayAlias()
+  // will return true if this is the case.
+  assert(CI.I->hasOneMemOperand() && CI.Paired->hasOneMemOperand());
+
+  const MachineMemOperand *MMOa = *CI.I->memoperands_begin();
+  const MachineMemOperand *MMOb = *CI.Paired->memoperands_begin();
+
   MIB.add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::srsrc))
       .add(*TII->getNamedOperand(*CI.I, AMDGPU::OpName::soffset))
       .addImm(std::min(CI.Offset0, CI.Offset1)) // offset
-      .addImm(CI.GLC0)                          // glc
-      .addImm(CI.SLC0)                          // slc
-      .addImm(0)                                // tfe
-      .cloneMergedMemRefs({&*CI.I, &*CI.Paired});
+      .addImm(CI.GLC0)      // glc
+      .addImm(CI.SLC0)      // slc
+      .addImm(0)            // tfe
+      .addImm(CI.DLC0)      // dlc
+      .addMemOperand(combineKnownAdjacentMMOs(*MBB->getParent(), MMOa, MMOb));
 
   moveInstsAfter(MIB, CI.InstsToMove);
 
@@ -1136,9 +1179,10 @@ unsigned SILoadStoreOptimizer::computeBase(MachineInstr &MI,
   MachineOperand OffsetLo = createRegOrImm(static_cast<int32_t>(Addr.Offset), MI);
   MachineOperand OffsetHi =
     createRegOrImm(static_cast<int32_t>(Addr.Offset >> 32), MI);
-  unsigned CarryReg = MRI->createVirtualRegister(&AMDGPU::SReg_64_XEXECRegClass);
-  unsigned DeadCarryReg =
-    MRI->createVirtualRegister(&AMDGPU::SReg_64_XEXECRegClass);
+
+  const auto *CarryRC = TRI->getRegClass(AMDGPU::SReg_1_XEXECRegClassID);
+  unsigned CarryReg = MRI->createVirtualRegister(CarryRC);
+  unsigned DeadCarryReg = MRI->createVirtualRegister(CarryRC);
 
   unsigned DestSub0 = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
   unsigned DestSub1 = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);

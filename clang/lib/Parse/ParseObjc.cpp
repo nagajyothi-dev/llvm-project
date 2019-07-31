@@ -64,7 +64,7 @@ Parser::ParseObjCAtDirectives(ParsedAttributesWithRange &Attrs) {
   case tok::objc_protocol:
     return ParseObjCAtProtocolDeclaration(AtLoc, Attrs);
   case tok::objc_implementation:
-    return ParseObjCAtImplementationDeclaration(AtLoc);
+    return ParseObjCAtImplementationDeclaration(AtLoc, Attrs);
   case tok::objc_end:
     return ParseObjCAtEndDeclaration(AtLoc);
   case tok::objc_compatibility_alias:
@@ -1247,11 +1247,11 @@ ParsedType Parser::ParseObjCTypeName(ObjCDeclSpec &DS,
   BalancedDelimiterTracker T(*this, tok::l_paren);
   T.consumeOpen();
 
-  SourceLocation TypeStartLoc = Tok.getLocation();
   ObjCDeclContextSwitch ObjCDC(*this);
 
   // Parse type qualifiers, in, inout, etc.
   ParseObjCTypeQualifierList(DS, context);
+  SourceLocation TypeStartLoc = Tok.getLocation();
 
   ParsedType Ty;
   if (isTypeSpecifierQualifier() || isObjCInstancetype()) {
@@ -1943,7 +1943,7 @@ void Parser::ParseObjCClassInstanceVariables(Decl *interfaceDecl,
         Tok.setLocation(Tok.getLocation().getLocWithOffset(-1));
         Tok.setKind(tok::at);
         Tok.setLength(1);
-        PP.EnterToken(Tok);
+        PP.EnterToken(Tok, /*IsReinject*/true);
         HelperActionsForIvarDeclarations(interfaceDecl, atLoc,
                                          T, AllIvarDecls, true);
         return;
@@ -2097,7 +2097,8 @@ Parser::ParseObjCAtProtocolDeclaration(SourceLocation AtLoc,
 ///   objc-category-implementation-prologue:
 ///     @implementation identifier ( identifier )
 Parser::DeclGroupPtrTy
-Parser::ParseObjCAtImplementationDeclaration(SourceLocation AtLoc) {
+Parser::ParseObjCAtImplementationDeclaration(SourceLocation AtLoc,
+                                             ParsedAttributes &Attrs) {
   assert(Tok.isObjCAtKeyword(tok::objc_implementation) &&
          "ParseObjCAtImplementationDeclaration(): Expected @implementation");
   CheckNestedObjCContexts(AtLoc);
@@ -2174,8 +2175,7 @@ Parser::ParseObjCAtImplementationDeclaration(SourceLocation AtLoc) {
                                         /*consumeLastToken=*/true);
     }
     ObjCImpDecl = Actions.ActOnStartCategoryImplementation(
-                                    AtLoc, nameId, nameLoc, categoryId,
-                                    categoryLoc);
+        AtLoc, nameId, nameLoc, categoryId, categoryLoc, Attrs);
 
   } else {
     // We have a class implementation
@@ -2189,8 +2189,7 @@ Parser::ParseObjCAtImplementationDeclaration(SourceLocation AtLoc) {
       superClassLoc = ConsumeToken(); // Consume super class name
     }
     ObjCImpDecl = Actions.ActOnStartClassImplementation(
-                                    AtLoc, nameId, nameLoc,
-                                    superClassId, superClassLoc);
+        AtLoc, nameId, nameLoc, superClassId, superClassLoc, Attrs);
 
     if (Tok.is(tok::l_brace)) // we have ivars
       ParseObjCClassInstanceVariables(ObjCImpDecl, tok::objc_private, AtLoc);
@@ -3195,15 +3194,15 @@ Parser::ParseObjCMessageExpressionBody(SourceLocation LBracLoc,
         if (SuperLoc.isValid())
           Actions.CodeCompleteObjCSuperMessage(getCurScope(), SuperLoc,
                                                KeyIdents,
-                                               /*AtArgumentEpression=*/true);
+                                               /*AtArgumentExpression=*/true);
         else if (ReceiverType)
           Actions.CodeCompleteObjCClassMessage(getCurScope(), ReceiverType,
                                                KeyIdents,
-                                               /*AtArgumentEpression=*/true);
+                                               /*AtArgumentExpression=*/true);
         else
           Actions.CodeCompleteObjCInstanceMessage(getCurScope(), ReceiverExpr,
                                                   KeyIdents,
-                                                  /*AtArgumentEpression=*/true);
+                                                  /*AtArgumentExpression=*/true);
 
         cutOffParsing();
         return ExprError();
@@ -3233,15 +3232,15 @@ Parser::ParseObjCMessageExpressionBody(SourceLocation LBracLoc,
         if (SuperLoc.isValid())
           Actions.CodeCompleteObjCSuperMessage(getCurScope(), SuperLoc,
                                                KeyIdents,
-                                               /*AtArgumentEpression=*/false);
+                                               /*AtArgumentExpression=*/false);
         else if (ReceiverType)
           Actions.CodeCompleteObjCClassMessage(getCurScope(), ReceiverType,
                                                KeyIdents,
-                                               /*AtArgumentEpression=*/false);
+                                               /*AtArgumentExpression=*/false);
         else
           Actions.CodeCompleteObjCInstanceMessage(getCurScope(), ReceiverExpr,
                                                   KeyIdents,
-                                                /*AtArgumentEpression=*/false);
+                                                /*AtArgumentExpression=*/false);
         cutOffParsing();
         return ExprError();
       }
@@ -3655,7 +3654,7 @@ void Parser::ParseLexedObjCMethodDefs(LexedMethod &LM, bool parseMethod) {
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
   LM.Toks.push_back(Tok);
-  PP.EnterTokenStream(LM.Toks, true);
+  PP.EnterTokenStream(LM.Toks, true, /*IsReinject*/true);
 
   // Consume the previously pushed token.
   ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);

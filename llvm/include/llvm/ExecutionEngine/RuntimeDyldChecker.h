@@ -60,7 +60,8 @@ class raw_ostream;
 ///
 /// ident_expr = 'decode_operand' '(' symbol ',' operand-index ')'
 ///            | 'next_pc'        '(' symbol ')'
-///            | 'stub_addr' '(' file-name ',' section-name ',' symbol ')'
+///            | 'stub_addr' '(' stub-container-name ',' symbol ')'
+///            | 'got_addr' '(' stub-container-name ',' symbol ')'
 ///            | symbol
 ///
 /// binary_expr = expr '+' expr
@@ -72,32 +73,83 @@ class raw_ostream;
 ///
 class RuntimeDyldChecker {
 public:
+  class MemoryRegionInfo {
+  public:
+    MemoryRegionInfo() = default;
+
+    /// Constructor for symbols/sections with content.
+    MemoryRegionInfo(StringRef Content, JITTargetAddress TargetAddress)
+        : ContentPtr(Content.data()), Size(Content.size()),
+          TargetAddress(TargetAddress) {}
+
+    /// Constructor for zero-fill symbols/sections.
+    MemoryRegionInfo(uint64_t Size, JITTargetAddress TargetAddress)
+        : Size(Size), TargetAddress(TargetAddress) {}
+
+    /// Returns true if this is a zero-fill symbol/section.
+    bool isZeroFill() const {
+      assert(Size && "setContent/setZeroFill must be called first");
+      return !ContentPtr;
+    }
+
+    /// Set the content for this memory region.
+    void setContent(StringRef Content) {
+      assert(!ContentPtr && !Size && "Content/zero-fill already set");
+      ContentPtr = Content.data();
+      Size = Content.size();
+    }
+
+    /// Set a zero-fill length for this memory region.
+    void setZeroFill(uint64_t Size) {
+      assert(!ContentPtr && !this->Size && "Content/zero-fill already set");
+      this->Size = Size;
+    }
+
+    /// Returns the content for this section if there is any.
+    StringRef getContent() const {
+      assert(!isZeroFill() && "Can't get content for a zero-fill section");
+      return StringRef(ContentPtr, static_cast<size_t>(Size));
+    }
+
+    /// Returns the zero-fill length for this section.
+    uint64_t getZeroFillLength() const {
+      assert(isZeroFill() && "Can't get zero-fill length for content section");
+      return Size;
+    }
+
+    /// Set the target address for this region.
+    void setTargetAddress(JITTargetAddress TargetAddress) {
+      assert(!this->TargetAddress && "TargetAddress already set");
+      this->TargetAddress = TargetAddress;
+    }
+
+    /// Return the target address for this region.
+    JITTargetAddress getTargetAddress() const { return TargetAddress; }
+
+  private:
+    const char *ContentPtr = 0;
+    uint64_t Size = 0;
+    JITTargetAddress TargetAddress = 0;
+  };
 
   using IsSymbolValidFunction = std::function<bool(StringRef Symbol)>;
-  using GetSymbolAddressFunction =
-    std::function<Expected<JITTargetAddress>(StringRef Symbol)>;
-  using GetSymbolContentFunction =
-    std::function<Expected<StringRef>(StringRef Symbol)>;
-  using GetSectionLoadAddressFunction =
-    std::function<Optional<JITTargetAddress>(StringRef FileName,
-                                             StringRef SectionName)>;
-  using GetSectionContentFunction =
-    std::function<Expected<StringRef>(StringRef FileName,
-                                      StringRef SectionName)>;
-  using GetStubOffsetInSectionFunction =
-    std::function<Expected<uint32_t>(StringRef FileName,
-                                     StringRef SectionName,
-                                     StringRef SymbolName)>;
+  using GetSymbolInfoFunction =
+      std::function<Expected<MemoryRegionInfo>(StringRef SymbolName)>;
+  using GetSectionInfoFunction = std::function<Expected<MemoryRegionInfo>(
+      StringRef FileName, StringRef SectionName)>;
+  using GetStubInfoFunction = std::function<Expected<MemoryRegionInfo>(
+      StringRef StubContainer, StringRef TargetName)>;
+  using GetGOTInfoFunction = std::function<Expected<MemoryRegionInfo>(
+      StringRef GOTContainer, StringRef TargetName)>;
 
   RuntimeDyldChecker(IsSymbolValidFunction IsSymbolValid,
-                     GetSymbolAddressFunction GetSymbolAddress,
-                     GetSymbolContentFunction GetSymbolContent,
-                     GetSectionLoadAddressFunction GetSectionLoadAddresss,
-                     GetSectionContentFunction GetSectionContent,
-                     GetStubOffsetInSectionFunction GetStubOffsetInSection,
+                     GetSymbolInfoFunction GetSymbolInfo,
+                     GetSectionInfoFunction GetSectionInfo,
+                     GetStubInfoFunction GetStubInfo,
+                     GetGOTInfoFunction GetGOTInfo,
                      support::endianness Endianness,
-                     MCDisassembler *Disassembler,
-                     MCInstPrinter *InstPrinter, raw_ostream &ErrStream);
+                     MCDisassembler *Disassembler, MCInstPrinter *InstPrinter,
+                     raw_ostream &ErrStream);
   ~RuntimeDyldChecker();
 
   /// Check a single expression against the attached RuntimeDyld

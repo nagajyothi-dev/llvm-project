@@ -56,6 +56,8 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 
+#include "llvm/ADT/ScopeExit.h"
+
 using namespace lldb_private;
 
 ClangUserExpression::ClangUserExpression(
@@ -88,21 +90,18 @@ ClangUserExpression::~ClangUserExpression() {}
 void ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Status &err) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
-  if (log)
-    log->Printf("ClangUserExpression::ScanContext()");
+  LLDB_LOGF(log, "ClangUserExpression::ScanContext()");
 
   m_target = exe_ctx.GetTargetPtr();
 
   if (!(m_allow_cxx || m_allow_objc)) {
-    if (log)
-      log->Printf("  [CUE::SC] Settings inhibit C++ and Objective-C");
+    LLDB_LOGF(log, "  [CUE::SC] Settings inhibit C++ and Objective-C");
     return;
   }
 
   StackFrame *frame = exe_ctx.GetFramePtr();
-  if (frame == NULL) {
-    if (log)
-      log->Printf("  [CUE::SC] Null stack frame");
+  if (frame == nullptr) {
+    LLDB_LOGF(log, "  [CUE::SC] Null stack frame");
     return;
   }
 
@@ -110,8 +109,7 @@ void ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Status &err) {
                                                   lldb::eSymbolContextBlock);
 
   if (!sym_ctx.function) {
-    if (log)
-      log->Printf("  [CUE::SC] Null function");
+    LLDB_LOGF(log, "  [CUE::SC] Null function");
     return;
   }
 
@@ -119,16 +117,14 @@ void ClangUserExpression::ScanContext(ExecutionContext &exe_ctx, Status &err) {
   Block *function_block = sym_ctx.GetFunctionBlock();
 
   if (!function_block) {
-    if (log)
-      log->Printf("  [CUE::SC] Null function block");
+    LLDB_LOGF(log, "  [CUE::SC] Null function block");
     return;
   }
 
   CompilerDeclContext decl_context = function_block->GetDeclContext();
 
   if (!decl_context) {
-    if (log)
-      log->Printf("  [CUE::SC] Null decl context");
+    LLDB_LOGF(log, "  [CUE::SC] Null decl context");
     return;
   }
 
@@ -328,21 +324,6 @@ static void ApplyObjcCastHack(std::string &expr) {
 #undef OBJC_CAST_HACK_FROM
 }
 
-namespace {
-// Utility guard that calls a callback when going out of scope.
-class OnExit {
-public:
-  typedef std::function<void(void)> Callback;
-
-  OnExit(Callback const &callback) : m_callback(callback) {}
-
-  ~OnExit() { m_callback(); }
-
-private:
-  Callback m_callback;
-};
-} // namespace
-
 bool ClangUserExpression::SetupPersistentState(DiagnosticManager &diagnostic_manager,
                                  ExecutionContext &exe_ctx) {
   if (Target *target = exe_ctx.GetTargetPtr()) {
@@ -399,7 +380,7 @@ static void SetupDeclVendor(ExecutionContext &exe_ctx, Target *target) {
 
 void ClangUserExpression::UpdateLanguageForExpr(
     DiagnosticManager &diagnostic_manager, ExecutionContext &exe_ctx,
-    std::vector<std::string> modules_to_import) {
+    std::vector<std::string> modules_to_import, bool for_completion) {
   m_expr_lang = lldb::LanguageType::eLanguageTypeUnknown;
 
   std::string prefix = m_expr_prefix;
@@ -420,7 +401,7 @@ void ClangUserExpression::UpdateLanguageForExpr(
 
     if (!source_code->GetText(m_transformed_text, m_expr_lang,
                               m_in_static_method, exe_ctx, !m_ctx_obj,
-                              modules_to_import)) {
+                              for_completion, modules_to_import)) {
       diagnostic_manager.PutString(eDiagnosticSeverityError,
                                    "couldn't construct expression body");
       return;
@@ -432,9 +413,8 @@ void ClangUserExpression::UpdateLanguageForExpr(
     std::size_t original_end;
     bool found_bounds = source_code->GetOriginalBodyBounds(
         m_transformed_text, m_expr_lang, original_start, original_end);
-    if (found_bounds) {
+    if (found_bounds)
       m_user_expression_start_pos = original_start;
-    }
   }
 }
 
@@ -489,14 +469,15 @@ ClangUserExpression::GetModulesToImport(ExecutionContext &exe_ctx) {
   // We currently don't support importing any other modules in the expression
   // parser.
   for (const SourceModule &m : sc.comp_unit->GetImportedModules())
-    if (!m.path.empty() && m.path.front() == ConstString("std"))
+    if (!m.path.empty() && m.path.front() == "std")
       return {"std"};
 
   return {};
 }
 
 bool ClangUserExpression::PrepareForParsing(
-    DiagnosticManager &diagnostic_manager, ExecutionContext &exe_ctx) {
+    DiagnosticManager &diagnostic_manager, ExecutionContext &exe_ctx,
+    bool for_completion) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
   InstallContext(exe_ctx);
@@ -525,7 +506,8 @@ bool ClangUserExpression::PrepareForParsing(
   LLDB_LOG(log, "List of imported modules in expression: {0}",
            llvm::make_range(used_modules.begin(), used_modules.end()));
 
-  UpdateLanguageForExpr(diagnostic_manager, exe_ctx, used_modules);
+  UpdateLanguageForExpr(diagnostic_manager, exe_ctx, used_modules,
+                        for_completion);
   return true;
 }
 
@@ -536,11 +518,10 @@ bool ClangUserExpression::Parse(DiagnosticManager &diagnostic_manager,
                                 bool generate_debug_info) {
   Log *log(lldb_private::GetLogIfAllCategoriesSet(LIBLLDB_LOG_EXPRESSIONS));
 
-  if (!PrepareForParsing(diagnostic_manager, exe_ctx))
+  if (!PrepareForParsing(diagnostic_manager, exe_ctx, /*for_completion*/ false))
     return false;
 
-  if (log)
-    log->Printf("Parsing the following code:\n%s", m_transformed_text.c_str());
+  LLDB_LOGF(log, "Parsing the following code:\n%s", m_transformed_text.c_str());
 
   ////////////////////////////////////
   // Set up the target and compiler
@@ -561,7 +542,7 @@ bool ClangUserExpression::Parse(DiagnosticManager &diagnostic_manager,
 
   ResetDeclMap(exe_ctx, m_result_delegate, keep_result_in_memory);
 
-  OnExit on_exit([this]() { ResetDeclMap(); });
+  auto on_exit = llvm::make_scope_exit([this]() { ResetDeclMap(); });
 
   if (!DeclMap()->WillParse(exe_ctx, m_materializer_up.get())) {
     diagnostic_manager.PutString(
@@ -607,7 +588,7 @@ bool ClangUserExpression::Parse(DiagnosticManager &diagnostic_manager,
     return false;
   }
 
-  //////////////////////////////////////////////////////////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////////
   // Prepare the output of the parser for execution, evaluating it statically
   // if possible
   //
@@ -735,11 +716,10 @@ bool ClangUserExpression::Complete(ExecutionContext &exe_ctx,
   // correct.
   DiagnosticManager diagnostic_manager;
 
-  if (!PrepareForParsing(diagnostic_manager, exe_ctx))
+  if (!PrepareForParsing(diagnostic_manager, exe_ctx, /*for_completion*/ true))
     return false;
 
-  if (log)
-    log->Printf("Parsing the following code:\n%s", m_transformed_text.c_str());
+  LLDB_LOGF(log, "Parsing the following code:\n%s", m_transformed_text.c_str());
 
   //////////////////////////
   // Parse the expression
@@ -749,7 +729,7 @@ bool ClangUserExpression::Complete(ExecutionContext &exe_ctx,
 
   ResetDeclMap(exe_ctx, m_result_delegate, /*keep result in memory*/ true);
 
-  OnExit on_exit([this]() { ResetDeclMap(); });
+  auto on_exit = llvm::make_scope_exit([this]() { ResetDeclMap(); });
 
   if (!DeclMap()->WillParse(exe_ctx, m_materializer_up.get())) {
     diagnostic_manager.PutString(
