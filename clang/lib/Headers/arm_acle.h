@@ -597,6 +597,14 @@ __crc32cd(uint32_t __a, uint64_t __b) {
 }
 #endif
 
+/* Armv8.3-A Javascript conversion intrinsic */
+#if __ARM_64BIT_STATE && defined(__ARM_FEATURE_JCVT)
+static __inline__ int32_t __attribute__((__always_inline__, __nodebug__))
+__jcvt(double __a) {
+  return __builtin_arm_jcvt(__a);
+}
+#endif
+
 /* 10.1 Special register intrinsics */
 #define __arm_rsr(sysreg) __builtin_arm_rsr(sysreg)
 #define __arm_rsr64(sysreg) __builtin_arm_rsr64(sysreg)
@@ -604,6 +612,16 @@ __crc32cd(uint32_t __a, uint64_t __b) {
 #define __arm_wsr(sysreg, v) __builtin_arm_wsr(sysreg, v)
 #define __arm_wsr64(sysreg, v) __builtin_arm_wsr64(sysreg, v)
 #define __arm_wsrp(sysreg, v) __builtin_arm_wsrp(sysreg, v)
+
+// Memory Tagging Extensions (MTE) Intrinsics
+#if __ARM_FEATURE_MEMORY_TAGGING
+#define __arm_mte_create_random_tag(__ptr, __mask)  __builtin_arm_irg(__ptr, __mask)
+#define __arm_mte_increment_tag(__ptr, __tag_offset)  __builtin_arm_addg(__ptr, __tag_offset)
+#define __arm_mte_exclude_tag(__ptr, __excluded)  __builtin_arm_gmi(__ptr, __excluded)
+#define __arm_mte_get_tag(__ptr) __builtin_arm_ldg(__ptr)
+#define __arm_mte_set_tag(__ptr) __builtin_arm_stg(__ptr)
+#define __arm_mte_ptrdiff(__ptra, __ptrb) __builtin_arm_subp(__ptra, __ptrb)
+#endif
 
 #if defined(__cplusplus)
 }

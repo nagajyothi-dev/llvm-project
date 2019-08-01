@@ -113,6 +113,11 @@ const Node *Input::getCurrentNode() const {
 }
 
 bool Input::mapTag(StringRef Tag, bool Default) {
+  // CurrentNode can be null if setCurrentDocument() was unable to
+  // parse the document because it was invalid or empty.
+  if (!CurrentNode)
+    return false;
+
   std::string foundTag = CurrentNode->_node->getVerbatimTag();
   if (foundTag.empty()) {
     // If no tag found and 'Tag' is the default, say it was found.
@@ -441,7 +446,8 @@ bool Output::outputting() {
 
 void Output::beginMapping() {
   StateStack.push_back(inMapFirstKey);
-  NeedsNewLine = true;
+  PaddingBeforeContainer = Padding;
+  Padding = "\n";
 }
 
 bool Output::mapTag(StringRef Tag, bool Use) {
@@ -469,7 +475,7 @@ bool Output::mapTag(StringRef Tag, bool Use) {
       }
       // Tags inside maps in sequences should act as keys in the map from a
       // formatting perspective, so we always want a newline in a sequence.
-      NeedsNewLine = true;
+      Padding = "\n";
     }
   }
   return Use;
@@ -477,8 +483,12 @@ bool Output::mapTag(StringRef Tag, bool Use) {
 
 void Output::endMapping() {
   // If we did not map anything, we should explicitly emit an empty map
-  if (StateStack.back() == inMapFirstKey)
+  if (StateStack.back() == inMapFirstKey) {
+    Padding = PaddingBeforeContainer;
+    newLineCheck();
     output("{}");
+    Padding = "\n";
+  }
   StateStack.pop_back();
 }
 
@@ -543,14 +553,19 @@ void Output::endDocuments() {
 
 unsigned Output::beginSequence() {
   StateStack.push_back(inSeqFirstElement);
-  NeedsNewLine = true;
+  PaddingBeforeContainer = Padding;
+  Padding = "\n";
   return 0;
 }
 
 void Output::endSequence() {
   // If we did not emit anything, we should explicitly emit an empty sequence
-  if (StateStack.back() == inSeqFirstElement)
+  if (StateStack.back() == inSeqFirstElement) {
+    Padding = PaddingBeforeContainer;
+    newLineCheck();
     output("[]");
+    Padding = "\n";
+  }
   StateStack.pop_back();
 }
 
@@ -741,7 +756,7 @@ void Output::outputUpToEndOfLine(StringRef s) {
   output(s);
   if (StateStack.empty() || (!inFlowSeqAnyElement(StateStack.back()) &&
                              !inFlowMapAnyKey(StateStack.back())))
-    NeedsNewLine = true;
+    Padding = "\n";
 }
 
 void Output::outputNewLine() {
@@ -754,11 +769,13 @@ void Output::outputNewLine() {
 //
 
 void Output::newLineCheck() {
-  if (!NeedsNewLine)
+  if (Padding != "\n") {
+    output(Padding);
+    Padding = {};
     return;
-  NeedsNewLine = false;
-
+  }
   outputNewLine();
+  Padding = {};
 
   if (StateStack.size() == 0)
     return;
@@ -792,9 +809,9 @@ void Output::paddedKey(StringRef key) {
   output(":");
   const char *spaces = "                ";
   if (key.size() < strlen(spaces))
-    output(&spaces[key.size()]);
+    Padding = &spaces[key.size()];
   else
-    output(" ");
+    Padding = " ";
 }
 
 void Output::flowKey(StringRef Key) {

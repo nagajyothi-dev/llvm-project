@@ -29,18 +29,43 @@ using namespace llvm;
 
 unsigned llvm::constrainRegToClass(MachineRegisterInfo &MRI,
                                    const TargetInstrInfo &TII,
-                                   const RegisterBankInfo &RBI,
-                                   MachineInstr &InsertPt, unsigned Reg,
+                                   const RegisterBankInfo &RBI, unsigned Reg,
                                    const TargetRegisterClass &RegClass) {
-  if (!RBI.constrainGenericRegister(Reg, RegClass, MRI)) {
-    unsigned NewReg = MRI.createVirtualRegister(&RegClass);
-    BuildMI(*InsertPt.getParent(), InsertPt, InsertPt.getDebugLoc(),
-            TII.get(TargetOpcode::COPY), NewReg)
-        .addReg(Reg);
-    return NewReg;
-  }
+  if (!RBI.constrainGenericRegister(Reg, RegClass, MRI))
+    return MRI.createVirtualRegister(&RegClass);
 
   return Reg;
+}
+
+unsigned llvm::constrainOperandRegClass(
+    const MachineFunction &MF, const TargetRegisterInfo &TRI,
+    MachineRegisterInfo &MRI, const TargetInstrInfo &TII,
+    const RegisterBankInfo &RBI, MachineInstr &InsertPt,
+    const TargetRegisterClass &RegClass, const MachineOperand &RegMO,
+    unsigned OpIdx) {
+  unsigned Reg = RegMO.getReg();
+  // Assume physical registers are properly constrained.
+  assert(TargetRegisterInfo::isVirtualRegister(Reg) &&
+         "PhysReg not implemented");
+
+  unsigned ConstrainedReg = constrainRegToClass(MRI, TII, RBI, Reg, RegClass);
+  // If we created a new virtual register because the class is not compatible
+  // then create a copy between the new and the old register.
+  if (ConstrainedReg != Reg) {
+    MachineBasicBlock::iterator InsertIt(&InsertPt);
+    MachineBasicBlock &MBB = *InsertPt.getParent();
+    if (RegMO.isUse()) {
+      BuildMI(MBB, InsertIt, InsertPt.getDebugLoc(),
+              TII.get(TargetOpcode::COPY), ConstrainedReg)
+          .addReg(Reg);
+    } else {
+      assert(RegMO.isDef() && "Must be a definition");
+      BuildMI(MBB, std::next(InsertIt), InsertPt.getDebugLoc(),
+              TII.get(TargetOpcode::COPY), Reg)
+          .addReg(ConstrainedReg);
+    }
+  }
+  return ConstrainedReg;
 }
 
 unsigned llvm::constrainOperandRegClass(
@@ -81,7 +106,8 @@ unsigned llvm::constrainOperandRegClass(
     // and they never reach this function.
     return Reg;
   }
-  return constrainRegToClass(MRI, TII, RBI, InsertPt, Reg, *RegClass);
+  return constrainOperandRegClass(MF, TRI, MRI, TII, RBI, InsertPt, *RegClass,
+                                  RegMO, OpIdx);
 }
 
 bool llvm::constrainSelectedInstRegOperands(MachineInstr &I,
@@ -212,6 +238,9 @@ Optional<ValueAndVReg> llvm::getConstantVRegValWithLookThrough(
       if (TargetRegisterInfo::isPhysicalRegister(VReg))
         return None;
       break;
+    case TargetOpcode::G_INTTOPTR:
+      VReg = MI->getOperand(1).getReg();
+      break;
     default:
       return None;
     }
@@ -255,8 +284,8 @@ const llvm::ConstantFP* llvm::getConstantFPVRegVal(unsigned VReg,
   return MI->getOperand(1).getFPImm();
 }
 
-llvm::MachineInstr *llvm::getOpcodeDef(unsigned Opcode, unsigned Reg,
-                                       const MachineRegisterInfo &MRI) {
+llvm::MachineInstr *llvm::getDefIgnoringCopies(Register Reg,
+                                               const MachineRegisterInfo &MRI) {
   auto *DefMI = MRI.getVRegDef(Reg);
   auto DstTy = MRI.getType(DefMI->getOperand(0).getReg());
   if (!DstTy.isValid())
@@ -268,7 +297,13 @@ llvm::MachineInstr *llvm::getOpcodeDef(unsigned Opcode, unsigned Reg,
       break;
     DefMI = MRI.getVRegDef(SrcReg);
   }
-  return DefMI->getOpcode() == Opcode ? DefMI : nullptr;
+  return DefMI;
+}
+
+llvm::MachineInstr *llvm::getOpcodeDef(unsigned Opcode, Register Reg,
+                                       const MachineRegisterInfo &MRI) {
+  MachineInstr *DefMI = getDefIgnoringCopies(Reg, MRI);
+  return DefMI && DefMI->getOpcode() == Opcode ? DefMI : nullptr;
 }
 
 APFloat llvm::getAPFloatFromSize(double Val, unsigned Size) {
@@ -333,6 +368,31 @@ Optional<APInt> llvm::ConstantFoldBinOp(unsigned Opcode, const unsigned Op1,
     }
   }
   return None;
+}
+
+bool llvm::isKnownNeverNaN(Register Val, const MachineRegisterInfo &MRI,
+                           bool SNaN) {
+  const MachineInstr *DefMI = MRI.getVRegDef(Val);
+  if (!DefMI)
+    return false;
+
+  if (DefMI->getFlag(MachineInstr::FmNoNans))
+    return true;
+
+  if (SNaN) {
+    // FP operations quiet. For now, just handle the ones inserted during
+    // legalization.
+    switch (DefMI->getOpcode()) {
+    case TargetOpcode::G_FPEXT:
+    case TargetOpcode::G_FPTRUNC:
+    case TargetOpcode::G_FCANONICALIZE:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  return false;
 }
 
 void llvm::getSelectionDAGFallbackAnalysisUsage(AnalysisUsage &AU) {

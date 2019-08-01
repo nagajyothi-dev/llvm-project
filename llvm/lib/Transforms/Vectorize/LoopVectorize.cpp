@@ -56,6 +56,7 @@
 #include "llvm/Transforms/Vectorize/LoopVectorize.h"
 #include "LoopVectorizationPlanner.h"
 #include "VPRecipeBuilder.h"
+#include "VPlan.h"
 #include "VPlanHCFGBuilder.h"
 #include "VPlanHCFGTransforms.h"
 #include "VPlanPredicator.h"
@@ -88,6 +89,7 @@
 #include "llvm/Analysis/LoopIterator.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpander.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
@@ -134,6 +136,7 @@
 #include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/LoopVersioning.h"
+#include "llvm/Transforms/Utils/SizeOpts.h"
 #include "llvm/Transforms/Vectorize/LoopVectorizationLegality.h"
 #include <algorithm>
 #include <cassert>
@@ -274,6 +277,13 @@ static cl::opt<bool> VPlanBuildStressTest(
         "Build VPlan for every supported loop nest in the function and bail "
         "out right after the build (stress test the VPlan H-CFG construction "
         "in the VPlan-native vectorization path)."));
+
+cl::opt<bool> llvm::EnableLoopInterleaving(
+    "interleave-loops", cl::init(true), cl::Hidden,
+    cl::desc("Enable loop interleaving in Loop vectorization passes"));
+cl::opt<bool> llvm::EnableLoopVectorization(
+    "vectorize-loops", cl::init(true), cl::Hidden,
+    cl::desc("Run the Loop vectorization passes"));
 
 /// A helper function for converting Scalar types to vector types.
 /// If the incoming type is void, we return void. If the VF is 1, we return
@@ -826,6 +836,14 @@ void InnerLoopVectorizer::addMetadata(ArrayRef<Value *> To,
 
 namespace llvm {
 
+// Loop vectorization cost-model hints how the scalar epilogue loop should be
+// lowered.
+enum ScalarEpilogueLowering {
+  CM_ScalarEpilogueAllowed,
+  CM_ScalarEpilogueNotAllowedOptSize,
+  CM_ScalarEpilogueNotAllowedLowTripLoop
+};
+
 /// LoopVectorizationCostModel - estimates the expected speedups due to
 /// vectorization.
 /// In many cases vectorization is not profitable. This can happen because of
@@ -835,7 +853,8 @@ namespace llvm {
 /// different operations.
 class LoopVectorizationCostModel {
 public:
-  LoopVectorizationCostModel(Loop *L, PredicatedScalarEvolution &PSE,
+  LoopVectorizationCostModel(ScalarEpilogueLowering SEL, Loop *L,
+                             PredicatedScalarEvolution &PSE,
                              LoopInfo *LI, LoopVectorizationLegality *Legal,
                              const TargetTransformInfo &TTI,
                              const TargetLibraryInfo *TLI, DemandedBits *DB,
@@ -843,12 +862,13 @@ public:
                              OptimizationRemarkEmitter *ORE, const Function *F,
                              const LoopVectorizeHints *Hints,
                              InterleavedAccessInfo &IAI)
-      : TheLoop(L), PSE(PSE), LI(LI), Legal(Legal), TTI(TTI), TLI(TLI), DB(DB),
-    AC(AC), ORE(ORE), TheFunction(F), Hints(Hints), InterleaveInfo(IAI) {}
+      : ScalarEpilogueStatus(SEL), TheLoop(L), PSE(PSE),
+    LI(LI), Legal(Legal), TTI(TTI), TLI(TLI), DB(DB), AC(AC), ORE(ORE),
+    TheFunction(F), Hints(Hints), InterleaveInfo(IAI) {}
 
   /// \return An upper bound for the vectorization factor, or None if
   /// vectorization and interleaving should be avoided up front.
-  Optional<unsigned> computeMaxVF(bool OptForSize);
+  Optional<unsigned> computeMaxVF();
 
   /// \return The most profitable vectorization factor and the cost of that VF.
   /// This method checks every power of two up to MaxVF. If UserVF is not ZERO
@@ -871,8 +891,7 @@ public:
   /// If interleave count has been specified by metadata it will be returned.
   /// Otherwise, the interleave count is computed and returned. VF and LoopCost
   /// are the selected vectorization factor and the cost of the selected VF.
-  unsigned selectInterleaveCount(bool OptForSize, unsigned VF,
-                                 unsigned LoopCost);
+  unsigned selectInterleaveCount(unsigned VF, unsigned LoopCost);
 
   /// Memory access instruction may be vectorized in more than one way.
   /// Form of instruction after vectorization depends on cost.
@@ -1147,11 +1166,14 @@ public:
   /// to handle accesses with gaps, and there is nothing preventing us from
   /// creating a scalar epilogue.
   bool requiresScalarEpilogue() const {
-    return IsScalarEpilogueAllowed && InterleaveInfo.requiresScalarEpilogue();
+    return isScalarEpilogueAllowed() && InterleaveInfo.requiresScalarEpilogue();
   }
 
-  /// Returns true if a scalar epilogue is not allowed due to optsize.
-  bool isScalarEpilogueAllowed() const { return IsScalarEpilogueAllowed; }
+  /// Returns true if a scalar epilogue is not allowed due to optsize or a
+  /// loop hint annotation.
+  bool isScalarEpilogueAllowed() const {
+    return ScalarEpilogueStatus == CM_ScalarEpilogueAllowed;
+  }
 
   /// Returns true if all loop blocks should be masked to fold tail loop.
   bool foldTailByMasking() const { return FoldTailByMasking; }
@@ -1160,12 +1182,24 @@ public:
     return foldTailByMasking() || Legal->blockNeedsPredication(BB);
   }
 
+  /// Estimate cost of an intrinsic call instruction CI if it were vectorized
+  /// with factor VF.  Return the cost of the instruction, including
+  /// scalarization overhead if it's needed.
+  unsigned getVectorIntrinsicCost(CallInst *CI, unsigned VF);
+
+  /// Estimate cost of a call instruction CI if it were vectorized with factor
+  /// VF. Return the cost of the instruction, including scalarization overhead
+  /// if it's needed. The flag NeedToScalarize shows if the call needs to be
+  /// scalarized -
+  /// i.e. either vector version isn't available, or is too expensive.
+  unsigned getVectorCallCost(CallInst *CI, unsigned VF, bool &NeedToScalarize);
+
 private:
   unsigned NumPredStores = 0;
 
   /// \return An upper bound for the vectorization factor, larger than zero.
   /// One is returned if vectorization should best be avoided due to cost.
-  unsigned computeFeasibleMaxVF(bool OptForSize, unsigned ConstTripCount);
+  unsigned computeFeasibleMaxVF(unsigned ConstTripCount);
 
   /// The vectorization cost is a combination of the cost itself and a boolean
   /// indicating whether any of the contributing operations will actually
@@ -1212,6 +1246,10 @@ private:
   /// element)
   unsigned getUniformMemOpCost(Instruction *I, unsigned VF);
 
+  /// Estimate the overhead of scalarizing an instruction. This is a
+  /// convenience wrapper for the type-based getScalarizationOverhead API.
+  unsigned getScalarizationOverhead(Instruction *I, unsigned VF);
+
   /// Returns whether the instruction is a load or store and will be a emitted
   /// as a vector operation.
   bool isConsecutiveLoadOrStore(Instruction *I);
@@ -1244,13 +1282,13 @@ private:
   SmallPtrSet<BasicBlock *, 4> PredicatedBBsAfterVectorization;
 
   /// Records whether it is allowed to have the original scalar loop execute at
-  /// least once. This may be needed as a fallback loop in case runtime 
+  /// least once. This may be needed as a fallback loop in case runtime
   /// aliasing/dependence checks fail, or to handle the tail/remainder
   /// iterations when the trip count is unknown or doesn't divide by the VF,
   /// or as a peel-loop to handle gaps in interleave-groups.
   /// Under optsize and when the trip count is very small we don't allow any
   /// iterations to execute in the scalar loop.
-  bool IsScalarEpilogueAllowed = true;
+  ScalarEpilogueLowering ScalarEpilogueStatus = CM_ScalarEpilogueAllowed;
 
   /// All blocks of loop are to be masked to fold tail of scalar iterations.
   bool FoldTailByMasking = false;
@@ -1305,6 +1343,30 @@ private:
                                 std::pair<InstWidening, unsigned>>;
 
   DecisionList WideningDecisions;
+
+  /// Returns true if \p V is expected to be vectorized and it needs to be
+  /// extracted.
+  bool needsExtract(Value *V, unsigned VF) const {
+    Instruction *I = dyn_cast<Instruction>(V);
+    if (VF == 1 || !I || !TheLoop->contains(I) || TheLoop->isLoopInvariant(I))
+      return false;
+
+    // Assume we can vectorize V (and hence we need extraction) if the
+    // scalars are not computed yet. This can happen, because it is called
+    // via getScalarizationOverhead from setCostBasedWideningDecision, before
+    // the scalars are collected. That should be a safe assumption in most
+    // cases, because we check if the operands have vectorizable types
+    // beforehand in LoopVectorizationLegality.
+    return Scalars.find(VF) == Scalars.end() ||
+           !isScalarAfterVectorization(I, VF);
+  };
+
+  /// Returns a range containing only operands needing to be extracted.
+  SmallVector<Value *, 4> filterExtractingOperands(Instruction::op_range Ops,
+                                                   unsigned VF) {
+    return SmallVector<Value *, 4>(make_filter_range(
+        Ops, [this, VF](Value *V) { return this->needsExtract(V, VF); }));
+  }
 
 public:
   /// The loop that we evaluate.
@@ -1452,12 +1514,13 @@ struct LoopVectorize : public FunctionPass {
     auto *LAA = &getAnalysis<LoopAccessLegacyAnalysis>();
     auto *DB = &getAnalysis<DemandedBitsWrapperPass>().getDemandedBits();
     auto *ORE = &getAnalysis<OptimizationRemarkEmitterWrapperPass>().getORE();
+    auto *PSI = &getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI();
 
     std::function<const LoopAccessInfo &(Loop &)> GetLAA =
         [&](Loop &L) -> const LoopAccessInfo & { return LAA->getInfo(&L); };
 
     return Impl.runImpl(F, *SE, *LI, *TTI, *DT, *BFI, TLI, *DB, *AA, *AC,
-                        GetLAA, *ORE);
+                        GetLAA, *ORE, PSI);
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -1483,6 +1546,7 @@ struct LoopVectorize : public FunctionPass {
 
     AU.addPreserved<BasicAAWrapperPass>();
     AU.addPreserved<GlobalsAAWrapperPass>();
+    AU.addRequired<ProfileSummaryInfoWrapperPass>();
   }
 };
 
@@ -2855,13 +2919,11 @@ BasicBlock *InnerLoopVectorizer::createVectorizedLoopSkeleton() {
     BCResumeVal->addIncoming(EndValue, MiddleBlock);
 
     // Fix the scalar body counter (PHI node).
-    unsigned BlockIdx = OrigPhi->getBasicBlockIndex(ScalarPH);
-
     // The old induction's phi node in the scalar body needs the truncated
     // value.
     for (BasicBlock *BB : LoopBypassBlocks)
       BCResumeVal->addIncoming(II.getStartValue(), BB);
-    OrigPhi->setIncomingValue(BlockIdx, BCResumeVal);
+    OrigPhi->setIncomingValueForBlock(ScalarPH, BCResumeVal);
   }
 
   // We need the OrigLoop (scalar loop part) latch terminator to help
@@ -2883,11 +2945,11 @@ BasicBlock *InnerLoopVectorizer::createVectorizedLoopSkeleton() {
         CmpInst::Create(Instruction::ICmp, CmpInst::ICMP_EQ, Count,
                         CountRoundDown, "cmp.n", MiddleBlock->getTerminator());
 
-    // Provide correct stepping behaviour by using the same DebugLoc as the
-    // scalar loop latch branch cmp if it exists.
-    if (CmpInst *ScalarLatchCmp =
-            dyn_cast_or_null<CmpInst>(ScalarLatchBr->getCondition()))
-      cast<Instruction>(CmpN)->setDebugLoc(ScalarLatchCmp->getDebugLoc());
+    // Here we use the same DebugLoc as the scalar loop latch branch instead
+    // of the corresponding compare because they may have ended up with
+    // different line numbers and we want to avoid awkward line stepping while
+    // debugging. Eg. if the compare has got a line number inside the loop.
+    cast<Instruction>(CmpN)->setDebugLoc(ScalarLatchBr->getDebugLoc());
   }
 
   BranchInst *BrInst = BranchInst::Create(ExitBlock, ScalarPH, CmpN);
@@ -3046,45 +3108,9 @@ static void cse(BasicBlock *BB) {
   }
 }
 
-/// Estimate the overhead of scalarizing an instruction. This is a
-/// convenience wrapper for the type-based getScalarizationOverhead API.
-static unsigned getScalarizationOverhead(Instruction *I, unsigned VF,
-                                         const TargetTransformInfo &TTI) {
-  if (VF == 1)
-    return 0;
-
-  unsigned Cost = 0;
-  Type *RetTy = ToVectorTy(I->getType(), VF);
-  if (!RetTy->isVoidTy() &&
-      (!isa<LoadInst>(I) ||
-       !TTI.supportsEfficientVectorElementLoadStore()))
-    Cost += TTI.getScalarizationOverhead(RetTy, true, false);
-
-  // Some targets keep addresses scalar.
-  if (isa<LoadInst>(I) && !TTI.prefersVectorizedAddressing())
-    return Cost;
-
-  if (CallInst *CI = dyn_cast<CallInst>(I)) {
-    SmallVector<const Value *, 4> Operands(CI->arg_operands());
-    Cost += TTI.getOperandsScalarizationOverhead(Operands, VF);
-  }
-  else if (!isa<StoreInst>(I) ||
-           !TTI.supportsEfficientVectorElementLoadStore()) {
-    SmallVector<const Value *, 4> Operands(I->operand_values());
-    Cost += TTI.getOperandsScalarizationOverhead(Operands, VF);
-  }
-
-  return Cost;
-}
-
-// Estimate cost of a call instruction CI if it were vectorized with factor VF.
-// Return the cost of the instruction, including scalarization overhead if it's
-// needed. The flag NeedToScalarize shows if the call needs to be scalarized -
-// i.e. either vector version isn't available, or is too expensive.
-static unsigned getVectorCallCost(CallInst *CI, unsigned VF,
-                                  const TargetTransformInfo &TTI,
-                                  const TargetLibraryInfo *TLI,
-                                  bool &NeedToScalarize) {
+unsigned LoopVectorizationCostModel::getVectorCallCost(CallInst *CI,
+                                                       unsigned VF,
+                                                       bool &NeedToScalarize) {
   Function *F = CI->getCalledFunction();
   StringRef FnName = CI->getCalledFunction()->getName();
   Type *ScalarRetTy = CI->getType();
@@ -3107,7 +3133,7 @@ static unsigned getVectorCallCost(CallInst *CI, unsigned VF,
 
   // Compute costs of unpacking argument values for the scalar calls and
   // packing the return values to a vector.
-  unsigned ScalarizationCost = getScalarizationOverhead(CI, VF, TTI);
+  unsigned ScalarizationCost = getScalarizationOverhead(CI, VF);
 
   unsigned Cost = ScalarCallCost * VF + ScalarizationCost;
 
@@ -3126,12 +3152,8 @@ static unsigned getVectorCallCost(CallInst *CI, unsigned VF,
   return Cost;
 }
 
-// Estimate cost of an intrinsic call instruction CI if it were vectorized with
-// factor VF.  Return the cost of the instruction, including scalarization
-// overhead if it's needed.
-static unsigned getVectorIntrinsicCost(CallInst *CI, unsigned VF,
-                                       const TargetTransformInfo &TTI,
-                                       const TargetLibraryInfo *TLI) {
+unsigned LoopVectorizationCostModel::getVectorIntrinsicCost(CallInst *CI,
+                                                            unsigned VF) {
   Intrinsic::ID ID = getVectorIntrinsicIDForCall(CI, TLI);
   assert(ID && "Expected intrinsic call!");
 
@@ -3492,7 +3514,7 @@ void InnerLoopVectorizer::fixFirstOrderRecurrence(PHINode *Phi) {
     Start->addIncoming(Incoming, BB);
   }
 
-  Phi->setIncomingValue(Phi->getBasicBlockIndex(LoopScalarPreHeader), Start);
+  Phi->setIncomingValueForBlock(LoopScalarPreHeader, Start);
   Phi->setName("scalar.recur");
 
   // Finally, fix users of the recurrence outside the loop. The users will need
@@ -3620,7 +3642,15 @@ void InnerLoopVectorizer::fixReduction(PHINode *Phi) {
   // Reduce all of the unrolled parts into a single vector.
   Value *ReducedPartRdx = VectorLoopValueMap.getVectorValue(LoopExitInst, 0);
   unsigned Op = RecurrenceDescriptor::getRecurrenceBinOp(RK);
-  setDebugLocFromInst(Builder, ReducedPartRdx);
+
+  // The middle block terminator has already been assigned a DebugLoc here (the
+  // OrigLoop's single latch terminator). We want the whole middle block to
+  // appear to execute on this line because: (a) it is all compiler generated,
+  // (b) these instructions are always executed after evaluating the latch
+  // conditional branch, and (c) other passes may add new predecessors which
+  // terminate on this line. This is the easiest way to ensure we don't
+  // accidentally cause an extra step back into the loop while debugging.
+  setDebugLocFromInst(Builder, LoopMiddleBlock->getTerminator());
   for (unsigned Part = 1; Part < UF; ++Part) {
     Value *RdxPart = VectorLoopValueMap.getVectorValue(LoopExitInst, Part);
     if (Op != Instruction::ICmp && Op != Instruction::FCmp)
@@ -3982,6 +4012,7 @@ void InnerLoopVectorizer::widenInstruction(Instruction &I) {
   case Instruction::FAdd:
   case Instruction::Sub:
   case Instruction::FSub:
+  case Instruction::FNeg:
   case Instruction::Mul:
   case Instruction::FMul:
   case Instruction::FDiv:
@@ -3992,21 +4023,22 @@ void InnerLoopVectorizer::widenInstruction(Instruction &I) {
   case Instruction::And:
   case Instruction::Or:
   case Instruction::Xor: {
-    // Just widen binops.
-    auto *BinOp = cast<BinaryOperator>(&I);
-    setDebugLocFromInst(Builder, BinOp);
+    // Just widen unops and binops.
+    setDebugLocFromInst(Builder, &I);
 
     for (unsigned Part = 0; Part < UF; ++Part) {
-      Value *A = getOrCreateVectorValue(BinOp->getOperand(0), Part);
-      Value *B = getOrCreateVectorValue(BinOp->getOperand(1), Part);
-      Value *V = Builder.CreateBinOp(BinOp->getOpcode(), A, B);
+      SmallVector<Value *, 2> Ops;
+      for (Value *Op : I.operands())
+        Ops.push_back(getOrCreateVectorValue(Op, Part));
 
-      if (BinaryOperator *VecOp = dyn_cast<BinaryOperator>(V))
-        VecOp->copyIRFlags(BinOp);
+      Value *V = Builder.CreateNAryOp(I.getOpcode(), Ops);
+
+      if (auto *VecOp = dyn_cast<Instruction>(V))
+        VecOp->copyIRFlags(&I);
 
       // Use this vector value for all users of the original instruction.
       VectorLoopValueMap.setVectorValue(&I, Part, V);
-      addMetadata(V, BinOp);
+      addMetadata(V, &I);
     }
 
     break;
@@ -4115,9 +4147,9 @@ void InnerLoopVectorizer::widenInstruction(Instruction &I) {
     // version of the instruction.
     // Is it beneficial to perform intrinsic call compared to lib call?
     bool NeedToScalarize;
-    unsigned CallCost = getVectorCallCost(CI, VF, *TTI, TLI, NeedToScalarize);
+    unsigned CallCost = Cost->getVectorCallCost(CI, VF, NeedToScalarize);
     bool UseVectorIntrinsic =
-        ID && getVectorIntrinsicCost(CI, VF, *TTI, TLI) <= CallCost;
+        ID && Cost->getVectorIntrinsicCost(CI, VF) <= CallCost;
     assert((UseVectorIntrinsic || !NeedToScalarize) &&
            "Instruction should be scalarized elsewhere.");
 
@@ -4422,13 +4454,20 @@ bool LoopVectorizationCostModel::interleavedAccessCanBeWidened(Instruction *I,
   auto *Group = getInterleavedAccessGroup(I);
   assert(Group && "Must have a group.");
 
+  // If the instruction's allocated size doesn't equal it's type size, it
+  // requires padding and will be scalarized.
+  auto &DL = I->getModule()->getDataLayout();
+  auto *ScalarTy = getMemInstValueType(I);
+  if (hasIrregularType(ScalarTy, DL, VF))
+    return false;
+
   // Check if masking is required.
   // A Group may need masking for one of two reasons: it resides in a block that
   // needs predication, or it was decided to use masking to deal with gaps.
-  bool PredicatedAccessRequiresMasking = 
+  bool PredicatedAccessRequiresMasking =
       Legal->blockNeedsPredication(I->getParent()) && Legal->isMaskRequired(I);
-  bool AccessWithGapsRequiresMasking = 
-      Group->requiresScalarEpilogue() && !IsScalarEpilogueAllowed;
+  bool AccessWithGapsRequiresMasking =
+      Group->requiresScalarEpilogue() && !isScalarEpilogueAllowed();
   if (!PredicatedAccessRequiresMasking && !AccessWithGapsRequiresMasking)
     return true;
 
@@ -4648,7 +4687,7 @@ void LoopVectorizationCostModel::collectLoopUniforms(unsigned VF) {
   Uniforms[VF].insert(Worklist.begin(), Worklist.end());
 }
 
-Optional<unsigned> LoopVectorizationCostModel::computeMaxVF(bool OptForSize) {
+Optional<unsigned> LoopVectorizationCostModel::computeMaxVF() {
   if (Legal->getRuntimePointerChecking()->Need && TTI.hasBranchDivergence()) {
     // TODO: It may by useful to do since it's still likely to be dynamically
     // uniform if the target can skip.
@@ -4663,8 +4702,11 @@ Optional<unsigned> LoopVectorizationCostModel::computeMaxVF(bool OptForSize) {
   }
 
   unsigned TC = PSE.getSE()->getSmallConstantTripCount(TheLoop);
-  if (!OptForSize) // Remaining checks deal with scalar loop when OptForSize.
-    return computeFeasibleMaxVF(OptForSize, TC);
+  if (isScalarEpilogueAllowed())
+    return computeFeasibleMaxVF(TC);
+
+  LLVM_DEBUG(dbgs() << "LV: Not allowing scalar epilogue.\n" <<
+                       "LV: Performing code size checks.\n");
 
   if (Legal->getRuntimePointerChecking()->Need) {
     ORE->emit(createMissedAnalysis("CantVersionLoopWithOptForSize")
@@ -4713,15 +4755,13 @@ Optional<unsigned> LoopVectorizationCostModel::computeMaxVF(bool OptForSize) {
   // Record that scalar epilogue is not allowed.
   LLVM_DEBUG(dbgs() << "LV: Not allowing scalar epilogue due to -Os/-Oz.\n");
 
-  IsScalarEpilogueAllowed = !OptForSize;
-
   // We don't create an epilogue when optimizing for size.
   // Invalidate interleave groups that require an epilogue if we can't mask
   // the interleave-group.
-  if (!useMaskedInterleavedAccesses(TTI)) 
+  if (!useMaskedInterleavedAccesses(TTI))
     InterleaveInfo.invalidateGroupsRequiringScalarEpilogue();
 
-  unsigned MaxVF = computeFeasibleMaxVF(OptForSize, TC);
+  unsigned MaxVF = computeFeasibleMaxVF(TC);
 
   if (TC > 0 && TC % MaxVF == 0) {
     LLVM_DEBUG(dbgs() << "LV: No tail will remain for any chosen VF.\n");
@@ -4752,8 +4792,7 @@ Optional<unsigned> LoopVectorizationCostModel::computeMaxVF(bool OptForSize) {
 }
 
 unsigned
-LoopVectorizationCostModel::computeFeasibleMaxVF(bool OptForSize,
-                                                 unsigned ConstTripCount) {
+LoopVectorizationCostModel::computeFeasibleMaxVF(unsigned ConstTripCount) {
   MinBWs = computeMinimumValueSizes(TheLoop->getBlocks(), *DB, &TTI);
   unsigned SmallestType, WidestType;
   std::tie(SmallestType, WidestType) = getSmallestAndWidestTypes();
@@ -4791,8 +4830,8 @@ LoopVectorizationCostModel::computeFeasibleMaxVF(bool OptForSize,
   }
 
   unsigned MaxVF = MaxVectorSize;
-  if (TTI.shouldMaximizeVectorBandwidth(OptForSize) ||
-      (MaximizeBandwidth && !OptForSize)) {
+  if (TTI.shouldMaximizeVectorBandwidth(!isScalarEpilogueAllowed()) ||
+      (MaximizeBandwidth && isScalarEpilogueAllowed())) {
     // Collect all viable vectorization factors larger than the default MaxVF
     // (i.e. MaxVectorSize).
     SmallVector<unsigned, 8> VFs;
@@ -4931,8 +4970,7 @@ LoopVectorizationCostModel::getSmallestAndWidestTypes() {
   return {MinWidth, MaxWidth};
 }
 
-unsigned LoopVectorizationCostModel::selectInterleaveCount(bool OptForSize,
-                                                           unsigned VF,
+unsigned LoopVectorizationCostModel::selectInterleaveCount(unsigned VF,
                                                            unsigned LoopCost) {
   // -- The interleave heuristics --
   // We interleave the loop in order to expose ILP and reduce the loop overhead.
@@ -4948,8 +4986,7 @@ unsigned LoopVectorizationCostModel::selectInterleaveCount(bool OptForSize,
   // 3. We don't interleave if we think that we will spill registers to memory
   // due to the increased register pressure.
 
-  // When we optimize for size, we don't interleave.
-  if (OptForSize)
+  if (!isScalarEpilogueAllowed())
     return 1;
 
   // We used the distance for the interleave count.
@@ -5013,6 +5050,8 @@ unsigned LoopVectorizationCostModel::selectInterleaveCount(bool OptForSize,
   // then we calculate the cost of VF here.
   if (LoopCost == 0)
     LoopCost = expectedCost(VF).first;
+
+  assert(LoopCost && "Non-zero loop cost expected");
 
   // Clamp the calculated IC to be between the 1 and the max interleave count
   // that the target allows.
@@ -5341,15 +5380,6 @@ int LoopVectorizationCostModel::computePredInstDiscount(
     return true;
   };
 
-  // Returns true if an operand that cannot be scalarized must be extracted
-  // from a vector. We will account for this scalarization overhead below. Note
-  // that the non-void predicated instructions are placed in their own blocks,
-  // and their return values are inserted into vectors. Thus, an extract would
-  // still be required.
-  auto needsExtract = [&](Instruction *I) -> bool {
-    return TheLoop->contains(I) && !isScalarAfterVectorization(I, VF);
-  };
-
   // Compute the expected cost discount from scalarizing the entire expression
   // feeding the predicated instruction. We currently only consider expressions
   // that are single-use instruction chains.
@@ -5389,7 +5419,7 @@ int LoopVectorizationCostModel::computePredInstDiscount(
                "Instruction has non-scalar type");
         if (canBeScalarized(J))
           Worklist.push_back(J);
-        else if (needsExtract(J))
+        else if (needsExtract(J, VF))
           ScalarCost += TTI.getScalarizationOverhead(
                               ToVectorTy(J->getType(),VF), false, true);
       }
@@ -5511,7 +5541,7 @@ unsigned LoopVectorizationCostModel::getMemInstScalarizationCost(Instruction *I,
 
   // Get the overhead of the extractelement and insertelement instructions
   // we might create due to scalarization.
-  Cost += getScalarizationOverhead(I, VF, TTI);
+  Cost += getScalarizationOverhead(I, VF);
 
   // If we have a predicated store, it may not be executed for each vector
   // lane. Scale the cost by the probability of executing the predicated
@@ -5606,8 +5636,8 @@ unsigned LoopVectorizationCostModel::getInterleaveGroupCost(Instruction *I,
   }
 
   // Calculate the cost of the whole interleaved group.
-  bool UseMaskForGaps = 
-      Group->requiresScalarEpilogue() && !IsScalarEpilogueAllowed;
+  bool UseMaskForGaps =
+      Group->requiresScalarEpilogue() && !isScalarEpilogueAllowed();
   unsigned Cost = TTI.getInterleavedMemoryOpCost(
       I->getOpcode(), WideVecTy, Group->getFactor(), Indices,
       Group->getAlignment(), AS, Legal->isMaskRequired(I), UseMaskForGaps);
@@ -5661,6 +5691,36 @@ LoopVectorizationCostModel::getInstructionCost(Instruction *I, unsigned VF) {
   bool TypeNotScalarized =
       VF > 1 && VectorTy->isVectorTy() && TTI.getNumberOfParts(VectorTy) < VF;
   return VectorizationCostTy(C, TypeNotScalarized);
+}
+
+unsigned LoopVectorizationCostModel::getScalarizationOverhead(Instruction *I,
+                                                              unsigned VF) {
+
+  if (VF == 1)
+    return 0;
+
+  unsigned Cost = 0;
+  Type *RetTy = ToVectorTy(I->getType(), VF);
+  if (!RetTy->isVoidTy() &&
+      (!isa<LoadInst>(I) || !TTI.supportsEfficientVectorElementLoadStore()))
+    Cost += TTI.getScalarizationOverhead(RetTy, true, false);
+
+  // Some targets keep addresses scalar.
+  if (isa<LoadInst>(I) && !TTI.prefersVectorizedAddressing())
+    return Cost;
+
+  // Some targets support efficient element stores.
+  if (isa<StoreInst>(I) && TTI.supportsEfficientVectorElementLoadStore())
+    return Cost;
+
+  // Collect operands to consider.
+  CallInst *CI = dyn_cast<CallInst>(I);
+  Instruction::op_range Ops = CI ? CI->arg_operands() : I->operands();
+
+  // Skip operands that do not require extraction/scalarization and do not incur
+  // any overhead.
+  return Cost + TTI.getOperandsScalarizationOverhead(
+                    filterExtractingOperands(Ops, VF), VF);
 }
 
 void LoopVectorizationCostModel::setCostBasedWideningDecision(unsigned VF) {
@@ -5903,7 +5963,7 @@ unsigned LoopVectorizationCostModel::getInstructionCost(Instruction *I,
 
       // The cost of insertelement and extractelement instructions needed for
       // scalarization.
-      Cost += getScalarizationOverhead(I, VF, TTI);
+      Cost += getScalarizationOverhead(I, VF);
 
       // Scale the cost by the probability of executing the predicated blocks.
       // This assumes the predicated block for each vector lane is equally
@@ -5942,6 +6002,14 @@ unsigned LoopVectorizationCostModel::getInstructionCost(Instruction *I,
     return N * TTI.getArithmeticInstrCost(
                    I->getOpcode(), VectorTy, TargetTransformInfo::OK_AnyValue,
                    Op2VK, TargetTransformInfo::OP_None, Op2VP, Operands);
+  }
+  case Instruction::FNeg: {
+    unsigned N = isScalarAfterVectorization(I, VF) ? VF : 1;
+    return N * TTI.getArithmeticInstrCost(
+                   I->getOpcode(), VectorTy, TargetTransformInfo::OK_AnyValue,
+                   TargetTransformInfo::OK_AnyValue,
+                   TargetTransformInfo::OP_None, TargetTransformInfo::OP_None,
+                   I->getOperand(0));
   }
   case Instruction::Select: {
     SelectInst *SI = cast<SelectInst>(I);
@@ -6024,16 +6092,16 @@ unsigned LoopVectorizationCostModel::getInstructionCost(Instruction *I,
   case Instruction::Call: {
     bool NeedToScalarize;
     CallInst *CI = cast<CallInst>(I);
-    unsigned CallCost = getVectorCallCost(CI, VF, TTI, TLI, NeedToScalarize);
+    unsigned CallCost = getVectorCallCost(CI, VF, NeedToScalarize);
     if (getVectorIntrinsicIDForCall(CI, TLI))
-      return std::min(CallCost, getVectorIntrinsicCost(CI, VF, TTI, TLI));
+      return std::min(CallCost, getVectorIntrinsicCost(CI, VF));
     return CallCost;
   }
   default:
     // The cost of executing VF copies of the scalar instruction. This opcode
     // is unknown. Assume that it is the same as 'mul'.
     return VF * TTI.getArithmeticInstrCost(Instruction::Mul, VectorTy) +
-           getScalarizationOverhead(I, VF, TTI);
+           getScalarizationOverhead(I, VF);
   } // end of switch.
 }
 
@@ -6054,9 +6122,12 @@ INITIALIZE_PASS_DEPENDENCY(LoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(LoopAccessLegacyAnalysis)
 INITIALIZE_PASS_DEPENDENCY(DemandedBitsWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(OptimizationRemarkEmitterWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
 INITIALIZE_PASS_END(LoopVectorize, LV_NAME, lv_name, false, false)
 
 namespace llvm {
+
+Pass *createLoopVectorizePass() { return new LoopVectorize(); }
 
 Pass *createLoopVectorizePass(bool InterleaveOnlyWhenForced,
                               bool VectorizeOnlyWhenForced) {
@@ -6106,8 +6177,7 @@ static unsigned determineVPlanVF(const unsigned WidestVectorRegBits,
 }
 
 VectorizationFactor
-LoopVectorizationPlanner::planInVPlanNativePath(bool OptForSize,
-                                                unsigned UserVF) {
+LoopVectorizationPlanner::planInVPlanNativePath(unsigned UserVF) {
   unsigned VF = UserVF;
   // Outer loop handling: They may require CFG and instruction level
   // transformations before even evaluating whether vectorization is profitable.
@@ -6146,10 +6216,9 @@ LoopVectorizationPlanner::planInVPlanNativePath(bool OptForSize,
   return VectorizationFactor::Disabled();
 }
 
-Optional<VectorizationFactor> LoopVectorizationPlanner::plan(bool OptForSize,
-                                                             unsigned UserVF) {
+Optional<VectorizationFactor> LoopVectorizationPlanner::plan(unsigned UserVF) {
   assert(OrigLoop->empty() && "Inner loop expected.");
-  Optional<unsigned> MaybeMaxVF = CM.computeMaxVF(OptForSize);
+  Optional<unsigned> MaybeMaxVF = CM.computeMaxVF();
   if (!MaybeMaxVF) // Cases that should not to be vectorized nor interleaved.
     return None;
 
@@ -6569,6 +6638,7 @@ bool VPRecipeBuilder::tryToWiden(Instruction *I, VPBasicBlock *VPBB,
     case Instruction::FCmp:
     case Instruction::FDiv:
     case Instruction::FMul:
+    case Instruction::FNeg:
     case Instruction::FPExt:
     case Instruction::FPToSI:
     case Instruction::FPToUI:
@@ -6624,9 +6694,9 @@ bool VPRecipeBuilder::tryToWiden(Instruction *I, VPBasicBlock *VPBB,
       // version of the instruction.
       // Is it beneficial to perform intrinsic call compared to lib call?
       bool NeedToScalarize;
-      unsigned CallCost = getVectorCallCost(CI, VF, *TTI, TLI, NeedToScalarize);
+      unsigned CallCost = CM.getVectorCallCost(CI, VF, NeedToScalarize);
       bool UseVectorIntrinsic =
-          ID && getVectorIntrinsicCost(CI, VF, *TTI, TLI) <= CallCost;
+          ID && CM.getVectorIntrinsicCost(CI, VF) <= CallCost;
       return UseVectorIntrinsic || !NeedToScalarize;
     }
     if (isa<LoadInst>(I) || isa<StoreInst>(I)) {
@@ -6798,8 +6868,7 @@ void LoopVectorizationPlanner::buildVPlansWithVPRecipes(unsigned MinVF,
   }
 }
 
-LoopVectorizationPlanner::VPlanPtr
-LoopVectorizationPlanner::buildVPlanWithVPRecipes(
+VPlanPtr LoopVectorizationPlanner::buildVPlanWithVPRecipes(
     VFRange &Range, SmallPtrSetImpl<Value *> &NeedDef,
     SmallPtrSetImpl<Instruction *> &DeadInstructions) {
   // Hold a mapping from predicated instructions to their recipes, in order to
@@ -6814,7 +6883,7 @@ LoopVectorizationPlanner::buildVPlanWithVPRecipes(
   VPBasicBlock *VPBB = new VPBasicBlock("Pre-Entry");
   auto Plan = llvm::make_unique<VPlan>(VPBB);
 
-  VPRecipeBuilder RecipeBuilder(OrigLoop, TLI, TTI, Legal, CM, Builder);
+  VPRecipeBuilder RecipeBuilder(OrigLoop, TLI, Legal, CM, Builder);
   // Represent values that will have defs inside VPlan.
   for (Value *V : NeedDef)
     Plan->addVPValue(V);
@@ -6923,8 +6992,7 @@ LoopVectorizationPlanner::buildVPlanWithVPRecipes(
   return Plan;
 }
 
-LoopVectorizationPlanner::VPlanPtr
-LoopVectorizationPlanner::buildVPlan(VFRange &Range) {
+VPlanPtr LoopVectorizationPlanner::buildVPlan(VFRange &Range) {
   // Outer loop handling: They may require CFG and instruction level
   // transformations before even evaluating whether vectorization is profitable.
   // Since we cannot modify the incoming IR, we need to build VPlan upfront in
@@ -7147,13 +7215,21 @@ static bool processLoopInVPlanNativePath(
     Loop *L, PredicatedScalarEvolution &PSE, LoopInfo *LI, DominatorTree *DT,
     LoopVectorizationLegality *LVL, TargetTransformInfo *TTI,
     TargetLibraryInfo *TLI, DemandedBits *DB, AssumptionCache *AC,
-    OptimizationRemarkEmitter *ORE, LoopVectorizeHints &Hints) {
+    OptimizationRemarkEmitter *ORE, BlockFrequencyInfo *BFI,
+    ProfileSummaryInfo *PSI, LoopVectorizeHints &Hints) {
 
   assert(EnableVPlanNativePath && "VPlan-native path is disabled.");
   Function *F = L->getHeader()->getParent();
   InterleavedAccessInfo IAI(PSE, L, DT, LI, LVL->getLAI());
-  LoopVectorizationCostModel CM(L, PSE, LI, LVL, *TTI, TLI, DB, AC, ORE, F,
-                                &Hints, IAI);
+
+  ScalarEpilogueLowering SEL = CM_ScalarEpilogueAllowed;
+  if (Hints.getForce() != LoopVectorizeHints::FK_Enabled &&
+      (F->hasOptSize() ||
+       llvm::shouldOptimizeForSize(L->getHeader(), PSI, BFI)))
+    SEL = CM_ScalarEpilogueNotAllowedOptSize;
+
+  LoopVectorizationCostModel CM(SEL, L, PSE, LI, LVL, *TTI, TLI,
+                                DB, AC, ORE, F, &Hints, IAI);
   // Use the planner for outer loop vectorization.
   // TODO: CM is not used at this point inside the planner. Turn CM into an
   // optional argument if we don't need it in the future.
@@ -7162,13 +7238,8 @@ static bool processLoopInVPlanNativePath(
   // Get user vectorization factor.
   const unsigned UserVF = Hints.getWidth();
 
-  // Check the function attributes to find out if this function should be
-  // optimized for size.
-  bool OptForSize =
-      Hints.getForce() != LoopVectorizeHints::FK_Enabled && F->hasOptSize();
-
   // Plan how to best vectorize, return the best VF and its cost.
-  const VectorizationFactor VF = LVP.planInVPlanNativePath(OptForSize, UserVF);
+  const VectorizationFactor VF = LVP.planInVPlanNativePath(UserVF);
 
   // If we are stress testing VPlan builds, do not attempt to generate vector
   // code. Masked vector code generation support will follow soon.
@@ -7237,7 +7308,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
 
   // Check if it is legal to vectorize the loop.
   LoopVectorizationRequirements Requirements(*ORE);
-  LoopVectorizationLegality LVL(L, PSE, DT, TLI, AA, F, GetLAA, LI, ORE,
+  LoopVectorizationLegality LVL(L, PSE, DT, TTI, TLI, AA, F, GetLAA, LI, ORE,
                                 &Requirements, &Hints, DB, AC);
   if (!LVL.canVectorize(EnableVPlanNativePath)) {
     LLVM_DEBUG(dbgs() << "LV: Not vectorizing: Cannot prove legality.\n");
@@ -7245,10 +7316,13 @@ bool LoopVectorizePass::processLoop(Loop *L) {
     return false;
   }
 
-  // Check the function attributes to find out if this function should be
-  // optimized for size.
-  bool OptForSize =
-      Hints.getForce() != LoopVectorizeHints::FK_Enabled && F->hasOptSize();
+  // Check the function attributes and profiles to find out if this function
+  // should be optimized for size.
+  ScalarEpilogueLowering SEL = CM_ScalarEpilogueAllowed;
+  if (Hints.getForce() != LoopVectorizeHints::FK_Enabled &&
+      (F->hasOptSize() ||
+       llvm::shouldOptimizeForSize(L->getHeader(), PSI, BFI)))
+    SEL = CM_ScalarEpilogueNotAllowedOptSize;
 
   // Entrance to the VPlan-native vectorization path. Outer loops are processed
   // here. They may require CFG and instruction level transformations before
@@ -7257,7 +7331,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
   // pipeline.
   if (!L->empty())
     return processLoopInVPlanNativePath(L, PSE, LI, DT, &LVL, TTI, TLI, DB, AC,
-                                        ORE, Hints);
+                                        ORE, BFI, PSI, Hints);
 
   assert(L->empty() && "Inner loop expected.");
   // Check the loop for a trip count threshold: vectorize loops with a tiny trip
@@ -7300,7 +7374,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
       // Loops with a very small trip count are considered for vectorization
       // under OptForSize, thereby making sure the cost of their loop body is
       // dominant, free of runtime guards and scalar iteration overheads.
-      OptForSize = true;
+      SEL = CM_ScalarEpilogueNotAllowedLowTripLoop;
     }
   }
 
@@ -7346,8 +7420,8 @@ bool LoopVectorizePass::processLoop(Loop *L) {
   }
 
   // Use the cost model.
-  LoopVectorizationCostModel CM(L, PSE, LI, &LVL, *TTI, TLI, DB, AC, ORE, F,
-                                &Hints, IAI);
+  LoopVectorizationCostModel CM(SEL, L, PSE, LI, &LVL, *TTI, TLI,
+                                DB, AC, ORE, F, &Hints, IAI);
   CM.collectValuesToIgnore();
 
   // Use the planner for vectorization.
@@ -7357,7 +7431,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
   unsigned UserVF = Hints.getWidth();
 
   // Plan how to best vectorize, return the best VF and its cost.
-  Optional<VectorizationFactor> MaybeVF = LVP.plan(OptForSize, UserVF);
+  Optional<VectorizationFactor> MaybeVF = LVP.plan(UserVF);
 
   VectorizationFactor VF = VectorizationFactor::Disabled();
   unsigned IC = 1;
@@ -7366,7 +7440,7 @@ bool LoopVectorizePass::processLoop(Loop *L) {
   if (MaybeVF) {
     VF = *MaybeVF;
     // Select the interleave count.
-    IC = CM.selectInterleaveCount(OptForSize, VF.Width, VF.Cost);
+    IC = CM.selectInterleaveCount(VF.Width, VF.Cost);
   }
 
   // Identify the diagnostic messages that should be produced.
@@ -7523,7 +7597,7 @@ bool LoopVectorizePass::runImpl(
     DominatorTree &DT_, BlockFrequencyInfo &BFI_, TargetLibraryInfo *TLI_,
     DemandedBits &DB_, AliasAnalysis &AA_, AssumptionCache &AC_,
     std::function<const LoopAccessInfo &(Loop &)> &GetLAA_,
-    OptimizationRemarkEmitter &ORE_) {
+    OptimizationRemarkEmitter &ORE_, ProfileSummaryInfo *PSI_) {
   SE = &SE_;
   LI = &LI_;
   TTI = &TTI_;
@@ -7535,6 +7609,7 @@ bool LoopVectorizePass::runImpl(
   GetLAA = &GetLAA_;
   DB = &DB_;
   ORE = &ORE_;
+  PSI = PSI_;
 
   // Don't attempt if
   // 1. the target claims to have no vector registers, and
@@ -7554,7 +7629,8 @@ bool LoopVectorizePass::runImpl(
   // will simplify all loops, regardless of whether anything end up being
   // vectorized.
   for (auto &L : *LI)
-    Changed |= simplifyLoop(L, DT, LI, SE, AC, false /* PreserveLCSSA */);
+    Changed |=
+        simplifyLoop(L, DT, LI, SE, AC, nullptr, false /* PreserveLCSSA */);
 
   // Build up a worklist of inner-loops to vectorize. This is necessary as
   // the act of vectorizing or partially unrolling a loop creates new loops
@@ -7603,8 +7679,12 @@ PreservedAnalyses LoopVectorizePass::run(Function &F,
       LoopStandardAnalysisResults AR = {AA, AC, DT, LI, SE, TLI, TTI, MSSA};
       return LAM.getResult<LoopAccessAnalysis>(L, AR);
     };
+    const ModuleAnalysisManager &MAM =
+        AM.getResult<ModuleAnalysisManagerFunctionProxy>(F).getManager();
+    ProfileSummaryInfo *PSI =
+        MAM.getCachedResult<ProfileSummaryAnalysis>(*F.getParent());
     bool Changed =
-        runImpl(F, SE, LI, TTI, DT, BFI, &TLI, DB, AA, AC, GetLAA, ORE);
+        runImpl(F, SE, LI, TTI, DT, BFI, &TLI, DB, AA, AC, GetLAA, ORE, PSI);
     if (!Changed)
       return PreservedAnalyses::all();
     PreservedAnalyses PA;

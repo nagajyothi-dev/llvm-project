@@ -23,10 +23,14 @@ namespace clang {
 namespace clangd {
 namespace dex {
 
-std::unique_ptr<SymbolIndex> Dex::build(SymbolSlab Symbols, RefSlab Refs) {
+std::unique_ptr<SymbolIndex> Dex::build(SymbolSlab Symbols, RefSlab Refs,
+                                        RelationSlab Rels) {
   auto Size = Symbols.bytes() + Refs.bytes();
+  // There is no need to include "Rels" in Data because the relations are self-
+  // contained, without references into a backing store.
   auto Data = std::make_pair(std::move(Symbols), std::move(Refs));
-  return llvm::make_unique<Dex>(Data.first, Data.second, std::move(Data), Size);
+  return llvm::make_unique<Dex>(Data.first, Data.second, Rels, std::move(Data),
+                                Size);
 }
 
 namespace {
@@ -86,15 +90,6 @@ void Dex::buildIndex() {
   llvm::DenseMap<Token, std::vector<DocID>> TempInvertedIndex;
   for (DocID SymbolRank = 0; SymbolRank < Symbols.size(); ++SymbolRank) {
     const auto *Sym = Symbols[SymbolRank];
-    // FIXME: Enable fuzzy find on template specializations once we start
-    // storing template arguments in the name. Currently we only store name for
-    // class template, which would cause duplication in the results.
-    if (Sym->SymInfo.Properties &
-        (static_cast<index::SymbolPropertySet>(
-             index::SymbolProperty::TemplateSpecialization) |
-         static_cast<index::SymbolPropertySet>(
-             index::SymbolProperty::TemplatePartialSpecialization)))
-      continue;
     for (const auto &Token : generateSearchTokens(*Sym))
       TempInvertedIndex[Token].push_back(SymbolRank);
   }
@@ -268,6 +263,27 @@ void Dex::refs(const RefsRequest &Req,
     }
 }
 
+void Dex::relations(
+    const RelationsRequest &Req,
+    llvm::function_ref<void(const SymbolID &, const Symbol &)> Callback) const {
+  trace::Span Tracer("Dex relations");
+  uint32_t Remaining =
+      Req.Limit.getValueOr(std::numeric_limits<uint32_t>::max());
+  for (const SymbolID &Subject : Req.Subjects) {
+    LookupRequest LookupReq;
+    auto It = Relations.find(std::make_pair(Subject, Req.Predicate));
+    if (It != Relations.end()) {
+      for (const auto &Object : It->second) {
+        if (Remaining > 0) {
+          --Remaining;
+          LookupReq.IDs.insert(Object);
+        }
+      }
+    }
+    lookup(LookupReq, [&](const Symbol &Object) { Callback(Subject, Object); });
+  }
+}
+
 size_t Dex::estimateMemoryUsage() const {
   size_t Bytes = Symbols.size() * sizeof(const Symbol *);
   Bytes += SymbolQuality.size() * sizeof(float);
@@ -276,6 +292,7 @@ size_t Dex::estimateMemoryUsage() const {
   for (const auto &TokenToPostingList : InvertedIndex)
     Bytes += TokenToPostingList.second.bytes();
   Bytes += Refs.getMemorySize();
+  Bytes += Relations.getMemorySize();
   return Bytes + BackingDataSize;
 }
 
@@ -299,9 +316,9 @@ std::vector<std::string> generateProximityURIs(llvm::StringRef URIPath) {
     // FIXME(kbobyrev): Parsing and encoding path to URIs is not necessary and
     // could be optimized.
     Body = llvm::sys::path::parent_path(Body, llvm::sys::path::Style::posix);
-    URI TokenURI(ParsedURI->scheme(), ParsedURI->authority(), Body);
     if (!Body.empty())
-      Result.emplace_back(TokenURI.toString());
+      Result.emplace_back(
+          URI(ParsedURI->scheme(), ParsedURI->authority(), Body).toString());
   }
   return Result;
 }

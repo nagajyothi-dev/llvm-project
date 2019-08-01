@@ -7,17 +7,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+// UNSUPPORTED: c++98, c++03, c++11, c++14
+
 #include "support/pstl_test_config.h"
 
-#ifdef PSTL_STANDALONE_TESTS
-#include "pstl/algorithm"
-#include "pstl/execution"
-#else
 #include <algorithm>
 #include <execution>
-#endif // PSTL_STANDALONE_TESTS
 
-int32_t
+int
 main()
 {
     return 0;

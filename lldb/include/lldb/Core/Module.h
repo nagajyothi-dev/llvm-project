@@ -39,57 +39,22 @@
 
 namespace lldb_private {
 class CompilerDeclContext;
-}
-namespace lldb_private {
 class Function;
-}
-namespace lldb_private {
 class Log;
-}
-namespace lldb_private {
 class ObjectFile;
-}
-namespace lldb_private {
 class RegularExpression;
-}
-namespace lldb_private {
 class SectionList;
-}
-namespace lldb_private {
 class Stream;
-}
-namespace lldb_private {
 class Symbol;
-}
-namespace lldb_private {
 class SymbolContext;
-}
-namespace lldb_private {
 class SymbolContextList;
-}
-namespace lldb_private {
 class SymbolFile;
-}
-namespace lldb_private {
 class SymbolVendor;
-}
-namespace lldb_private {
 class Symtab;
-}
-namespace lldb_private {
 class Target;
-}
-namespace lldb_private {
 class TypeList;
-}
-namespace lldb_private {
 class TypeMap;
-}
-namespace lldb_private {
 class VariableList;
-}
-
-namespace lldb_private {
 
 /// \class Module Module.h "lldb/Core/Module.h"
 /// A class that describes an executable image and its associated
@@ -687,13 +652,6 @@ public:
   virtual SymbolVendor *
   GetSymbolVendor(bool can_create = true,
                   lldb_private::Stream *feedback_strm = nullptr);
-
-  /// Get accessor the type list for this module.
-  ///
-  /// \return
-  ///     A valid type list pointer, or nullptr if there is no valid
-  ///     symbol vendor for this module.
-  TypeList *GetTypeList();
 
   /// Get a reference to the UUID value contained in this object.
   ///
