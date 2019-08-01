@@ -66,7 +66,7 @@ define <32 x i16> @shuffle_v32i16_0f_1f_0e_16_0d_1d_04_1e_0b_1b_0a_1a_09_19_08_1
 ; KNL-NEXT:    vpermq {{.*#+}} ymm2 = ymm1[2,3,0,1]
 ; KNL-NEXT:    vpblendw {{.*#+}} ymm2 = ymm1[0,1,2,3],ymm2[4,5],ymm1[6],ymm2[7],ymm1[8,9,10,11],ymm2[12,13],ymm1[14],ymm2[15]
 ; KNL-NEXT:    vpshufb {{.*#+}} ymm1 = ymm2[u,u,14,15,u,u,12,13,u,u,10,11,u,u,8,9,u,u,22,23,u,u,20,21,u,u,18,19,u,u,u,u]
-; KNL-NEXT:    vpermq {{.*#+}} ymm4 = ymm0[2,3,0,1]
+; KNL-NEXT:    vextracti128 $1, %ymm0, %xmm4
 ; KNL-NEXT:    vpblendw {{.*#+}} ymm0 = ymm0[0,1,2,3,4],ymm4[5,6,7],ymm0[8,9,10,11,12],ymm4[13,14,15]
 ; KNL-NEXT:    vpshufb {{.*#+}} ymm0 = ymm0[14,15,u,u,12,13,u,u,10,11,u,u,8,9,u,u,22,23,u,u,20,21,u,u,18,19,u,u,16,17,u,u]
 ; KNL-NEXT:    vpblendw {{.*#+}} ymm1 = ymm0[0],ymm1[1],ymm0[2],ymm1[3],ymm0[4],ymm1[5],ymm0[6],ymm1[7],ymm0[8],ymm1[9],ymm0[10],ymm1[11],ymm0[12],ymm1[13],ymm0[14],ymm1[15]
@@ -338,10 +338,10 @@ define <8 x i16> @pr32967(<32 x i16> %v) {
 ;
 ; SKX-LABEL: pr32967:
 ; SKX:       ## %bb.0:
+; SKX-NEXT:    vmovdqa {{.*#+}} xmm1 = [1,5,9,13,17,21,25,29]
 ; SKX-NEXT:    vextracti64x4 $1, %zmm0, %ymm2
-; SKX-NEXT:    vmovdqa {{.*#+}} ymm1 = <1,5,9,13,17,21,25,29,u,u,u,u,u,u,u,u>
-; SKX-NEXT:    vpermi2w %ymm2, %ymm0, %ymm1
-; SKX-NEXT:    vmovdqa %xmm1, %xmm0
+; SKX-NEXT:    vpermt2w %ymm2, %ymm1, %ymm0
+; SKX-NEXT:    ## kill: def $xmm0 killed $xmm0 killed $zmm0
 ; SKX-NEXT:    vzeroupper
 ; SKX-NEXT:    retq
  %shuffle = shufflevector <32 x i16> %v, <32 x i16> undef, <8 x i32> <i32 1,i32 5,i32 9,i32 13,i32 17,i32 21,i32 25,i32 29>

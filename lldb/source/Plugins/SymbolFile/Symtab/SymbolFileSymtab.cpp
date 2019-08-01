@@ -104,7 +104,7 @@ uint32_t SymbolFileSymtab::CalculateAbilities() {
   return abilities;
 }
 
-uint32_t SymbolFileSymtab::GetNumCompileUnits() {
+uint32_t SymbolFileSymtab::CalculateNumCompileUnits() {
   // If we don't have any source file symbols we will just have one compile
   // unit for the entire object file
   if (m_source_indexes.empty())
@@ -136,11 +136,12 @@ lldb::LanguageType SymbolFileSymtab::ParseLanguage(CompileUnit &comp_unit) {
 }
 
 size_t SymbolFileSymtab::ParseFunctions(CompileUnit &comp_unit) {
+  std::lock_guard<std::recursive_mutex> guard(GetModuleMutex());
   size_t num_added = 0;
   // We must at least have a valid compile unit
   const Symtab *symtab = m_obj_file->GetSymtab();
-  const Symbol *curr_symbol = NULL;
-  const Symbol *next_symbol = NULL;
+  const Symbol *curr_symbol = nullptr;
+  const Symbol *next_symbol = nullptr;
   //  const char *prefix = m_obj_file->SymbolPrefix();
   //  if (prefix == NULL)
   //      prefix == "";
@@ -188,10 +189,10 @@ size_t SymbolFileSymtab::ParseFunctions(CompileUnit &comp_unit) {
                              LLDB_INVALID_UID, // We don't have any type info
                                                // for this function
                              curr_symbol->GetMangled(), // Linker/mangled name
-                             NULL, // no return type for a code symbol...
+                             nullptr, // no return type for a code symbol...
                              func_range)); // first address range
 
-            if (func_sp.get() != NULL) {
+            if (func_sp.get() != nullptr) {
               comp_unit.AddFunction(func_sp);
               ++num_added;
             }
@@ -230,7 +231,7 @@ size_t SymbolFileSymtab::ParseVariablesForContext(const SymbolContext &sc) {
 }
 
 Type *SymbolFileSymtab::ResolveTypeUID(lldb::user_id_t type_uid) {
-  return NULL;
+  return nullptr;
 }
 
 llvm::Optional<SymbolFile::ArrayInfo>
@@ -246,7 +247,8 @@ bool SymbolFileSymtab::CompleteType(lldb_private::CompilerType &compiler_type) {
 uint32_t SymbolFileSymtab::ResolveSymbolContext(const Address &so_addr,
                                                 SymbolContextItem resolve_scope,
                                                 SymbolContext &sc) {
-  if (m_obj_file->GetSymtab() == NULL)
+  std::lock_guard<std::recursive_mutex> guard(GetModuleMutex());
+  if (m_obj_file->GetSymtab() == nullptr)
     return 0;
 
   uint32_t resolved_flags = 0;

@@ -284,8 +284,8 @@ class TargetRegisterClass;
 
     bool isCheapToSpeculateCttz() const override;
     bool isCheapToSpeculateCtlz() const override;
-    bool shouldFoldShiftPairToMask(const SDNode *N,
-                                   CombineLevel Level) const override;
+    bool shouldFoldConstantShiftPairToMask(const SDNode *N,
+                                           CombineLevel Level) const override;
 
     /// Return the register type for a given MVT, ensuring vectors are treated
     /// as a series of gpr sized integers.
@@ -653,9 +653,11 @@ class TargetRegisterClass;
 
     unsigned
     getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
+      if (ConstraintCode == "o")
+        return InlineAsm::Constraint_o;
       if (ConstraintCode == "R")
         return InlineAsm::Constraint_R;
-      else if (ConstraintCode == "ZC")
+      if (ConstraintCode == "ZC")
         return InlineAsm::Constraint_ZC;
       return TargetLowering::getInlineAsmMemConstraint(ConstraintCode);
     }
@@ -670,7 +672,7 @@ class TargetRegisterClass;
                             unsigned SrcAlign,
                             bool IsMemset, bool ZeroMemset,
                             bool MemcpyStrSrc,
-                            MachineFunction &MF) const override;
+                            const AttributeList &FuncAttributes) const override;
 
     /// isFPImmLegal - Returns true if the target can instruction select the
     /// specified FP immediate natively. If false, the legalizer will

@@ -457,6 +457,10 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
     setOperationAction(ISD::FMAXNUM, Ty, Legal);
     setOperationAction(ISD::FMINIMUM, Ty, Legal);
     setOperationAction(ISD::FMAXIMUM, Ty, Legal);
+    setOperationAction(ISD::LROUND, Ty, Legal);
+    setOperationAction(ISD::LLROUND, Ty, Legal);
+    setOperationAction(ISD::LRINT, Ty, Legal);
+    setOperationAction(ISD::LLRINT, Ty, Legal);
   }
 
   if (Subtarget->hasFullFP16()) {
@@ -547,6 +551,8 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
 
   // Trap.
   setOperationAction(ISD::TRAP, MVT::Other, Legal);
+  if (Subtarget->isTargetWindows())
+    setOperationAction(ISD::DEBUGTRAP, MVT::Other, Legal);
 
   // We combine OR nodes for bitfield operations.
   setTargetDAGCombine(ISD::OR);
@@ -1070,10 +1076,9 @@ MVT AArch64TargetLowering::getScalarShiftAmountTy(const DataLayout &DL,
   return MVT::i64;
 }
 
-bool AArch64TargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
-                                                           unsigned AddrSpace,
-                                                           unsigned Align,
-                                                           bool *Fast) const {
+bool AArch64TargetLowering::allowsMisalignedMemoryAccesses(
+    EVT VT, unsigned AddrSpace, unsigned Align, MachineMemOperand::Flags Flags,
+    bool *Fast) const {
   if (Subtarget->requiresStrictAlign())
     return false;
 
@@ -1091,6 +1096,32 @@ bool AArch64TargetLowering::allowsMisalignedMemoryAccesses(EVT VT,
             // Disregard v2i64. Memcpy lowering produces those and splitting
             // them regresses performance on micro-benchmarks and olden/bh.
             VT == MVT::v2i64;
+  }
+  return true;
+}
+
+// Same as above but handling LLTs instead.
+bool AArch64TargetLowering::allowsMisalignedMemoryAccesses(
+    LLT Ty, unsigned AddrSpace, unsigned Align, MachineMemOperand::Flags Flags,
+    bool *Fast) const {
+  if (Subtarget->requiresStrictAlign())
+    return false;
+
+  if (Fast) {
+    // Some CPUs are fine with unaligned stores except for 128-bit ones.
+    *Fast = !Subtarget->isMisaligned128StoreSlow() ||
+            Ty.getSizeInBytes() != 16 ||
+            // See comments in performSTORECombine() for more details about
+            // these conditions.
+
+            // Code that uses clang vector extensions can mark that it
+            // wants unaligned accesses to be treated as fast by
+            // underspecifying alignment to be 1 or 2.
+            Align <= 2 ||
+
+            // Disregard v2i64. Memcpy lowering produces those and splitting
+            // them regresses performance on micro-benchmarks and olden/bh.
+            Ty == LLT::vector(2, 64);
   }
   return true;
 }
@@ -1229,6 +1260,10 @@ const char *AArch64TargetLowering::getTargetNodeName(unsigned Opcode) const {
   case AArch64ISD::FRECPS:            return "AArch64ISD::FRECPS";
   case AArch64ISD::FRSQRTE:           return "AArch64ISD::FRSQRTE";
   case AArch64ISD::FRSQRTS:           return "AArch64ISD::FRSQRTS";
+  case AArch64ISD::STG:               return "AArch64ISD::STG";
+  case AArch64ISD::STZG:              return "AArch64ISD::STZG";
+  case AArch64ISD::ST2G:              return "AArch64ISD::ST2G";
+  case AArch64ISD::STZ2G:             return "AArch64ISD::STZ2G";
   }
   return nullptr;
 }
@@ -2839,7 +2874,8 @@ SDValue AArch64TargetLowering::LowerSTORE(SDValue Op,
   unsigned AS = StoreNode->getAddressSpace();
   unsigned Align = StoreNode->getAlignment();
   if (Align < MemVT.getStoreSize() &&
-      !allowsMisalignedMemoryAccesses(MemVT, AS, Align, nullptr)) {
+      !allowsMisalignedMemoryAccesses(
+          MemVT, AS, Align, StoreNode->getMemOperand()->getFlags(), nullptr)) {
     return scalarizeVectorStore(StoreNode, DAG);
   }
 
@@ -3205,6 +3241,32 @@ SDValue AArch64TargetLowering::LowerFormalArguments(
                                        FuncInfo->getForwardedMustTailRegParms();
       CCInfo.analyzeMustTailForwardedRegisters(Forwards, RegParmTypes,
                                                CC_AArch64_AAPCS);
+
+      // Conservatively forward X8, since it might be used for aggregate return.
+      if (!CCInfo.isAllocated(AArch64::X8)) {
+        unsigned X8VReg = MF.addLiveIn(AArch64::X8, &AArch64::GPR64RegClass);
+        Forwards.push_back(ForwardedRegister(X8VReg, AArch64::X8, MVT::i64));
+      }
+    }
+  }
+
+  // On Windows, InReg pointers must be returned, so record the pointer in a
+  // virtual register at the start of the function so it can be returned in the
+  // epilogue.
+  if (IsWin64) {
+    for (unsigned I = 0, E = Ins.size(); I != E; ++I) {
+      if (Ins[I].Flags.isInReg()) {
+        assert(!FuncInfo->getSRetReturnReg());
+
+        MVT PtrTy = getPointerTy(DAG.getDataLayout());
+        unsigned Reg =
+          MF.getRegInfo().createVirtualRegister(getRegClassFor(PtrTy));
+        FuncInfo->setSRetReturnReg(Reg);
+
+        SDValue Copy = DAG.getCopyToReg(DAG.getEntryNode(), DL, Reg, InVals[I]);
+        Chain = DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Copy, Chain);
+        break;
+      }
     }
   }
 
@@ -3403,9 +3465,19 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
   // X86) but less efficient and uglier in LowerCall.
   for (Function::const_arg_iterator i = CallerF.arg_begin(),
                                     e = CallerF.arg_end();
-       i != e; ++i)
+       i != e; ++i) {
     if (i->hasByValAttr())
       return false;
+
+    // On Windows, "inreg" attributes signify non-aggregate indirect returns.
+    // In this case, it is necessary to save/restore X0 in the callee. Tail
+    // call opt interferes with this. So we disable tail call opt when the
+    // caller has an argument with "inreg" attribute.
+
+    // FIXME: Check whether the callee also has an "inreg" argument.
+    if (i->hasInRegAttr())
+      return false;
+  }
 
   if (getTargetMachine().Options.GuaranteedTailCallOpt)
     return canGuaranteeTCO(CalleeCC) && CCMatch;
@@ -3924,6 +3996,9 @@ AArch64TargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
                                    const SmallVectorImpl<ISD::OutputArg> &Outs,
                                    const SmallVectorImpl<SDValue> &OutVals,
                                    const SDLoc &DL, SelectionDAG &DAG) const {
+  auto &MF = DAG.getMachineFunction();
+  auto *FuncInfo = MF.getInfo<AArch64FunctionInfo>();
+
   CCAssignFn *RetCC = CallConv == CallingConv::WebKit_JS
                           ? RetCC_AArch64_WebKit_JS
                           : RetCC_AArch64_AAPCS;
@@ -3962,6 +4037,23 @@ AArch64TargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
     Flag = Chain.getValue(1);
     RetOps.push_back(DAG.getRegister(VA.getLocReg(), VA.getLocVT()));
   }
+
+  // Windows AArch64 ABIs require that for returning structs by value we copy
+  // the sret argument into X0 for the return.
+  // We saved the argument into a virtual register in the entry block,
+  // so now we copy the value out and into X0.
+  if (unsigned SRetReg = FuncInfo->getSRetReturnReg()) {
+    SDValue Val = DAG.getCopyFromReg(RetOps[0], DL, SRetReg,
+                                     getPointerTy(MF.getDataLayout()));
+
+    unsigned RetValReg = AArch64::X0;
+    Chain = DAG.getCopyToReg(Chain, DL, RetValReg, Val, Flag);
+    Flag = Chain.getValue(1);
+
+    RetOps.push_back(
+      DAG.getRegister(RetValReg, getPointerTy(DAG.getDataLayout())));
+  }
+
   const AArch64RegisterInfo *TRI = Subtarget->getRegisterInfo();
   const MCPhysReg *I =
       TRI->getCalleeSavedRegsViaCopy(&DAG.getMachineFunction());
@@ -6240,6 +6332,8 @@ static bool isUZPMask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
 
 static bool isTRNMask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
   unsigned NumElts = VT.getVectorNumElements();
+  if (NumElts % 2 != 0)
+    return false;
   WhichResult = (M[0] == 0 ? 0 : 1);
   for (unsigned i = 0; i < NumElts; i += 2) {
     if ((M[i] >= 0 && (unsigned)M[i] != i + WhichResult) ||
@@ -6254,6 +6348,8 @@ static bool isTRNMask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
 /// Mask is e.g., <0, 0, 1, 1> instead of <0, 4, 1, 5>.
 static bool isZIP_v_undef_Mask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
   unsigned NumElts = VT.getVectorNumElements();
+  if (NumElts % 2 != 0)
+    return false;
   WhichResult = (M[0] == 0 ? 0 : 1);
   unsigned Idx = WhichResult * NumElts / 2;
   for (unsigned i = 0; i != NumElts; i += 2) {
@@ -6290,6 +6386,8 @@ static bool isUZP_v_undef_Mask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
 /// Mask is e.g., <0, 0, 2, 2> instead of <0, 4, 2, 6>.
 static bool isTRN_v_undef_Mask(ArrayRef<int> M, EVT VT, unsigned &WhichResult) {
   unsigned NumElts = VT.getVectorNumElements();
+  if (NumElts % 2 != 0)
+    return false;
   WhichResult = (M[0] == 0 ? 0 : 1);
   for (unsigned i = 0; i < NumElts; i += 2) {
     if ((M[i] >= 0 && (unsigned)M[i] != i + WhichResult) ||
@@ -8634,13 +8732,12 @@ static bool memOpAlign(unsigned DstAlign, unsigned SrcAlign,
           (DstAlign == 0 || DstAlign % AlignCheck == 0));
 }
 
-EVT AArch64TargetLowering::getOptimalMemOpType(uint64_t Size, unsigned DstAlign,
-                                               unsigned SrcAlign, bool IsMemset,
-                                               bool ZeroMemset,
-                                               bool MemcpyStrSrc,
-                                               MachineFunction &MF) const {
-  const Function &F = MF.getFunction();
-  bool CanImplicitFloat = !F.hasFnAttribute(Attribute::NoImplicitFloat);
+EVT AArch64TargetLowering::getOptimalMemOpType(
+    uint64_t Size, unsigned DstAlign, unsigned SrcAlign, bool IsMemset,
+    bool ZeroMemset, bool MemcpyStrSrc,
+    const AttributeList &FuncAttributes) const {
+  bool CanImplicitFloat =
+      !FuncAttributes.hasFnAttribute(Attribute::NoImplicitFloat);
   bool CanUseNEON = Subtarget->hasNEON() && CanImplicitFloat;
   bool CanUseFP = Subtarget->hasFPARMv8() && CanImplicitFloat;
   // Only use AdvSIMD to implement memset of 32-byte and above. It would have
@@ -8651,7 +8748,9 @@ EVT AArch64TargetLowering::getOptimalMemOpType(uint64_t Size, unsigned DstAlign,
     if (memOpAlign(SrcAlign, DstAlign, AlignCheck))
       return true;
     bool Fast;
-    return allowsMisalignedMemoryAccesses(VT, 0, 1, &Fast) && Fast;
+    return allowsMisalignedMemoryAccesses(VT, 0, 1, MachineMemOperand::MONone,
+                                          &Fast) &&
+           Fast;
   };
 
   if (CanUseNEON && IsMemset && !IsSmallMemset &&
@@ -8664,6 +8763,39 @@ EVT AArch64TargetLowering::getOptimalMemOpType(uint64_t Size, unsigned DstAlign,
   if (Size >= 4 && AlignmentIsAcceptable(MVT::i32, 4))
     return MVT::i32;
   return MVT::Other;
+}
+
+LLT AArch64TargetLowering::getOptimalMemOpLLT(
+    uint64_t Size, unsigned DstAlign, unsigned SrcAlign, bool IsMemset,
+    bool ZeroMemset, bool MemcpyStrSrc,
+    const AttributeList &FuncAttributes) const {
+  bool CanImplicitFloat =
+      !FuncAttributes.hasFnAttribute(Attribute::NoImplicitFloat);
+  bool CanUseNEON = Subtarget->hasNEON() && CanImplicitFloat;
+  bool CanUseFP = Subtarget->hasFPARMv8() && CanImplicitFloat;
+  // Only use AdvSIMD to implement memset of 32-byte and above. It would have
+  // taken one instruction to materialize the v2i64 zero and one store (with
+  // restrictive addressing mode). Just do i64 stores.
+  bool IsSmallMemset = IsMemset && Size < 32;
+  auto AlignmentIsAcceptable = [&](EVT VT, unsigned AlignCheck) {
+    if (memOpAlign(SrcAlign, DstAlign, AlignCheck))
+      return true;
+    bool Fast;
+    return allowsMisalignedMemoryAccesses(VT, 0, 1, MachineMemOperand::MONone,
+                                          &Fast) &&
+           Fast;
+  };
+
+  if (CanUseNEON && IsMemset && !IsSmallMemset &&
+      AlignmentIsAcceptable(MVT::v2i64, 16))
+    return LLT::vector(2, 64);
+  if (CanUseFP && !IsSmallMemset && AlignmentIsAcceptable(MVT::f128, 16))
+    return LLT::scalar(128);
+  if (Size >= 8 && AlignmentIsAcceptable(MVT::i64, 8))
+    return LLT::scalar(64);
+  if (Size >= 4 && AlignmentIsAcceptable(MVT::i32, 4))
+    return LLT::scalar(32);
+  return LLT();
 }
 
 // 12-bit optionally shifted immediates are legal for adds.
@@ -9139,6 +9271,9 @@ static SDValue performFpToIntCombine(SDNode *N, SelectionDAG &DAG,
                                      TargetLowering::DAGCombinerInfo &DCI,
                                      const AArch64Subtarget *Subtarget) {
   if (!Subtarget->hasNEON())
+    return SDValue();
+
+  if (!N->getValueType(0).isSimple())
     return SDValue();
 
   SDValue Op = N->getOperand(0);
@@ -11907,6 +12042,19 @@ bool AArch64TargetLowering::isMaskAndCmp0FoldingBeneficial(
   return Mask->getValue().isPowerOf2();
 }
 
+bool AArch64TargetLowering::
+    shouldProduceAndByConstByHoistingConstFromShiftsLHSOfAnd(
+        SDValue X, ConstantSDNode *XC, ConstantSDNode *CC, SDValue Y,
+        unsigned OldShiftOpcode, unsigned NewShiftOpcode,
+        SelectionDAG &DAG) const {
+  // Does baseline recommend not to perform the fold by default?
+  if (!TargetLowering::shouldProduceAndByConstByHoistingConstFromShiftsLHSOfAnd(
+          X, XC, CC, Y, OldShiftOpcode, NewShiftOpcode, DAG))
+    return false;
+  // Else, if this is a vector shift, prefer 'shl'.
+  return X.getValueType().isScalarInteger() || NewShiftOpcode == ISD::SHL;
+}
+
 void AArch64TargetLowering::initializeSplitCSR(MachineBasicBlock *Entry) const {
   // Update IsSplitCSR in AArch64unctionInfo.
   AArch64FunctionInfo *AFI = Entry->getParent()->getInfo<AArch64FunctionInfo>();
@@ -11965,6 +12113,11 @@ bool AArch64TargetLowering::isIntDivCheap(EVT VT, AttributeList Attr) const {
   bool OptSize =
       Attr.hasAttribute(AttributeList::FunctionIndex, Attribute::MinSize);
   return OptSize && !VT.isVector();
+}
+
+bool AArch64TargetLowering::preferIncOfAddToSubOfNot(EVT VT) const {
+  // We want inc-of-add for scalars and sub-of-not for vectors.
+  return VT.isScalarInteger();
 }
 
 bool AArch64TargetLowering::enableAggressiveFMAFusion(EVT VT) const {

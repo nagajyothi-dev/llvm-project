@@ -2305,11 +2305,7 @@ _mm_adds_epu16(__m128i __a, __m128i __b)
 static __inline__ __m128i __DEFAULT_FN_ATTRS
 _mm_avg_epu8(__m128i __a, __m128i __b)
 {
-  typedef unsigned short __v16hu __attribute__ ((__vector_size__ (32)));
-  return (__m128i)__builtin_convertvector(
-               ((__builtin_convertvector((__v16qu)__a, __v16hu) +
-                 __builtin_convertvector((__v16qu)__b, __v16hu)) + 1)
-                 >> 1, __v16qu);
+  return (__m128i)__builtin_ia32_pavgb128((__v16qi)__a, (__v16qi)__b);
 }
 
 /// Computes the rounded avarages of corresponding elements of two
@@ -2329,11 +2325,7 @@ _mm_avg_epu8(__m128i __a, __m128i __b)
 static __inline__ __m128i __DEFAULT_FN_ATTRS
 _mm_avg_epu16(__m128i __a, __m128i __b)
 {
-  typedef unsigned int __v8su __attribute__ ((__vector_size__ (32)));
-  return (__m128i)__builtin_convertvector(
-               ((__builtin_convertvector((__v8hu)__a, __v8su) +
-                 __builtin_convertvector((__v8hu)__b, __v8su)) + 1)
-                 >> 1, __v8hu);
+  return (__m128i)__builtin_ia32_pavgw128((__v8hi)__a, (__v8hi)__b);
 }
 
 /// Multiplies the corresponding elements of two 128-bit signed [8 x i16]
@@ -4037,7 +4029,7 @@ _mm_storeu_si128(__m128i_u *__p, __m128i __b)
 /// \param __b
 ///    A 128-bit integer vector containing the value to be stored.
 static __inline__ void __DEFAULT_FN_ATTRS
-_mm_storeu_si64(void const *__p, __m128i __b)
+_mm_storeu_si64(void *__p, __m128i __b)
 {
   struct __storeu_si64 {
     long long __v;
@@ -4058,7 +4050,7 @@ _mm_storeu_si64(void const *__p, __m128i __b)
 /// \param __b
 ///    A 128-bit integer vector containing the value to be stored.
 static __inline__ void __DEFAULT_FN_ATTRS
-_mm_storeu_si32(void const *__p, __m128i __b)
+_mm_storeu_si32(void *__p, __m128i __b)
 {
   struct __storeu_si32 {
     int __v;
@@ -4079,7 +4071,7 @@ _mm_storeu_si32(void const *__p, __m128i __b)
 /// \param __b
 ///    A 128-bit integer vector containing the value to be stored.
 static __inline__ void __DEFAULT_FN_ATTRS
-_mm_storeu_si16(void const *__p, __m128i __b)
+_mm_storeu_si16(void *__p, __m128i __b)
 {
   struct __storeu_si16 {
     short __v;

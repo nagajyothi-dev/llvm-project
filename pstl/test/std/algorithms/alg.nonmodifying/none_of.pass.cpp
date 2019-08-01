@@ -7,15 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+// UNSUPPORTED: c++98, c++03, c++11, c++14
+
 #include "support/pstl_test_config.h"
 
-#ifdef PSTL_STANDALONE_TESTS
-#include "pstl/execution"
-#include "pstl/algorithm"
-#else
 #include <execution>
 #include <algorithm>
-#endif // PSTL_STANDALONE_TESTS
 
 #include "support/utils.h"
 
@@ -50,7 +47,7 @@ test(size_t bits)
     {
 
         // Sequence of odd values
-        Sequence<T> in(n, [n, bits](size_t k) { return T(2 * HashBits(n, bits - 1) ^ 1); });
+        Sequence<T> in(n, [n, bits](size_t) { return T(2 * HashBits(n, bits - 1) ^ 1); });
 
         // Even value, or false when T is bool.
         T spike(2 * HashBits(n, bits - 1));
@@ -87,7 +84,7 @@ struct test_non_const
     }
 };
 
-int32_t
+int
 main()
 {
     test<int32_t>(8 * sizeof(int32_t));
