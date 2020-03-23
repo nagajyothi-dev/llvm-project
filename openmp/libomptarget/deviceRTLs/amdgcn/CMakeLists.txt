@@ -69,7 +69,8 @@ set(cuda_sources
   ${devicertl_base_directory}/common/src/reduction.cu
   ${devicertl_base_directory}/common/src/support.cu
   ${devicertl_base_directory}/common/src/sync.cu
-  ${devicertl_base_directory}/common/src/task.cu)
+  ${devicertl_base_directory}/common/src/task.cu
+  ${devicertl_base_directory}/common/src/ompd-specific.cu)
 
 set(h_files
   ${CMAKE_CURRENT_SOURCE_DIR}/src/amdgcn_interface.h
