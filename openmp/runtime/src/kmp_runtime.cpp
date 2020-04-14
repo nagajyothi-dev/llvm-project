@@ -7535,7 +7535,7 @@ void __kmp_cleanup(void) {
 #endif
 #if OMPD_SUPPORT
   if (ompd_state) {
-    KMP_INTERNAL_FREE(ompd_env_block);
+    __kmp_free(ompd_env_block);
     ompd_env_block = NULL;
     ompd_env_block_size = 0;
   }
