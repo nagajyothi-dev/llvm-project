@@ -1497,6 +1497,17 @@ int __kmp_fork_call(ident_t *loc, int gtid,
     }
 #endif
 
+#if OMPD_SUPPORT
+    if ( ompd_state & OMPD_ENABLE_BP ) {
+       // Invoke ompd_bp_parallel_begin() only for the parallel construct, and
+       // not for the teams construct.
+       if ((master_th->th.th_teams_microtask != microtask) &&
+           microtask != (microtask_t)__kmp_teams_master) {
+           ompd_bp_parallel_begin ();
+       }
+    }
+#endif
+
     master_th->th.th_ident = loc;
 
     if (master_th->th.th_teams_microtask && ap &&
@@ -1564,10 +1575,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         {
           KMP_TIME_PARTITIONED_BLOCK(OMP_parallel);
           KMP_SET_THREAD_STATE_BLOCK(IMPLICIT_TASK);
-#if OMPD_SUPPORT
-          if ( ompd_state & OMPD_ENABLE_BP )
-            ompd_bp_parallel_begin ();
-#endif
           __kmp_invoke_microtask(microtask, gtid, 0, argc, parent_team->t.t_argv
 #if OMPT_SUPPORT
                                  ,
