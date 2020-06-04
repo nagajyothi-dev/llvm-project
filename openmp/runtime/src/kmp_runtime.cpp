@@ -1733,6 +1733,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
 
       __kmpc_serialized_parallel(loc, gtid);
 
+#if OMPD_SUPPORT
+      master_th->th.th_serial_team->t.t_pkfn = microtask;
+#endif
+
       if (call_context == fork_context_intel) {
         /* TODO this sucks, use the compiler itself to pass args! :) */
         master_th->th.th_serial_team->t.t_ident = loc;
