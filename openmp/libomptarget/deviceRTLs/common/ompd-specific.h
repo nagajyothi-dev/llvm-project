@@ -4,7 +4,6 @@
 #ifdef OMPD_SUPPORT
 
 #include "state-queue.h"
-#include "option.h"
 #include <stdint.h>
 
 
