@@ -1521,6 +1521,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         __kmpc_serialized_parallel(loc, gtid);
         KMP_DEBUG_ASSERT(parent_team->t.t_serialized > 1);
 
+#if OMPD_SUPPORT
+        parent_team->t.t_pkfn = microtask;
+#endif
+
 #if OMPT_SUPPORT
         void *dummy;
         void **exit_frame_p;
@@ -1732,6 +1736,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
                ("__kmp_fork_call: T#%d serializing parallel region\n", gtid));
 
       __kmpc_serialized_parallel(loc, gtid);
+
+#if OMPD_SUPPORT
+      master_th->th.th_serial_team->t.t_pkfn = microtask;
+#endif
 
       if (call_context == fork_context_intel) {
         /* TODO this sucks, use the compiler itself to pass args! :) */
