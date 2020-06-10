@@ -1521,6 +1521,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         __kmpc_serialized_parallel(loc, gtid);
         KMP_DEBUG_ASSERT(parent_team->t.t_serialized > 1);
 
+#if OMPD_SUPPORT
+        parent_team->t.t_pkfn = microtask;
+#endif
+
 #if OMPT_SUPPORT
         void *dummy;
         void **exit_frame_p;
