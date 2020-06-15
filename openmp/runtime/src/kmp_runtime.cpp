@@ -1497,17 +1497,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
     }
 #endif
 
-#if OMPD_SUPPORT
-    if ( ompd_state & OMPD_ENABLE_BP ) {
-       // Invoke ompd_bp_parallel_begin() only for the parallel construct, and
-       // not for the teams construct.
-       if ((master_th->th.th_teams_microtask != microtask) &&
-           microtask != (microtask_t)__kmp_teams_master) {
-           ompd_bp_parallel_begin ();
-       }
-    }
-#endif
-
     master_th->th.th_ident = loc;
 
     if (master_th->th.th_teams_microtask && ap &&
@@ -2086,6 +2075,11 @@ int __kmp_fork_call(ident_t *loc, int gtid,
 
     // Update the floating point rounding in the team if required.
     propagateFPControl(team);
+#if OMPD_SUPPORT
+    if ( ompd_state & OMPD_ENABLE_BP )
+      ompd_bp_parallel_begin ();
+#endif
+
 
     if (__kmp_tasking_mode != tskm_immediate_exec) {
       // Set master's task team to team's task team. Unless this is hot team, it
