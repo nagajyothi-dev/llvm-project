@@ -285,19 +285,31 @@ void __ompt_lw_taskteam_link(ompt_lw_taskteam_t *lwt, kmp_info_t *thr,
     link_lwt->ompt_team_info = *OMPT_CUR_TEAM_INFO(thr);
     *OMPT_CUR_TEAM_INFO(thr) = tmp_team;
 
-    ompt_task_info_t tmp_task = lwt->ompt_task_info;
-    link_lwt->ompt_task_info = *OMPT_CUR_TASK_INFO(thr);
-    *OMPT_CUR_TASK_INFO(thr) = tmp_task;
-
     // link the taskteam into the list of taskteams:
     ompt_lw_taskteam_t *my_parent =
         thr->th.th_team->t.ompt_serialized_team_info;
     link_lwt->parent = my_parent;
     thr->th.th_team->t.ompt_serialized_team_info = link_lwt;
+
+#ifdef OMPD_SUPPORT
+    if (ompd_state & OMPD_ENABLE_BP) {
+      ompd_bp_parallel_begin ();
+    }
+#endif
+
+    ompt_task_info_t tmp_task = lwt->ompt_task_info;
+    link_lwt->ompt_task_info = *OMPT_CUR_TASK_INFO(thr);
+    *OMPT_CUR_TASK_INFO(thr) = tmp_task;
+
   } else {
     // this is the first serialized team, so we just store the values in the
     // team and drop the taskteam-object
     *OMPT_CUR_TEAM_INFO(thr) = lwt->ompt_team_info;
+#ifdef OMPD_SUPPORT
+    if (ompd_state & OMPD_ENABLE_BP) {
+      ompd_bp_parallel_begin ();
+    }
+#endif
     *OMPT_CUR_TASK_INFO(thr) = lwt->ompt_task_info;
   }
 }

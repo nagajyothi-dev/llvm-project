@@ -1568,10 +1568,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         {
           KMP_TIME_PARTITIONED_BLOCK(OMP_parallel);
           KMP_SET_THREAD_STATE_BLOCK(IMPLICIT_TASK);
-#if OMPD_SUPPORT
-          if ( ompd_state & OMPD_ENABLE_BP )
-            ompd_bp_parallel_begin ();
-#endif
           __kmp_invoke_microtask(microtask, gtid, 0, argc, parent_team->t.t_argv
 #if OMPT_SUPPORT
                                  ,
@@ -2079,6 +2075,11 @@ int __kmp_fork_call(ident_t *loc, int gtid,
 
     // Update the floating point rounding in the team if required.
     propagateFPControl(team);
+#if OMPD_SUPPORT
+    if ( ompd_state & OMPD_ENABLE_BP )
+      ompd_bp_parallel_begin ();
+#endif
+
 
     if (__kmp_tasking_mode != tskm_immediate_exec) {
       // Set master's task team to team's task team. Unless this is hot team, it
