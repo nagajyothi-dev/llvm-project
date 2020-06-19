@@ -317,15 +317,20 @@ void __ompt_lw_taskteam_link(ompt_lw_taskteam_t *lwt, kmp_info_t *thr,
 void __ompt_lw_taskteam_unlink(kmp_info_t *thr) {
   ompt_lw_taskteam_t *lwtask = thr->th.th_team->t.ompt_serialized_team_info;
   if (lwtask) {
+    ompt_task_info_t tmp_task = lwtask->ompt_task_info;
+    lwtask->ompt_task_info = *OMPT_CUR_TASK_INFO(thr);
+    *OMPT_CUR_TASK_INFO(thr) = tmp_task;
+
+#ifdef OMPD_SUPPORT
+    if (ompd_state & OMPD_ENABLE_BP) {
+      ompd_bp_parallel_end ();
+    }
+#endif
     thr->th.th_team->t.ompt_serialized_team_info = lwtask->parent;
 
     ompt_team_info_t tmp_team = lwtask->ompt_team_info;
     lwtask->ompt_team_info = *OMPT_CUR_TEAM_INFO(thr);
     *OMPT_CUR_TEAM_INFO(thr) = tmp_team;
-
-    ompt_task_info_t tmp_task = lwtask->ompt_task_info;
-    lwtask->ompt_task_info = *OMPT_CUR_TASK_INFO(thr);
-    *OMPT_CUR_TASK_INFO(thr) = tmp_task;
 
     if (lwtask->heap) {
       __kmp_free(lwtask);
