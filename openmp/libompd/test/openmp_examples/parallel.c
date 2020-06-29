@@ -1,4 +1,4 @@
-// RUN: bash -c "(%gdb-compile-and-run) |& FileCheck %s"
+// RUN: %gdb-compile-and-run 2>&1 | tee %t.out | FileCheck %s
 
 #include <stdio.h>
 #include <stdlib.h>

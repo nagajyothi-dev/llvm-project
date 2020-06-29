@@ -1,4 +1,4 @@
-// RUN: bash -c "(%gdb-compile-and-run) |& FileCheck %s"
+// RUN: %gdb-compile-and-run 2>&1 | tee %t.out | FileCheck %s
 
 #include <stdio.h>
 #include <omp.h>
@@ -19,7 +19,7 @@ int main()
         printf("outer parallel region Thread ID == %d\n", omp_get_thread_num());
         /* Code for work to be done by outer parallel region threads over here. */
 
-	if (omp_get_thread_num() == 2) sleep(1000);
+	if (omp_get_thread_num() == 2) sleep(1);
 
         #pragma omp parallel num_threads(2) // nested parallel region
         {    
