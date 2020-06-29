@@ -52,13 +52,16 @@ def FeatureXSAVE   : SubtargetFeature<"xsave", "HasXSAVE", "true",
                                        "Support xsave instructions">;
 
 def FeatureXSAVEOPT: SubtargetFeature<"xsaveopt", "HasXSAVEOPT", "true",
-                                       "Support xsaveopt instructions">;
+                                       "Support xsaveopt instructions",
+                                       [FeatureXSAVE]>;
 
 def FeatureXSAVEC  : SubtargetFeature<"xsavec", "HasXSAVEC", "true",
-                                       "Support xsavec instructions">;
+                                       "Support xsavec instructions",
+                                       [FeatureXSAVE]>;
 
 def FeatureXSAVES  : SubtargetFeature<"xsaves", "HasXSAVES", "true",
-                                       "Support xsaves instructions">;
+                                       "Support xsaves instructions",
+                                       [FeatureXSAVE]>;
 
 def FeatureSSE1    : SubtargetFeature<"sse", "X86SSELevel", "SSE1",
                                       "Enable SSE instructions">;
@@ -273,6 +276,10 @@ def FeatureWAITPKG  : SubtargetFeature<"waitpkg", "HasWAITPKG", "true",
                                       "Wait and pause enhancements">;
 def FeatureENQCMD : SubtargetFeature<"enqcmd", "HasENQCMD", "true",
                                      "Has ENQCMD instructions">;
+def FeatureSERIALIZE : SubtargetFeature<"serialize", "HasSERIALIZE", "true",
+                                        "Has serialize instruction">;
+def FeatureTSXLDTRK : SubtargetFeature<"tsxldtrk", "HasTSXLDTRK", "true",
+                                       "Support TSXLDTRK instructions">;
 // On some processors, instructions that implicitly take two memory operands are
 // slow. In practice, this means that CALL, PUSH, and POP with memory operands
 // should be avoided in favor of a MOV + register CALL/PUSH/POP.
@@ -430,6 +437,22 @@ def FeatureRetpolineExternalThunk
           "on the specified user provided thunk rather than emitting one "
           "ourselves. Only has effect when combined with some other retpoline "
           "feature", [FeatureRetpolineIndirectCalls]>;
+
+// Mitigate LVI attacks against indirect calls/branches and call returns
+def FeatureLVIControlFlowIntegrity
+    : SubtargetFeature<
+          "lvi-cfi", "UseLVIControlFlowIntegrity", "true",
+          "Prevent indirect calls/branches from using a memory operand, and "
+          "precede all indirect calls/branches from a register with an "
+          "LFENCE instruction to serialize control flow. Also decompose RET "
+          "instructions into a POP+LFENCE+JMP sequence.">;
+
+// Mitigate LVI attacks against data loads
+def FeatureLVILoadHardening
+    : SubtargetFeature<
+          "lvi-load-hardening", "UseLVILoadHardening", "true",
+          "Insert LFENCE instructions to prevent data speculatively injected "
+          "into loads from being used maliciously.">;
 
 // Direct Move instructions.
 def FeatureMOVDIRI  : SubtargetFeature<"movdiri", "HasMOVDIRI", "true",
@@ -769,15 +792,13 @@ def ProcessorFeatures {
     !listconcat(GLPInheritableFeatures, GLPSpecificFeatures);
 
   // Tremont
-  list<SubtargetFeature> TRMAdditionalFeatures = [FeatureCLDEMOTE,
-                                                  FeatureGFNI,
-                                                  FeatureMOVDIRI,
-                                                  FeatureMOVDIR64B,
-                                                  FeatureWAITPKG];
+  list<SubtargetFeature> TRMAdditionalFeatures = [FeatureCLWB,
+                                                  FeatureGFNI];
   list<SubtargetFeature> TRMSpecificFeatures = [FeatureUseGLMDivSqrtCosts];
+  list<SubtargetFeature> TRMInheritableFeatures =
+    !listconcat(GLPInheritableFeatures, TRMAdditionalFeatures);
   list<SubtargetFeature> TRMFeatures =
-    !listconcat(GLPInheritableFeatures, TRMAdditionalFeatures,
-                TRMSpecificFeatures);
+    !listconcat(TRMInheritableFeatures, TRMSpecificFeatures);
 
   // Knights Landing
   list<SubtargetFeature> KNLFeatures = [FeatureX87,
@@ -829,6 +850,7 @@ def ProcessorFeatures {
                                                          FeatureFXSR,
                                                          FeatureNOPL,
                                                          FeatureCMPXCHG16B,
+                                                         FeaturePRFCHW,
                                                          FeatureLZCNT,
                                                          FeaturePOPCNT,
                                                          FeatureSlowSHLD,
@@ -924,6 +946,8 @@ def ProcessorFeatures {
   // Excavator
   list<SubtargetFeature> BdVer4AdditionalFeatures = [FeatureAVX2,
                                                      FeatureBMI2,
+                                                     FeatureMOVBE,
+                                                     FeatureRDRAND,
                                                      FeatureMWAITX];
   list<SubtargetFeature> BdVer4InheritableFeatures =
     !listconcat(BdVer3InheritableFeatures, BdVer4AdditionalFeatures);
@@ -984,7 +1008,7 @@ def ProcessorFeatures {
 class Proc<string Name, list<SubtargetFeature> Features>
  : ProcessorModel<Name, GenericModel, Features>;
 
-// NOTE: CMPXCHG8B is here for legacy compatbility so that it is only disabled
+// NOTE: CMPXCHG8B is here for legacy compatibility so that it is only disabled
 // if i386/i486 is specifically requested.
 def : Proc<"generic",         [FeatureX87, FeatureSlowUAMem16,
                                FeatureCMPXCHG8B, FeatureInsertVZEROUPPER]>;
@@ -1247,6 +1271,7 @@ def : ProcessorModel<"x86-64", SandyBridgeModel, [
   FeatureNOPL,
   Feature64Bit,
   FeatureSlow3OpsLEA,
+  FeatureSlowDivide64,
   FeatureSlowIncDec,
   FeatureMacroFusion,
   FeatureInsertVZEROUPPER

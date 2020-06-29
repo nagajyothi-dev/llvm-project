@@ -38,6 +38,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SMTConv.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -51,6 +52,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Casting.h"
@@ -2389,6 +2391,7 @@ ProgramStateManager &PathSensitiveBugReporter::getStateManager() const {
   return Eng.getStateManager();
 }
 
+BugReporter::BugReporter(BugReporterData &d) : D(d) {}
 BugReporter::~BugReporter() {
   // Make sure reports are flushed.
   assert(StrBugTypes.empty() &&
@@ -2409,7 +2412,7 @@ void BugReporter::FlushReports() {
   // EmitBasicReport.
   // FIXME: There are leaks from checkers that assume that the BugTypes they
   // create will be destroyed by the BugReporter.
-  llvm::DeleteContainerSeconds(StrBugTypes);
+  StrBugTypes.clear();
 }
 
 //===----------------------------------------------------------------------===//
@@ -2781,7 +2784,7 @@ Optional<PathDiagnosticBuilder> PathDiagnosticBuilder::findValidReport(
         R->clearVisitors();
         R->addVisitor(std::make_unique<FalsePositiveRefutationBRVisitor>());
 
-        // We don't overrite the notes inserted by other visitors because the
+        // We don't overwrite the notes inserted by other visitors because the
         // refutation manager does not add any new note to the path
         generateVisitorsDiagnostics(R, BugPath->ErrorNode, BRC);
       }
@@ -3262,8 +3265,8 @@ BugType *BugReporter::getBugTypeForName(CheckerNameRef CheckName,
   SmallString<136> fullDesc;
   llvm::raw_svector_ostream(fullDesc) << CheckName.getName() << ":" << name
                                       << ":" << category;
-  BugType *&BT = StrBugTypes[fullDesc];
+  std::unique_ptr<BugType> &BT = StrBugTypes[fullDesc];
   if (!BT)
-    BT = new BugType(CheckName, name, category);
-  return BT;
+    BT = std::make_unique<BugType>(CheckName, name, category);
+  return BT.get();
 }

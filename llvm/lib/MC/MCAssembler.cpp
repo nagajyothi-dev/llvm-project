@@ -33,6 +33,7 @@
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
@@ -396,6 +397,9 @@ void MCAsmLayout::layoutFragment(MCFragment *F) {
   assert((!Prev || isFragmentValid(Prev)) &&
          "Attempt to compute fragment before its predecessor!");
 
+  assert(!F->IsBeingLaidOut && "Already being laid out!");
+  F->IsBeingLaidOut = true;
+
   ++stats::FragmentLayouts;
 
   // Compute fragment offset and size.
@@ -403,6 +407,7 @@ void MCAsmLayout::layoutFragment(MCFragment *F) {
     F->Offset = Prev->Offset + getAssembler().computeFragmentSize(*this, *Prev);
   else
     F->Offset = 0;
+  F->IsBeingLaidOut = false;
   LastValidFragment[F->getParent()] = F;
 
   // If bundling is enabled and this fragment has instructions in it, it has to
@@ -683,14 +688,16 @@ void MCAssembler::writeSectionData(raw_ostream &OS, const MCSection *Sec,
         // directives to fill the contents of virtual sections.
         const MCDataFragment &DF = cast<MCDataFragment>(F);
         if (DF.fixup_begin() != DF.fixup_end())
-          report_fatal_error("cannot have fixups in virtual section!");
+          getContext().reportError(SMLoc(), Sec->getVirtualSectionKind() +
+                                                " section '" + Sec->getName() +
+                                                "' cannot have fixups");
         for (unsigned i = 0, e = DF.getContents().size(); i != e; ++i)
           if (DF.getContents()[i]) {
-            if (auto *ELFSec = dyn_cast<const MCSectionELF>(Sec))
-              report_fatal_error("non-zero initializer found in section '" +
-                  ELFSec->getSectionName() + "'");
-            else
-              report_fatal_error("non-zero initializer found in virtual section");
+            getContext().reportError(SMLoc(),
+                                     Sec->getVirtualSectionKind() +
+                                         " section '" + Sec->getName() +
+                                         "' cannot have non-zero initializers");
+            break;
           }
         break;
       }
@@ -923,8 +930,8 @@ bool MCAssembler::relaxInstruction(MCAsmLayout &Layout,
 
   // Relax the fragment.
 
-  MCInst Relaxed;
-  getBackend().relaxInstruction(F.getInst(), *F.getSubtargetInfo(), Relaxed);
+  MCInst Relaxed = F.getInst();
+  getBackend().relaxInstruction(Relaxed, *F.getSubtargetInfo());
 
   // Encode the new instruction.
   //

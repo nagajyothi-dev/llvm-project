@@ -138,6 +138,10 @@ public:
     return CallsExternalNode.get();
   }
 
+  /// Old node has been deleted, and New is to be used in its place, update the
+  /// ExternalCallingNode.
+  void ReplaceExternalCallEdge(CallGraphNode *Old, CallGraphNode *New);
+
   //===---------------------------------------------------------------------
   // Functions to keep a call graph up to date with a function that has been
   // modified.
@@ -408,7 +412,7 @@ public:
 // graphs by the generic graph algorithms.
 //
 
-// Provide graph traits for tranversing call graphs using standard graph
+// Provide graph traits for traversing call graphs using standard graph
 // traversals.
 template <> struct GraphTraits<CallGraphNode *> {
   using NodeRef = CallGraphNode *;

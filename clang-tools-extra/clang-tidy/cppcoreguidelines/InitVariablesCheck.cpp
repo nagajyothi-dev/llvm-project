@@ -10,6 +10,8 @@
 
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 
 using namespace clang::ast_matchers;
 
@@ -24,9 +26,16 @@ AST_MATCHER(VarDecl, isLocalVarDecl) { return Node.isLocalVarDecl(); }
 InitVariablesCheck::InitVariablesCheck(StringRef Name,
                                        ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
-      IncludeStyle(utils::IncludeSorter::parseIncludeStyle(
-          Options.getLocalOrGlobal("IncludeStyle", "llvm"))),
+      IncludeStyle(Options.getLocalOrGlobal("IncludeStyle",
+                                            utils::IncludeSorter::getMapping(),
+                                            utils::IncludeSorter::IS_LLVM)),
       MathHeader(Options.get("MathHeader", "math.h")) {}
+
+void InitVariablesCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
+  Options.store(Opts, "IncludeStyle", IncludeStyle,
+                utils::IncludeSorter::getMapping());
+  Options.store(Opts, "MathHeader", MathHeader);
+}
 
 void InitVariablesCheck::registerMatchers(MatchFinder *Finder) {
   std::string BadDecl = "badDecl";
@@ -101,7 +110,6 @@ void InitVariablesCheck::check(const MatchFinder::MatchResult &Result) {
     }
   }
 }
-
 } // namespace cppcoreguidelines
 } // namespace tidy
 } // namespace clang

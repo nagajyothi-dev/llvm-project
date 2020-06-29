@@ -85,6 +85,9 @@ enum OpenMPRTLFunctionNVPTX {
   /// Call to void* __kmpc_data_sharing_coalesced_push_stack(size_t size,
   /// int16_t UseSharedMemory);
   OMPRTL_NVPTX__kmpc_data_sharing_coalesced_push_stack,
+  /// Call to void* __kmpc_data_sharing_push_stack(size_t size, int16_t
+  /// UseSharedMemory);
+  OMPRTL_NVPTX__kmpc_data_sharing_push_stack,
   /// Call to void __kmpc_data_sharing_pop_stack(void *a);
   OMPRTL_NVPTX__kmpc_data_sharing_pop_stack,
   /// Call to void __kmpc_begin_sharing_variables(void ***args,
@@ -341,8 +344,7 @@ class CheckVarsEscapingDeclContext final
           if (!Attr)
             return;
           if (((Attr->getCaptureKind() != OMPC_map) &&
-               !isOpenMPPrivate(
-                   static_cast<OpenMPClauseKind>(Attr->getCaptureKind()))) ||
+               !isOpenMPPrivate(Attr->getCaptureKind())) ||
               ((Attr->getCaptureKind() == OMPC_map) &&
                !FD->getType()->isAnyPointerType()))
             return;
@@ -803,6 +805,8 @@ static bool hasNestedSPMDDirective(ASTContext &Ctx,
     case OMPD_target_update:
     case OMPD_declare_simd:
     case OMPD_declare_variant:
+    case OMPD_begin_declare_variant:
+    case OMPD_end_declare_variant:
     case OMPD_declare_target:
     case OMPD_end_declare_target:
     case OMPD_declare_reduction:
@@ -881,6 +885,8 @@ static bool supportsSPMDExecutionMode(ASTContext &Ctx,
   case OMPD_target_update:
   case OMPD_declare_simd:
   case OMPD_declare_variant:
+  case OMPD_begin_declare_variant:
+  case OMPD_end_declare_variant:
   case OMPD_declare_target:
   case OMPD_end_declare_target:
   case OMPD_declare_reduction:
@@ -1052,6 +1058,8 @@ static bool hasNestedLightweightDirective(ASTContext &Ctx,
     case OMPD_target_update:
     case OMPD_declare_simd:
     case OMPD_declare_variant:
+    case OMPD_begin_declare_variant:
+    case OMPD_end_declare_variant:
     case OMPD_declare_target:
     case OMPD_end_declare_target:
     case OMPD_declare_reduction:
@@ -1136,6 +1144,8 @@ static bool supportsLightweightRuntime(ASTContext &Ctx,
   case OMPD_target_update:
   case OMPD_declare_simd:
   case OMPD_declare_variant:
+  case OMPD_begin_declare_variant:
+  case OMPD_end_declare_variant:
   case OMPD_declare_target:
   case OMPD_end_declare_target:
   case OMPD_declare_reduction:
@@ -1746,6 +1756,16 @@ CGOpenMPRuntimeNVPTX::createNVPTXRuntimeFunction(unsigned Function) {
         FnTy, /*Name=*/"__kmpc_data_sharing_coalesced_push_stack");
     break;
   }
+  case OMPRTL_NVPTX__kmpc_data_sharing_push_stack: {
+    // Build void *__kmpc_data_sharing_push_stack(size_t size, int16_t
+    // UseSharedMemory);
+    llvm::Type *TypeParams[] = {CGM.SizeTy, CGM.Int16Ty};
+    auto *FnTy =
+        llvm::FunctionType::get(CGM.VoidPtrTy, TypeParams, /*isVarArg=*/false);
+    RTLFn = CGM.CreateRuntimeFunction(
+        FnTy, /*Name=*/"__kmpc_data_sharing_push_stack");
+    break;
+  }
   case OMPRTL_NVPTX__kmpc_data_sharing_pop_stack: {
     // Build void __kmpc_data_sharing_pop_stack(void *a);
     llvm::Type *TypeParams[] = {CGM.VoidPtrTy};
@@ -1921,19 +1941,6 @@ unsigned CGOpenMPRuntimeNVPTX::getDefaultLocationReserved2Flags() const {
     return UndefinedMode;
   }
   llvm_unreachable("Unknown flags are requested.");
-}
-
-bool CGOpenMPRuntimeNVPTX::tryEmitDeclareVariant(const GlobalDecl &NewGD,
-                                                 const GlobalDecl &OldGD,
-                                                 llvm::GlobalValue *OrigAddr,
-                                                 bool IsForDefinition) {
-  // Emit the function in OldGD with the body from NewGD, if NewGD is defined.
-  auto *NewFD = cast<FunctionDecl>(NewGD.getDecl());
-  if (NewFD->isDefined()) {
-    CGM.emitOpenMPDeviceFunctionRedefinition(OldGD, NewGD, OrigAddr);
-    return true;
-  }
-  return false;
 }
 
 CGOpenMPRuntimeNVPTX::CGOpenMPRuntimeNVPTX(CodeGenModule &CGM)
@@ -2216,7 +2223,7 @@ void CGOpenMPRuntimeNVPTX::emitGenericVarsProlog(CodeGenFunction &CGF,
       GlobalRecCastAddr = Phi;
       I->getSecond().GlobalRecordAddr = Phi;
       I->getSecond().IsInSPMDModeFlag = IsSPMD;
-    } else if (IsInTTDRegion) {
+    } else if (!CGM.getLangOpts().OpenMPCUDATargetParallel && IsInTTDRegion) {
       assert(GlobalizedRecords.back().Records.size() < 2 &&
              "Expected less than 2 globalized records: one for target and one "
              "for teams.");
@@ -2289,12 +2296,16 @@ void CGOpenMPRuntimeNVPTX::emitGenericVarsProlog(CodeGenFunction &CGF,
     } else {
       // TODO: allow the usage of shared memory to be controlled by
       // the user, for now, default to global.
+      bool UseSharedMemory =
+          IsInTTDRegion && GlobalRecordSize <= SharedMemorySize;
       llvm::Value *GlobalRecordSizeArg[] = {
           llvm::ConstantInt::get(CGM.SizeTy, GlobalRecordSize),
-          CGF.Builder.getInt16(/*UseSharedMemory=*/0)};
+          CGF.Builder.getInt16(UseSharedMemory ? 1 : 0)};
       llvm::Value *GlobalRecValue = CGF.EmitRuntimeCall(
           createNVPTXRuntimeFunction(
-              OMPRTL_NVPTX__kmpc_data_sharing_coalesced_push_stack),
+              IsInTTDRegion
+                  ? OMPRTL_NVPTX__kmpc_data_sharing_push_stack
+                  : OMPRTL_NVPTX__kmpc_data_sharing_coalesced_push_stack),
           GlobalRecordSizeArg);
       GlobalRecCastAddr = Bld.CreatePointerBitCastOrAddrSpaceCast(
           GlobalRecValue, GlobalRecPtrTy);
@@ -2441,7 +2452,7 @@ void CGOpenMPRuntimeNVPTX::emitGenericVarsEpilog(CodeGenFunction &CGF,
                 OMPRTL_NVPTX__kmpc_data_sharing_pop_stack),
             CGF.EmitCastToVoidPtr(I->getSecond().GlobalRecordAddr));
         CGF.EmitBlock(ExitBB);
-      } else if (IsInTTDRegion) {
+      } else if (!CGM.getLangOpts().OpenMPCUDATargetParallel && IsInTTDRegion) {
         assert(GlobalizedRecords.back().RegionCounter > 0 &&
                "region counter must be > 0.");
         --GlobalizedRecords.back().RegionCounter;
@@ -4762,6 +4773,7 @@ Address CGOpenMPRuntimeNVPTX::getAddressOfLocalVariable(CodeGenFunction &CGF,
     switch (A->getAllocatorType()) {
       // Use the default allocator here as by default local vars are
       // threadlocal.
+    case OMPAllocateDeclAttr::OMPNullMemAlloc:
     case OMPAllocateDeclAttr::OMPDefaultMemAlloc:
     case OMPAllocateDeclAttr::OMPThreadMemAlloc:
     case OMPAllocateDeclAttr::OMPHighBWMemAlloc:
@@ -4928,6 +4940,7 @@ bool CGOpenMPRuntimeNVPTX::hasAllocateAttributeForGlobalVar(const VarDecl *VD,
     return false;
   const auto *A = VD->getAttr<OMPAllocateDeclAttr>();
   switch(A->getAllocatorType()) {
+  case OMPAllocateDeclAttr::OMPNullMemAlloc:
   case OMPAllocateDeclAttr::OMPDefaultMemAlloc:
   // Not supported, fallback to the default mem space.
   case OMPAllocateDeclAttr::OMPThreadMemAlloc:
@@ -4998,6 +5011,7 @@ void CGOpenMPRuntimeNVPTX::processRequiresDirective(
       case CudaArch::SM_70:
       case CudaArch::SM_72:
       case CudaArch::SM_75:
+      case CudaArch::SM_80:
       case CudaArch::GFX600:
       case CudaArch::GFX601:
       case CudaArch::GFX700:
@@ -5018,6 +5032,7 @@ void CGOpenMPRuntimeNVPTX::processRequiresDirective(
       case CudaArch::GFX1010:
       case CudaArch::GFX1011:
       case CudaArch::GFX1012:
+      case CudaArch::GFX1030:
       case CudaArch::UNKNOWN:
         break;
       case CudaArch::LAST:
@@ -5055,6 +5070,7 @@ static std::pair<unsigned, unsigned> getSMsBlocksPerSM(CodeGenModule &CGM) {
   case CudaArch::SM_70:
   case CudaArch::SM_72:
   case CudaArch::SM_75:
+  case CudaArch::SM_80:
     return {84, 32};
   case CudaArch::GFX600:
   case CudaArch::GFX601:
@@ -5076,6 +5092,7 @@ static std::pair<unsigned, unsigned> getSMsBlocksPerSM(CodeGenModule &CGM) {
   case CudaArch::GFX1010:
   case CudaArch::GFX1011:
   case CudaArch::GFX1012:
+  case CudaArch::GFX1030:
   case CudaArch::UNKNOWN:
     break;
   case CudaArch::LAST:
@@ -5085,7 +5102,8 @@ static std::pair<unsigned, unsigned> getSMsBlocksPerSM(CodeGenModule &CGM) {
 }
 
 void CGOpenMPRuntimeNVPTX::clear() {
-  if (!GlobalizedRecords.empty()) {
+  if (!GlobalizedRecords.empty() &&
+      !CGM.getLangOpts().OpenMPCUDATargetParallel) {
     ASTContext &C = CGM.getContext();
     llvm::SmallVector<const GlobalPtrSizeRecsTy *, 4> GlobalRecs;
     llvm::SmallVector<const GlobalPtrSizeRecsTy *, 4> SharedRecs;
