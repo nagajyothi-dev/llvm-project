@@ -493,7 +493,7 @@ ompd_rc_t _sym_addr(
 		PyTuple_SetItem(pArgs, 0, Py_BuildValue("i", thread_id));
 		PyTuple_SetItem(pArgs, 1, Py_BuildValue("s", symbol_name));
 		symbolAddress = PyObject_CallObject(pFunc, pArgs);
-		symbol_addr->address = PyInt_AsLong(symbolAddress);
+		symbol_addr->address = PyLong_AsLong(symbolAddress);
 		Py_XDECREF(pArgs);
 		Py_XDECREF(symbolAddress);
 	}
@@ -522,11 +522,12 @@ ompd_rc_t _read (
 		if(!PyByteArray_Check(retArray)) {
 			return ompd_rc_error;
 		}
-		int retSize = (int) PyByteArray_Size((PyObject*) retArray);
+		Py_ssize_t retSize;
+		const char* strBuf = PyUnicode_AsUTF8AndSize(retArray, &retSize);
 		if(retSize != nbytes) {
 			return ompd_rc_error;
 		}
-		memcpy(buffer, (void*) PyByteArray_AsString(retArray), nbytes);
+		memcpy(buffer, strBuf, nbytes);
 		Py_XDECREF(retArray);
 	}
 	Py_XDECREF(pFunc);
@@ -550,16 +551,16 @@ ompd_rc_t _read_string (
 	PyTuple_SetItem(pArgs, 1, Py_BuildValue("i", nbytes));
 	PyObject* retString = PyObject_CallObject(pFunc, pArgs);
 	Py_XDECREF(pArgs);
-	if(!PyString_Check(retString)) {
+	if(!PyUnicode_Check(retString)) {
 		return ompd_rc_error;
 	}
-	int retSize = (int) PyString_Size(retString);
+	Py_ssize_t retSize;
+	const char* strbuffer = PyUnicode_AsUTF8AndSize(retString, &retSize);
 	if(retSize != nbytes) {
 		return ompd_rc_error;
 	}
-	char* strbuffer = (char*) buffer;
- 	strncpy(strbuffer, PyString_AsString(retString), nbytes);
-	strbuffer[nbytes-1]='\0';
+ 	strncpy(buffer, strbuffer, nbytes);
+	((char*)buffer)[nbytes-1]='\0';
 	return ompd_rc_ok;
 }
 
@@ -634,7 +635,7 @@ ompd_rc_t _thread_context(
 		PyTuple_SetItem(pArgs, 0, Py_BuildValue("i", kind));
 		PyTuple_SetItem(pArgs, 1, Py_BuildValue("l", tid));
 		PyObject* res = PyObject_CallObject(pFunc, pArgs);
-		int resAsInt = (int) PyInt_AsLong(res);
+		int resAsInt = (int) PyLong_AsLong(res);
 		if(resAsInt == -1) {
 			// NOTE: could not find match for thread_id
 			return ompd_rc_unavailable;
@@ -657,7 +658,7 @@ ompd_rc_t _thread_context(
  */
 static PyObject* call_ompd_initialize(PyObject* self, PyObject* noargs)
 {
-	pModule = PyImport_Import(PyString_FromString("ompd_callbacks"));
+	pModule = PyImport_Import(PyUnicode_FromString("ompd_callbacks"));
 	
 	static ompd_callbacks_t table = 
 		{
@@ -706,7 +707,6 @@ static PyObject* get_thread_handle(PyObject* self, PyObject* args)
 	ompd_size_t sizeof_tid = (ompd_size_t) sizeof(uint64_t);
 	ompd_rc_t retVal = ompd_get_thread_handle(addrSpace, 1, sizeof_tid, &threadId, &threadHandle);
 	
-	free(dummyBuffer);
 	if(retVal == ompd_rc_unavailable) {
 		return Py_BuildValue("i", -1);
 	} else if(retVal != ompd_rc_ok) {
@@ -972,7 +972,7 @@ static PyObject* call_ompd_enumerate_icvs(PyObject* self, PyObject* args) {
 	}
 	PyObject* retTuple = PyTuple_New(4);
 	PyTuple_SetItem(retTuple, 0, PyLong_FromUnsignedLong(nextId));
-	PyTuple_SetItem(retTuple, 1, PyString_FromString(nextIcv));
+	PyTuple_SetItem(retTuple, 1, PyUnicode_FromString(nextIcv));
 	PyTuple_SetItem(retTuple, 2, PyLong_FromUnsignedLong(nextScope));
 	PyTuple_SetItem(retTuple, 3, PyLong_FromLong(more));
 	return retTuple;
@@ -998,7 +998,7 @@ static PyObject* call_ompd_enumerate_states(PyObject* self, PyObject* args) {
 	}
 	PyObject* retTuple = PyTuple_New(3);
 	PyTuple_SetItem(retTuple, 0, PyLong_FromLong(nextState));
-	PyTuple_SetItem(retTuple, 1, PyString_FromString(nextStateName));
+	PyTuple_SetItem(retTuple, 1, PyUnicode_FromString(nextStateName));
 	PyTuple_SetItem(retTuple, 2, PyLong_FromLong(moreEnums));
 	return retTuple;
 }
@@ -1048,7 +1048,7 @@ static PyObject* call_ompd_get_task_function(PyObject* self, PyObject* args) {
 static PyObject* print_capsule(PyObject* self, PyObject* args) {
 	PyObject* capsule = PyTuple_GetItem(args, 0);
 	PyObject* name = PyTuple_GetItem(args, 1);
-	void* pointer = PyCapsule_GetPointer(capsule, PyString_AsString(name));
+	void* pointer = PyCapsule_GetPointer(capsule, PyUnicode_AsUTF8AndSize(name, NULL));
 	_printf("Capsule pointer: %p", pointer);
 	return Py_None;
 }
@@ -1082,7 +1082,7 @@ static PyObject* call_ompd_get_thread_id(PyObject* self, PyObject* args) {
  */
 static PyObject* call_ompd_get_tool_data(PyObject* self, PyObject* args) {
 	PyObject* scopePy = PyTuple_GetItem(args, 0);
-	ompd_scope_t scope = (ompd_scope_t) (PyInt_AsLong(scopePy));
+	ompd_scope_t scope = (ompd_scope_t) (PyLong_AsLong(scopePy));
 	PyObject* handlePy = PyTuple_GetItem(args, 1);
 	void* handle = NULL;
 	
@@ -1152,7 +1152,7 @@ static PyObject* call_ompd_get_icv_string_from_scope(PyObject* self, PyObject* a
 		_printf("An error occurred when calling ompd_get_icv_string_from_scope! Error code: %d", retVal);
 		return Py_None;
 	}
-	return PyString_FromString(icvString);
+	return PyUnicode_FromString(icvString);
 }
 
 /**
@@ -1189,7 +1189,21 @@ static PyMethodDef ompdModule_methods[] = {
 /**
  * Lets Python initialize module.
  */
-void initompdModule(void)
+#if PY_MAJOR_VERSION >= 3
+    static struct PyModuleDef moduledef = {
+        PyModuleDef_HEAD_INIT,
+        "ompdModule",     /* m_name */
+        "This is a module",  /* m_doc */
+        -1,                  /* m_size */
+        ompdModule_methods,    /* m_methods */
+        NULL,                /* m_reload */
+        NULL,                /* m_traverse */
+        NULL,                /* m_clear */
+        NULL,                /* m_free */
+    };
+#endif
+void PyInit_ompdModule(void)
 {
-	(void) Py_InitModule("ompdModule", ompdModule_methods);
+//	(void) Py_InitModule("ompdModule", ompdModule_methods);
+	PyModule_Create(&moduledef);
 }

@@ -5,14 +5,14 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <omp.h>
-#include <ompt.h>
+#include <omp-tools.h>
 
 //#define THREAD_ADDR 1
 
 typedef struct omp_t_data {
 	// Thread data
-	omp_state_t ompt_state;
-	omp_wait_id_t ompt_wait_id;
+	ompt_state_t ompt_state;
+	ompt_wait_id_t ompt_wait_id;
 	int omp_thread_num;
 	ompt_data_t* ompt_thread_data;
 	// Parallel data
@@ -32,7 +32,7 @@ typedef struct omp_t_data {
 	int omp_modifier;
 	// omp_get_proc_bind
 	omp_proc_bind_t omp_proc_bind;
-	omp_frame_t* ompt_frame_list;
+	ompt_frame_t* ompt_frame_list;
 	ompt_data_t* ompt_task_data;
 //	int max_task_depth;
 } omp_t_data_t;
@@ -70,7 +70,7 @@ on_ompt_callback_implicit_task(
 	ompt_data_t *parallel_data,
 	ompt_data_t *task_data,
 	unsigned int team_size,
-	unsigned int thread_num  // FIX: 5.0: ADD: , int flags
+	unsigned int thread_num, int flags
 	)
 {
 	if (endpoint == ompt_scope_begin)
@@ -79,7 +79,7 @@ on_ompt_callback_implicit_task(
 
 static void
 on_ompt_callback_thread_begin(
-	ompt_thread_type_t thread_type,  // FIX: 5.0: ompt_thread_t
+	ompt_thread_t thread_type,  
 	ompt_data_t *t_data)
 {
 	t_data->value = ompt_get_unique_id();
@@ -87,8 +87,8 @@ on_ompt_callback_thread_begin(
 
 static void on_ompt_callback_parallel_begin(
 	ompt_data_t *encountering_task_data,
-	const omp_frame_t *encountering_task_frame, ompt_data_t *parallel_data,
-	uint32_t requested_team_size, ompt_invoker_t invoker,   // FIX: 5.0: int flag,
+	const ompt_frame_t *encountering_task_frame, ompt_data_t *parallel_data,
+	uint32_t requested_team_size, int flag,
 	const void *codeptr_ra) 
 {
 	parallel_data->value = ompt_get_unique_id();
@@ -107,7 +107,7 @@ do{                                                           \
 
 int ompt_initialize(
   ompt_function_lookup_t lookup,
-//   int initial_device_num,
+  int initial_device_num,
   ompt_data_t *tool_data)
 {
 	ompt_lookup = lookup;
