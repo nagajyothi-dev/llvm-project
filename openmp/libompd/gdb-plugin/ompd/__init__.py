@@ -1,11 +1,10 @@
+import sys
+import os.path
 import traceback
 
 if __name__ == "__main__":
 	try:
-		import sys
-		import os.path
 		sys.path.append(os.path.dirname(__file__))
-		sys.path.insert(0,"@CMAKE_CURRENT_BINARY_DIR@/python-module")
 		
 		import ompd
 		ompd.main()

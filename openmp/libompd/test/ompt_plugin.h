@@ -194,8 +194,10 @@ void* breakToolTest(omp_t_data_t * data){
 #ifdef  __cplusplus
 extern "C"
 #endif
-void ompd_tool_break(){
+void* ompd_tool_break(void* n){
+	(void)n;
 	asm("");
+	return NULL;
 }
 
 void* ompd_tool_test(void* n)
@@ -205,7 +207,7 @@ void* ompd_tool_test(void* n)
 	collectTaskData(&thread_data);
 	breakToolTest(&thread_data);
 	checks++;
-	ompd_tool_break();
+	ompd_tool_break(NULL);
 	return NULL;
 }
     
