@@ -1557,10 +1557,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
           exit_frame_p = &dummy;
         }
 #endif
-#if OMPD_SUPPORT
-        if ( ompd_state & OMPD_ENABLE_BP )
-          ompd_bp_parallel_end ();
-#endif
         // AC: need to decrement t_serialized for enquiry functions to work
         // correctly, will restore at join time
         parent_team->t.t_serialized--;
@@ -2268,7 +2264,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
   KMP_MB(); /* Flush all pending memory write invalidates.  */
 
   KA_TRACE(20, ("__kmp_fork_call: parallel exit T#%d\n", gtid));
-
 #if OMPT_SUPPORT
   if (ompt_enabled.enabled) {
     master_th->th.ompt_thread_info.state = ompt_state_overhead;
@@ -2527,6 +2522,10 @@ void __kmp_join_call(ident_t *loc, int gtid
 #endif // KMP_AFFINITY_SUPPORTED
   master_th->th.th_def_allocator = team->t.t_def_allocator;
 
+#if OMPD_SUPPORT
+  if ( ompd_state & OMPD_ENABLE_BP )
+    ompd_bp_parallel_end ();
+#endif
   updateHWFPControl(team);
 
   if (root->r.r_active != master_active)
