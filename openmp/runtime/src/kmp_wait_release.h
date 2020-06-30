@@ -748,18 +748,9 @@ public:
   int execute_tasks(kmp_info_t *this_thr, kmp_int32 gtid, int final_spin,
                     int *thread_finished USE_ITT_BUILD_ARG(void *itt_sync_obj),
                     kmp_int32 is_constrained) {
-#if OMPD_SUPPORT
-      int ret = __kmp_execute_tasks_32(
-        this_thr, gtid, this, final_spin,
-        thread_finished USE_ITT_BUILD_ARG(itt_sync_obj), is_constrained);
-      if ( ompd_state & OMPD_ENABLE_BP )
-          ompd_bp_task_end ();
-      return ret;
-#else
     return __kmp_execute_tasks_32(
         this_thr, gtid, this, final_spin,
         thread_finished USE_ITT_BUILD_ARG(itt_sync_obj), is_constrained);
-#endif
   }
   void wait(kmp_info_t *this_thr,
             int final_spin USE_ITT_BUILD_ARG(void *itt_sync_obj)) {
@@ -786,18 +777,9 @@ public:
   int execute_tasks(kmp_info_t *this_thr, kmp_int32 gtid, int final_spin,
                     int *thread_finished USE_ITT_BUILD_ARG(void *itt_sync_obj),
                     kmp_int32 is_constrained) {
-#if OMPD_SUPPORT
-      int ret = __kmp_execute_tasks_64(
-        this_thr, gtid, this, final_spin, 
-        thread_finished USE_ITT_BUILD_ARG(itt_sync_obj), is_constrained);
-      if ( ompd_state & OMPD_ENABLE_BP )
-          ompd_bp_task_end ();
-      return ret;
-#else
     return __kmp_execute_tasks_64(
         this_thr, gtid, this, final_spin,
         thread_finished USE_ITT_BUILD_ARG(itt_sync_obj), is_constrained);
-#endif
   }
   void wait(kmp_info_t *this_thr,
             int final_spin USE_ITT_BUILD_ARG(void *itt_sync_obj)) {
