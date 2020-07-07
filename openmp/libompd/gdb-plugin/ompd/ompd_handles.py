@@ -141,8 +141,7 @@ class ompd_thread(object):
 	def get_current_parallel_handle(self):
 		"""Obtains the parallel handle for the parallel region associated with
 		the given thread handle."""
-		if not self.parallel_handle:
-			self.parallel_handle = ompdModule.call_ompd_get_curr_parallel_handle(self.thread_handle)
+		self.parallel_handle = ompdModule.call_ompd_get_curr_parallel_handle(self.thread_handle)
 		return self.parallel_handle
 	
 	def get_current_parallel(self):
