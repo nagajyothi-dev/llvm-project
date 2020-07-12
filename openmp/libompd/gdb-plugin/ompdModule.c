@@ -550,13 +550,14 @@ ompd_rc_t _read_string (
 	PyObject* retString = PyObject_CallObject(pFunc, pArgs);
 	Py_XDECREF(pArgs);
 	int retSize = (int) PyString_Size(retString);
+	ompd_rc_t retVal = ompd_rc_ok;
 	if(retSize >= nbytes) {
-		return ompd_rc_error;
+		retVal = ompd_rc_incomplete;
 	}
 	char* strbuffer = (char*) buffer;
  	strncpy(strbuffer, PyString_AsString(retString), nbytes);
 	strbuffer[nbytes-1]='\0';
-	return ompd_rc_ok;
+	return retVal;
 }
 
 /**

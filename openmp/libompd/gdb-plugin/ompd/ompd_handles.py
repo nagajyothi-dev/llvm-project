@@ -141,6 +141,7 @@ class ompd_thread(object):
 	def get_current_parallel_handle(self):
 		"""Obtains the parallel handle for the parallel region associated with
 		the given thread handle."""
+		#TODO: invalidate thread objects based on `gdb.event.cont`. This should invalidate all internal state.
 		self.parallel_handle = ompdModule.call_ompd_get_curr_parallel_handle(self.thread_handle)
 		return self.parallel_handle
 	
