@@ -17,7 +17,7 @@
     macro (tool_libraries_var, "tool-libraries-var", ompd_scope_address_space, 0)                  \
     macro (levels_var, "levels-var", ompd_scope_parallel, 1)                   \
     macro (active_levels_var, "active-levels-var", ompd_scope_parallel, 0)     \
-    macro (thread_limit_var, "thread-limit-var", ompd_scope_thread, 0)         \
+    macro (thread_limit_var, "thread-limit-var", ompd_scope_task, 0)           \
     macro (max_active_levels_var, "max-active-levels-var", ompd_scope_task, 0) \
     macro (bind_var, "bind-var", ompd_scope_task, 0)                           \
     macro (num_procs_var, "ompd-num-procs-var", ompd_scope_address_space, 0)   \
@@ -606,31 +606,27 @@ ompd_get_num_procs(ompd_address_space_handle_t
 }
 
 static ompd_rc_t
-ompd_get_thread_limit(ompd_thread_handle_t
-                          *thread_handle, /* IN: OpenMP thread handle */
-                      ompd_word_t *val  /* OUT: max number of threads */
-                      ) {
-  if (!thread_handle)
+ompd_get_thread_limit(
+    ompd_task_handle_t *task_handle, /* IN: OpenMP task handle*/
+    ompd_word_t *val                 /* OUT: max number of threads */
+    ) {
+  if (!task_handle->ah)
     return ompd_rc_stale_handle;
-  ompd_address_space_context_t *context = thread_handle->ah->context;
-  ompd_rc_t ret;
-
+  ompd_address_space_context_t *context = task_handle->ah->context;
   if (!context)
     return ompd_rc_stale_handle;
 
   assert(callbacks && "Callback table not initialized!");
 
-  ret =
-      TValue(context, thread_handle->th) /*__kmp_threads[t]->th*/
-          .cast("kmp_base_info_t")
-          .access("th_current_task") /*__kmp_threads[t]->th.th_current_task*/
-          .cast("kmp_taskdata_t", 1)
-          .access("td_icvs") /*__kmp_threads[t]->th.th_current_task->td_icvs*/
+  ompd_rc_t ret =
+      TValue(context, task_handle->th)
+          .cast("kmp_taskdata_t") // td
+          .access("td_icvs")      // td->td_icvs
           .cast("kmp_internal_control_t", 0)
-          /*__kmp_threads[t]->th.th_current_task->td_icvs.thread_limit*/
-          .access("thread_limit")
+          .access("thread_limit") // td->td_icvs.thread_limit
           .castBase()
           .getValue(*val);
+
   return ret;
 }
 
@@ -904,7 +900,7 @@ ompd_rc_t ompd_get_icv_from_scope(void *handle, ompd_scope_t scope,
       case ompd_icv_active_levels_var:
         return ompd_get_active_level((ompd_parallel_handle_t *)handle, icv_value);
       case ompd_icv_thread_limit_var:
-        return ompd_get_thread_limit((ompd_thread_handle_t*)handle, icv_value);
+        return ompd_get_thread_limit((ompd_task_handle_t*)handle, icv_value);
       case ompd_icv_max_active_levels_var:
         return ompd_get_max_active_levels((ompd_task_handle_t*)handle, icv_value);
       case ompd_icv_bind_var:
