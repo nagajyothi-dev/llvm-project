@@ -41,7 +41,10 @@ class ompd_address_space(object):
 				gdb.execute('continue')
 				return
 			elif(self.ompd_tool_test_bp in event.breakpoints):
-				self.compare_ompt_data()
+				try:
+					self.compare_ompt_data()
+				except():
+					traceback.print_exc()
 		elif (isinstance(event, gdb.SignalEvent)):
 			# TODO: what do we need to do on SIGNALS?
 			pass
@@ -210,7 +213,7 @@ class ompd_address_space(object):
 		# compare enter and exit frames
 		if 'ompt_frame_list' in field_names:
 			ompt_task_frame_dict = thread_data['ompt_frame_list'].dereference()
-			ompt_task_frames = (long(ompt_task_frame_dict['enter_frame']), long(ompt_task_frame_dict['exit_frame']))
+			ompt_task_frames = (int(ompt_task_frame_dict['enter_frame']), int(ompt_task_frame_dict['exit_frame']))
 			current_task = curr_thread.get_current_task()
 			ompd_task_frames = current_task.get_task_frame()
 			if ompt_task_frames != ompd_task_frames:
@@ -279,7 +282,7 @@ class ompd_address_space(object):
 		"""
 		if self.states is None:
 			self.states = {}
-			current = long("0x102", 0)
+			current = int("0x102", 0)
 			count = 0
 			more = 1
 			

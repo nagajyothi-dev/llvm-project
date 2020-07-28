@@ -330,7 +330,7 @@ static PyObject* ompd_open(PyObject* self, PyObject* args)
 	ompd_word_t version;
 	ompd_rc_t rc = ompd_get_api_version(&version);
 	if (rc != ompd_rc_ok)
-		return Py_BuildValue("i", -10-rc);
+		return Py_BuildValue("l", -10-rc);
 	
 	int returnValue = version;
 	return Py_BuildValue("i", returnValue);
@@ -424,7 +424,7 @@ static PyObject* call_ompd_rel_thread_handle(PyObject* self, PyObject* args)
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_rel_thread_handle! Error code: %d", retVal);
 	}
-	return Py_BuildValue("i", retVal);
+	return Py_BuildValue("l", retVal);
 }
 
 /**
@@ -493,6 +493,9 @@ ompd_rc_t _sym_addr(
 		PyTuple_SetItem(pArgs, 0, Py_BuildValue("i", thread_id));
 		PyTuple_SetItem(pArgs, 1, Py_BuildValue("s", symbol_name));
 		symbolAddress = PyObject_CallObject(pFunc, pArgs);
+		if(symbolAddress == NULL) {
+			PyErr_Print();
+		}
 		symbol_addr->address = PyLong_AsLong(symbolAddress);
 		Py_XDECREF(pArgs);
 		Py_XDECREF(symbolAddress);
@@ -516,14 +519,17 @@ ompd_rc_t _read (
 	if(pFunc && PyCallable_Check(pFunc)) {
 		PyObject* pArgs = PyTuple_New(2);
 		PyTuple_SetItem(pArgs, 0, Py_BuildValue("l", readMem));
-		PyTuple_SetItem(pArgs, 1, Py_BuildValue("i", nbytes));
+		PyTuple_SetItem(pArgs, 1, Py_BuildValue("l", nbytes));
 		PyObject* retArray = PyObject_CallObject(pFunc, pArgs);
 		Py_XDECREF(pArgs);
+		if(retArray == NULL) {
+			PyErr_Print();
+		}
 		if(!PyByteArray_Check(retArray)) {
 			return ompd_rc_error;
 		}
-		Py_ssize_t retSize;
-		const char* strBuf = PyUnicode_AsUTF8AndSize(retArray, &retSize);
+		Py_ssize_t retSize = PyByteArray_Size(retArray);
+		const char* strBuf = PyByteArray_AsString(retArray);
 		if(retSize != nbytes) {
 			return ompd_rc_error;
 		}
@@ -632,7 +638,7 @@ ompd_rc_t _thread_context(
 	PyObject* pFunc = PyObject_GetAttrString(pModule, "_thread_context");
 	if(pFunc && PyCallable_Check(pFunc)) {
 		PyObject* pArgs = PyTuple_New(2);
-		PyTuple_SetItem(pArgs, 0, Py_BuildValue("i", kind));
+		PyTuple_SetItem(pArgs, 0, Py_BuildValue("l", kind));
 		PyTuple_SetItem(pArgs, 1, Py_BuildValue("l", tid));
 		PyObject* res = PyObject_CallObject(pFunc, pArgs);
 		int resAsInt = (int) PyLong_AsLong(res);
@@ -710,7 +716,7 @@ static PyObject* get_thread_handle(PyObject* self, PyObject* args)
 		return Py_BuildValue("i", -1);
 	} else if(retVal != ompd_rc_ok) {
 		_printf("An error occured when calling ompd_get_thread_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(threadHandle, "ThreadHandle", my_thread_capsule_destructor);
 }
@@ -729,7 +735,7 @@ static PyObject* call_ompd_get_thread_in_parallel(PyObject* self, PyObject* args
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_thread_in_parallel! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(threadHandle, "ThreadHandle", my_thread_capsule_destructor);
 }
@@ -747,7 +753,7 @@ static PyObject* call_ompd_get_curr_parallel_handle(PyObject* self, PyObject* ar
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_curr_parallel_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(parallelHandle, "ParallelHandle", my_parallel_capsule_destructor);
 }
@@ -764,7 +770,7 @@ static PyObject* call_ompd_get_enclosing_parallel_handle(PyObject* self, PyObjec
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_enclosing_parallel_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(enclosingParallelHandle, "ParallelHandle", my_parallel_capsule_destructor);
 }
@@ -781,7 +787,7 @@ static PyObject* call_ompd_get_task_parallel_handle(PyObject* self, PyObject* ar
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_task_parallel_handle! Error code: %d");
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(taskParallelHandle, "ParallelHandle", my_parallel_capsule_destructor);
 }
@@ -797,7 +803,7 @@ static PyObject* call_ompd_rel_parallel_handle(PyObject* self, PyObject* args) {
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_rel_parallel_handle! Error code: %d", retVal);
 	}
-	return Py_BuildValue("i", retVal);
+	return Py_BuildValue("l", retVal);
 }
 
 /**
@@ -812,7 +818,7 @@ static PyObject* call_ompd_get_curr_task_handle(PyObject* self, PyObject* args) 
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_curr_task_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(taskHandle, "TaskHandle", my_task_capsule_destructor);
 }
@@ -829,7 +835,7 @@ static PyObject* call_ompd_get_generating_task_handle(PyObject* self, PyObject* 
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_generating_task_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(generatingTaskHandle, "TaskHandle", my_task_capsule_destructor);
 }
@@ -848,7 +854,7 @@ static PyObject* call_ompd_get_scheduling_task_handle(PyObject* self, PyObject* 
 		return Py_None;
 	} else if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_scheduling_task_handle! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(schedulingTaskHandle, "TaskHandle", my_task_capsule_destructor);
 }
@@ -866,7 +872,7 @@ static PyObject* call_ompd_get_task_in_parallel(PyObject* self, PyObject* args) 
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_task_in_parallel! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	return PyCapsule_New(taskHandle, "TaskHandle", my_task_capsule_destructor);
 }
@@ -882,7 +888,7 @@ static PyObject* call_ompd_rel_task_handle(PyObject* self, PyObject* args) {
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_rel_task_handle! Error code: %d", retVal);
 	}
-	return Py_BuildValue("i", retVal);
+	return Py_BuildValue("l", retVal);
 }
 
 /**
@@ -898,7 +904,7 @@ static PyObject* call_ompd_get_task_frame(PyObject* self, PyObject* args) {
 	
 	if(retVal != ompd_rc_ok) {
 		_printf("An error occurred when calling ompd_get_task_frame! Error code: %d", retVal);
-		return Py_BuildValue("i", retVal);
+		return Py_BuildValue("l", retVal);
 	}
 	
 	PyObject* result = PyTuple_New(4);
@@ -944,7 +950,7 @@ static PyObject* call_ompd_get_icv_from_scope(PyObject* self, PyObject* args) {
 	
 	if(retVal != ompd_rc_ok) {
                 if (retVal != ompd_rc_incompatible) {
-		    _printf("An error occurred when calling ompd_get_icv_from_scope: Error code: %d", retVal);
+		    _printf("An error occurred when calling ompd_get_icv_from_scope(%i, %i): Error code: %d", scope, icvId, retVal);
                 }
 		return Py_None;
 	}
