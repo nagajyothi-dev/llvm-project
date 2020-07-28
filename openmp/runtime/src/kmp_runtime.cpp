@@ -1521,6 +1521,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         __kmpc_serialized_parallel(loc, gtid);
         KMP_DEBUG_ASSERT(parent_team->t.t_serialized > 1);
 
+#if OMPD_SUPPORT
+        parent_team->t.t_pkfn = microtask;
+#endif
+
 #if OMPT_SUPPORT
         void *dummy;
         void **exit_frame_p;
@@ -1553,10 +1557,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
           exit_frame_p = &dummy;
         }
 #endif
-#if OMPD_SUPPORT
-        if ( ompd_state & OMPD_ENABLE_BP )
-          ompd_bp_parallel_end ();
-#endif
         // AC: need to decrement t_serialized for enquiry functions to work
         // correctly, will restore at join time
         parent_team->t.t_serialized--;
@@ -1564,10 +1564,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
         {
           KMP_TIME_PARTITIONED_BLOCK(OMP_parallel);
           KMP_SET_THREAD_STATE_BLOCK(IMPLICIT_TASK);
-#if OMPD_SUPPORT
-          if ( ompd_state & OMPD_ENABLE_BP )
-            ompd_bp_parallel_begin ();
-#endif
           __kmp_invoke_microtask(microtask, gtid, 0, argc, parent_team->t.t_argv
 #if OMPT_SUPPORT
                                  ,
@@ -1748,6 +1744,10 @@ int __kmp_fork_call(ident_t *loc, int gtid,
                ("__kmp_fork_call: T#%d serializing parallel region\n", gtid));
 
       __kmpc_serialized_parallel(loc, gtid);
+
+#if OMPD_SUPPORT
+      master_th->th.th_serial_team->t.t_pkfn = microtask;
+#endif
 
       if (call_context == fork_context_intel) {
         /* TODO this sucks, use the compiler itself to pass args! :) */
@@ -2087,6 +2087,11 @@ int __kmp_fork_call(ident_t *loc, int gtid,
 
     // Update the floating point rounding in the team if required.
     propagateFPControl(team);
+#if OMPD_SUPPORT
+    if ( ompd_state & OMPD_ENABLE_BP )
+      ompd_bp_parallel_begin ();
+#endif
+
 
     if (__kmp_tasking_mode != tskm_immediate_exec) {
       // Set master's task team to team's task team. Unless this is hot team, it
@@ -2275,7 +2280,6 @@ int __kmp_fork_call(ident_t *loc, int gtid,
   KMP_MB(); /* Flush all pending memory write invalidates.  */
 
   KA_TRACE(20, ("__kmp_fork_call: parallel exit T#%d\n", gtid));
-
 #if OMPT_SUPPORT
   if (ompt_enabled.enabled) {
     master_th->th.ompt_thread_info.state = ompt_state_overhead;
@@ -2533,6 +2537,10 @@ void __kmp_join_call(ident_t *loc, int gtid
 #endif // KMP_AFFINITY_SUPPORTED
   master_th->th.th_def_allocator = team->t.t_def_allocator;
 
+#if OMPD_SUPPORT
+  if ( ompd_state & OMPD_ENABLE_BP )
+    ompd_bp_parallel_end ();
+#endif
   updateHWFPControl(team);
 
   if (root->r.r_active != master_active)

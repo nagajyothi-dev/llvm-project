@@ -544,11 +544,11 @@ ompd_rc_t _read_string (
 	ompd_size_t nbytes,				/* IN */
 	void* buffer)					/* OUT */
 {
+        ompd_rc_t retVal = ompd_rc_ok;
 	uint64_t readMem = (uint64_t) addr->address;
 	PyObject* pFunc = PyObject_GetAttrString(pModule, "_read_string");
-	PyObject* pArgs = PyTuple_New(2);
+	PyObject* pArgs = PyTuple_New(1);
 	PyTuple_SetItem(pArgs, 0, Py_BuildValue("l", readMem));
-	PyTuple_SetItem(pArgs, 1, Py_BuildValue("i", nbytes));
 	PyObject* retString = PyObject_CallObject(pFunc, pArgs);
 	Py_XDECREF(pArgs);
 	if(!PyUnicode_Check(retString)) {
@@ -556,12 +556,12 @@ ompd_rc_t _read_string (
 	}
 	Py_ssize_t retSize;
 	const char* strbuffer = PyUnicode_AsUTF8AndSize(retString, &retSize);
-	if(retSize != nbytes) {
-		return ompd_rc_error;
+	if(retSize >= nbytes) {
+		retVal = ompd_rc_incomplete;
 	}
  	strncpy(buffer, strbuffer, nbytes);
 	((char*)buffer)[nbytes-1]='\0';
-	return ompd_rc_ok;
+	return retVal;
 }
 
 /**
@@ -698,7 +698,6 @@ static PyObject* get_thread_handle(PyObject* self, PyObject* args)
 	uint64_t threadId = (uint64_t) PyLong_AsLong(threadIdTup);
 	// NOTE: compiler does not know what thread handle looks like, so no memory 
 	// is allocated automatically in the debugger's memory space
-	char dummyBuffer[40];
 	
 	PyObject* addrSpaceTup = PyTuple_GetItem(args, 1);
 	ompd_thread_handle_t* threadHandle;
@@ -944,7 +943,9 @@ static PyObject* call_ompd_get_icv_from_scope(PyObject* self, PyObject* args) {
 	ompd_rc_t retVal = ompd_get_icv_from_scope(addrSpaceHandle, scope, icvId, &icvValue);
 	
 	if(retVal != ompd_rc_ok) {
-		_printf("An error occurred when calling ompd_get_icv_from_scope: Error code: %d", retVal);
+                if (retVal != ompd_rc_incompatible) {
+		    _printf("An error occurred when calling ompd_get_icv_from_scope: Error code: %d", retVal);
+                }
 		return Py_None;
 	}
 	return PyLong_FromLong(icvValue);
