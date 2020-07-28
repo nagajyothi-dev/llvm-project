@@ -22,6 +22,8 @@
 
 namespace llvm {
 
+class InstCombiner;
+
 class X86TTIImpl : public BasicTTIImplBase<X86TTIImpl> {
   typedef BasicTTIImplBase<X86TTIImpl> BaseT;
   typedef TargetTransformInfo TTI;
@@ -105,9 +107,9 @@ public:
   /// \name Cache TTI Implementation
   /// @{
   llvm::Optional<unsigned> getCacheSize(
-    TargetTransformInfo::CacheLevel Level) const;
+    TargetTransformInfo::CacheLevel Level) const override;
   llvm::Optional<unsigned> getCacheAssociativity(
-    TargetTransformInfo::CacheLevel Level) const;
+    TargetTransformInfo::CacheLevel Level) const override;
   /// @}
 
   /// \name Vector TTI Implementations
@@ -151,6 +153,18 @@ public:
   int getAddressComputationCost(Type *PtrTy, ScalarEvolution *SE,
                                 const SCEV *Ptr);
 
+  Optional<Instruction *> instCombineIntrinsic(InstCombiner &IC,
+                                               IntrinsicInst &II) const;
+  Optional<Value *>
+  simplifyDemandedUseBitsIntrinsic(InstCombiner &IC, IntrinsicInst &II,
+                                   APInt DemandedMask, KnownBits &Known,
+                                   bool &KnownBitsComputed) const;
+  Optional<Value *> simplifyDemandedVectorEltsIntrinsic(
+      InstCombiner &IC, IntrinsicInst &II, APInt DemandedElts, APInt &UndefElts,
+      APInt &UndefElts2, APInt &UndefElts3,
+      std::function<void(Instruction *, unsigned, APInt, APInt &)>
+          SimplifyAndSetOp) const;
+
   unsigned getAtomicMemIntrinsicMaxElementSize() const;
 
   int getTypeBasedIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
@@ -174,13 +188,13 @@ public:
       TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
   int getInterleavedMemoryOpCostAVX512(
-      unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
-      Align Alignment, unsigned AddressSpace,
+      unsigned Opcode, FixedVectorType *VecTy, unsigned Factor,
+      ArrayRef<unsigned> Indices, Align Alignment, unsigned AddressSpace,
       TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
   int getInterleavedMemoryOpCostAVX2(
-      unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
-      Align Alignment, unsigned AddressSpace,
+      unsigned Opcode, FixedVectorType *VecTy, unsigned Factor,
+      ArrayRef<unsigned> Indices, Align Alignment, unsigned AddressSpace,
       TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
 
@@ -229,6 +243,9 @@ private:
                       Align Alignment, unsigned AddressSpace);
   int getGSVectorCost(unsigned Opcode, Type *DataTy, const Value *Ptr,
                       Align Alignment, unsigned AddressSpace);
+
+  int getGatherOverhead() const;
+  int getScatterOverhead() const;
 
   /// @}
 };
