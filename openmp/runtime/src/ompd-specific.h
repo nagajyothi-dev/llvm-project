@@ -1,5 +1,5 @@
 /*
- * ompd_debug.h -- OpenMP debug support
+ * ompd-specific.h -- OpenMP debug support
  */
 
 //===----------------------------------------------------------------------===//
