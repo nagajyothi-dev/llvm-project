@@ -10,8 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef __OPMD_TYPES_H
-#define __OPMD_TYPES_H
+#ifndef __OMPD_TYPES_H
+#define __OMPD_TYPES_H
 
 extern "C" {
 #include "omp-tools.h"
