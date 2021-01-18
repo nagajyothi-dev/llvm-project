@@ -186,6 +186,13 @@ Optional Features
 **LIBOMP_USE_INTERNODE_ALIGNMENT** = ``OFF|ON``
   Align certain data structures on 4096-byte.  This option is useful on
   multi-node systems where a small ``CACHE_LINE`` setting leads to false sharing.
+  
+**LIBOMP_OMPD_SUPPORT** = ``ON|OFF``
+  Include support for the OpenMP Debug Interface (OMPD).
+  Used to build ``libompd`` which provides the OMPD support. This also builds
+  the python plugin which can be used by ``gdb`` for OpenMP-specific debugging.
+  Debugging OpenMP code in C/C++ programs is supported.
+  This option is ``OFF`` by default.
 
 **LIBOMP_OMPT_SUPPORT** = ``ON|OFF``
   Include support for the OpenMP Tools Interface (OMPT).
@@ -235,6 +242,15 @@ These flags are **appended**, they do not overwrite any of the preset flags.
 
 **LIBOMP_FFLAGS** = <space-separated flags>
   Additional Fortran compiler flags.
+
+Options for ``libompd``
+-----------------------
+
+**LIBOMP_OMPT_SUPPORT** = ``ON``
+  Enable OMPT support, which is a pre-requisite for OMPD.
+
+**LIBOMP_USE_DEBUGGER** = ``ON``
+  Enable debugger support in OMPD.
 
 Options for ``libomptarget``
 ----------------------------
