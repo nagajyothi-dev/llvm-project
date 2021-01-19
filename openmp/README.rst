@@ -249,9 +249,6 @@ Options for ``libompd``
 **LIBOMP_OMPT_SUPPORT** = ``ON``
   Enable OMPT support, which is a pre-requisite for OMPD.
 
-**LIBOMP_USE_DEBUGGER** = ``ON``
-  Enable debugger support in OMPD.
-
 Options for ``libomptarget``
 ----------------------------
 
